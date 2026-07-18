@@ -1,0 +1,21 @@
+{
+  "name": "tabdesk",
+  "version": "0.1.0",
+  "description": "Desktop app sketch: left tab rail (10%) with terminals, right main area, windowed on launch with fullscreen toggle.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "electron-rebuild -f -w node-pty"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "electron": "^31.0.0"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0"
+  }
+}

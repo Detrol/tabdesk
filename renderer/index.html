@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>TabDesk</title>
+  <link rel="stylesheet" href="../node_modules/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="root">
+  <div id="app">
+    <!-- Left rail: ~10% of the app width. Tabs live here. -->
+    <aside id="rail">
+      <div id="rail-header">
+        <span class="brand">TabDesk</span>
+        <button id="add-terminal" title="New terminal">+</button>
+      </div>
+      <ul id="tab-list"></ul>
+      <div id="rail-footer">
+        <button id="grid-btn" title="Number of panels in the window (1–6)">▦ Grid 1</button>
+        <button id="preview-btn" title="Interactive project preview">👁 Preview</button>
+        <button id="shot-btn" title="Screenshot of the active terminal">📷 Screenshot</button>
+        <button id="fullscreen-btn" title="Fullscreen (F11)">⛶ Fullscreen</button>
+      </div>
+    </aside>
+
+    <!-- Middle area: terminals. Flexes to fill space left by rail + preview. -->
+    <main id="content">
+      <div id="empty-state">
+        <p>Select a <strong>project</strong> on the left to open a terminal.</p>
+        <p>Use <strong>▦ Grid</strong> to show 1–6 at once.</p>
+      </div>
+      <div id="panels"></div>
+      <div id="toast"></div>
+    </main>
+
+    <!-- Fixed right dock (~20%): live app preview with the source below it.
+         Runs the project (HTML, Python, Rust, Node, Go…) and reveals the
+         source of whatever element you hover / click in the rendered page. -->
+    <aside id="preview">
+      <div id="preview-head">
+        <span id="preview-title">👁 Preview</span>
+        <div class="preview-actions">
+          <button id="preview-reload" title="Reload / start preview">⟳</button>
+          <button id="preview-collapse" title="Collapse the panel">⟩</button>
+        </div>
+      </div>
+      <div id="preview-body">
+        <div id="preview-stage">
+          <webview id="preview-view" src="about:blank"></webview>
+          <div id="preview-empty">
+            <p>👁</p>
+            <p>Select a project and press <strong>Preview</strong>.</p>
+            <p class="hint">HTML, Python, Rust, Node, Go … run live here.</p>
+          </div>
+        </div>
+        <div id="preview-code">
+          <div id="preview-crumb">No preview active.</div>
+          <pre id="preview-html"></pre>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Bottom system bar: usage meters + live machine stats -->
+  <footer id="systembar">
+    <span class="sb-brand">⚡ TABDESK</span>
+
+    <div class="meter" id="m-daily">
+      <span class="m-label">Daily</span>
+      <div class="m-track"><div class="m-fill"></div></div>
+      <span class="m-val">–</span>
+      <span class="m-reset">(–)</span>
+    </div>
+    <div class="meter" id="m-weekly">
+      <span class="m-label">Weekly</span>
+      <div class="m-track"><div class="m-fill"></div></div>
+      <span class="m-val">–</span>
+      <span class="m-reset">(–)</span>
+    </div>
+
+    <div class="stat" id="m-total"><span class="m-label">Total</span><span class="m-val">–</span></div>
+    <div class="stat" id="m-msgs"><span class="m-label">Msgs today</span><span class="m-val">–</span></div>
+
+    <div class="sb-spacer"></div>
+
+    <div class="meter mini" id="m-cpu">
+      <span class="m-label">CPU</span>
+      <div class="m-track"><div class="m-fill"></div></div>
+      <span class="m-val">–</span>
+    </div>
+    <div class="meter mini" id="m-ram">
+      <span class="m-label">RAM</span>
+      <div class="m-track"><div class="m-fill"></div></div>
+      <span class="m-val">–</span>
+    </div>
+    <span class="sb-clock" id="m-clock">--:--:--</span>
+  </footer>
+  </div>
+
+  <script src="../node_modules/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

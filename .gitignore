@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Packaged output
+dist/
+out/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Runtime screenshots the app writes to ~/Pictures stay out of the repo anyway,
+# but ignore any that land here during dev.
+tabdesk-*.png
