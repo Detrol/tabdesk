@@ -5,10 +5,11 @@ const tabList = document.getElementById('tab-list');
 const panels = document.getElementById('panels');
 const emptyState = document.getElementById('empty-state');
 
-// Default terminal backend: in-app xterm.js (reliable, renders in the DOM,
-// screenshottable). Flip to true to embed a native xfce4-terminal per panel
-// (X11 reparenting — fragile under HiDPI/multi-instance, kept as an option).
-const EMBED_XFCE = false;
+// Terminal backend. true: embed a real native terminal (xterm) per panel as an
+// X11 window reparented over the panel — actual native window, but not visible
+// to the app's in-app screenshot. false: in-app xterm.js (renders in the DOM,
+// screenshottable). Native embedding is X11-only.
+const EMBED_NATIVE = true;
 
 let seq = 0;
 let activeId = null;
@@ -72,26 +73,38 @@ function setActive(id) {
   scheduleSync();
 }
 
-// ---- Embedded xfce4-terminal placement ----
+// ---- Embedded native terminal placement ----
 // Native terminal windows don't flow with the DOM, so we push each visible
 // panel's on-screen rectangle to main and let it move/size the X window to
-// match. Hidden panels get unmapped.
+// match. Hidden panels get unmapped. Rects are in device pixels (CSS × dpr) so
+// they line up with the parent Electron window's X11 backing-store coordinates.
 let syncQueued = false;
 function scheduleSync() {
-  if (!EMBED_XFCE || syncQueued) return;
+  if (!EMBED_NATIVE || syncQueued) return;
   syncQueued = true;
-  requestAnimationFrame(() => { syncQueued = false; syncXfce(); });
+  requestAnimationFrame(() => { syncQueued = false; syncEmbeds(); });
 }
-function syncXfce() {
+function syncEmbeds() {
   const dpr = window.devicePixelRatio || 1;
   for (const [tid, tt] of tabs) {
-    if (!tt.xfce || !tt.panelEl) continue;
-    if (!tt.panelEl.classList.contains('shown')) { window.api.hideXfceTerminal(tid); continue; }
+    if (!tt.embed || !tt.panelEl) continue;
+    if (!tt.panelEl.classList.contains('shown')) { window.api.hideEmbedTerminal(tid); continue; }
     const el = tt.panelEl.querySelector('.term') || tt.panelEl;
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) continue;
-    window.api.placeXfceTerminal(tid, { x: r.x * dpr, y: r.y * dpr, w: r.width * dpr, h: r.height * dpr });
+    window.api.placeEmbedTerminal(tid, { x: r.x * dpr, y: r.y * dpr, w: r.width * dpr, h: r.height * dpr });
   }
+}
+
+// Once the native window is up it covers the panel, so the "▶ terminal…"
+// placeholder underneath is only ever visible again while the X window lags a
+// resize — which reads as flicker. Drop it as soon as the terminal is placed.
+if (EMBED_NATIVE) {
+  window.api.onEmbedReady((id) => {
+    const t = tabs.get(id);
+    const ph = t && t.panelEl && t.panelEl.querySelector('.term-loading');
+    if (ph) ph.remove();
+  });
 }
 
 // Lay out the visible panels in a grid and highlight the focused one.
@@ -114,6 +127,8 @@ function applyLayout() {
       tt.panelEl.classList.toggle('focused', tid === activeId && n > 1);
     }
   }
+  // The model belongs to the focused project, so the bar follows it.
+  renderModelBtn();
   scheduleSync();
 }
 
@@ -138,8 +153,19 @@ function fitSoon(id) {
   });
 }
 
+// The command a project tab starts with. Built at materialize time, not at
+// tab-build time, so a model picked while the tab sits unopened still counts.
+// Ad-hoc tabs (no project) get a plain shell.
+// Ids are validated in main (model.js) before they are ever stored; the quotes
+// are what keep an alias like opus[1m] from being read as a glob by bash.
+function startCmdFor(t) {
+  if (!t.cwd) return null;
+  const flag = t.model && t.model !== 'default' ? ` --model '${t.model}'` : '';
+  return `claude --permission-mode auto${flag}`;
+}
+
 // Build only the tab row in the rail. The terminal/pty is created lazily.
-function buildTab({ name, cwd, startCmd }) {
+function buildTab({ name, cwd, model }) {
   const id = `t${++seq}`;
   const tabEl = document.createElement('li');
   tabEl.className = 'tab';
@@ -147,7 +173,7 @@ function buildTab({ name, cwd, startCmd }) {
   tabEl.innerHTML = `
     <span class="dot"></span>
     <span class="label"></span>
-    <button class="close" title="Close">×</button>`;
+    <button class="close" title="${t('tab.close')}">×</button>`;
   tabEl.querySelector('.label').textContent = name;
   tabEl.addEventListener('click', (e) => {
     if (e.target.classList.contains('close')) return;
@@ -159,13 +185,16 @@ function buildTab({ name, cwd, startCmd }) {
   });
   tabList.appendChild(tabEl);
 
-  tabs.set(id, { id, name, cwd, startCmd, tabEl, materialized: false });
+  tabs.set(id, { id, name, cwd, model: model || 'default', tabEl, materialized: false });
   return id;
 }
 
 // Create the actual xterm instance + backing pty for a tab on first use.
 function materialize(t) {
   const id = t.id;
+  // The model this terminal is actually launching with — a later pick can't
+  // reach the running process, so the bar compares against this.
+  t.runningModel = t.model;
 
   const panelEl = document.createElement('div');
   panelEl.className = 'panel';
@@ -176,7 +205,7 @@ function materialize(t) {
   // Per-panel close button (appears on hover) so you can close a pane directly.
   const panelClose = document.createElement('button');
   panelClose.className = 'panel-close';
-  panelClose.title = 'Close this panel';
+  panelClose.title = window.t('panel.close');
   panelClose.textContent = '×';
   panelClose.addEventListener('mousedown', (e) => e.stopPropagation());
   panelClose.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); });
@@ -184,19 +213,19 @@ function materialize(t) {
 
   panels.appendChild(panelEl);
 
-  // Embedded xfce4-terminal: the panel is just a placeholder rectangle; the
+  // Embedded native terminal: the panel is just a placeholder rectangle; the
   // real terminal is a native window main reparents on top of it.
-  if (EMBED_XFCE) {
-    termEl.classList.add('xfce');
-    termEl.innerHTML = '<span class="term-loading">▶ xfce4-terminal…</span>';
+  if (EMBED_NATIVE) {
+    termEl.classList.add('embed');
+    termEl.innerHTML = `<span class="term-loading">${window.t('panel.loading')}</span>`;
     const ro = new ResizeObserver(() => scheduleSync());
     ro.observe(panelEl);
     panelEl.addEventListener('mousedown', () => {
       if (activeId !== id) { activeId = id; applyLayout(); }
     });
-    window.api.createXfceTerminal(id, t.cwd, t.startCmd);
+    window.api.createEmbedTerminal(id, t.cwd, startCmdFor(t));
     Object.assign(t, {
-      materialized: true, xfce: true, panelEl,
+      materialized: true, embed: true, panelEl,
       cleanup: () => ro.disconnect(),
     });
     scheduleSync();
@@ -207,19 +236,7 @@ function materialize(t) {
     fontFamily: 'Menlo, "DejaVu Sans Mono", monospace',
     fontSize: 13,
     cursorBlink: true,
-    theme: {
-      background: '#03060fdd',
-      foreground: '#eaf4ff',
-      cursor: '#34e2ff',
-      cursorAccent: '#03060f',
-      selectionBackground: 'rgba(43,140,255,.35)',
-      black: '#0a1024', brightBlack: '#3a5a8c',
-      blue: '#2b8cff', brightBlue: '#64b5ff',
-      cyan: '#34e2ff', brightCyan: '#a9e6ff',
-      white: '#eaf4ff', brightWhite: '#ffffff',
-      green: '#4ffbdf', brightGreen: '#8affe8',
-      red: '#ff5c8a', magenta: '#9a7bff', yellow: '#ffd36e',
-    },
+    theme: (window.ui.theme && window.ui.theme.terminal) || {},
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -233,7 +250,7 @@ function materialize(t) {
     if (activeId !== id) { activeId = id; applyLayout(); }
   });
 
-  window.api.createTerminal(id, term.cols, term.rows, t.cwd, t.startCmd);
+  window.api.createTerminal(id, term.cols, term.rows, t.cwd, startCmdFor(t));
   term.onData((data) => window.api.sendInput(id, data));
   let firstData = true;
   const offData = window.api.onData(id, (data) => {
@@ -245,7 +262,7 @@ function materialize(t) {
   });
   const offExit = window.api.onExit(id, () => {
     t.tabEl.classList.add('dead');
-    term.write('\r\n\x1b[31m[process exited]\x1b[0m\r\n');
+    term.write(`\r\n\x1b[31m${window.t('panel.exited')}\x1b[0m\r\n`);
   });
 
   Object.assign(t, {
@@ -258,8 +275,8 @@ function closeTab(id) {
   const t = tabs.get(id);
   if (!t) return;
   if (t.materialized) {
-    if (t.xfce) {
-      window.api.killXfceTerminal(id);
+    if (t.embed) {
+      window.api.killEmbedTerminal(id);
       t.cleanup();
     } else {
       window.api.killTerminal(id);
@@ -285,11 +302,31 @@ function closeTab(id) {
   if (visible.length === 0 && tabs.size === 0) emptyState.classList.remove('hidden');
 }
 
-// Ad-hoc terminal in home dir via the "+" button.
+// "+" opens the project picker: a new tab belongs to a project by default, so
+// the choice is made up front rather than left as a shell in the home dir.
+// A plain terminal is still one click away, inside the picker.
 let adHoc = 0;
-document.getElementById('add-terminal').addEventListener('click', () => {
-  const id = buildTab({ name: `Terminal ${++adHoc}`, cwd: null });
-  setActive(id);
+const addBtn = document.getElementById('add-terminal');
+addBtn.addEventListener('click', async () => {
+  addBtn.disabled = true;   // the picker is modal; don't stack a second one
+  let choice = null;
+  try {
+    choice = await window.api.pickProject();
+  } finally {
+    addBtn.disabled = false;
+  }
+  if (!choice) return;
+
+  if (choice.kind === 'shell') {
+    setActive(buildTab({ name: `Terminal ${++adHoc}`, cwd: null }));
+    return;
+  }
+
+  // A project already in the rail gets focused rather than opened twice.
+  const existing = [...tabs.values()].find((x) => x.cwd === choice.path);
+  if (existing) { setActive(existing.id); return; }
+
+  setActive(buildTab({ name: choice.name, cwd: choice.path, model: choice.model }));
 });
 
 document.getElementById('fullscreen-btn').addEventListener('click', () => window.api.toggleFullscreen());
@@ -297,7 +334,7 @@ window.addEventListener('resize', () => { for (const vid of visible) fitTerm(vid
 
 // Grid button: cycle 1 → 6 → 1 panels shown at once.
 const gridBtn = document.getElementById('grid-btn');
-function updateGridBtn() { gridBtn.textContent = `▦ Grid ${gridSize}`; }
+function updateGridBtn() { gridBtn.textContent = t('rail.grid', { n: gridSize }); }
 gridBtn.addEventListener('click', () => {
   gridSize = gridSize >= 6 ? 1 : gridSize + 1;
   updateGridBtn();
@@ -321,15 +358,17 @@ function toast(msg) {
 // Screenshot button: capture the focused terminal panel to a PNG.
 document.getElementById('shot-btn').addEventListener('click', async () => {
   const t = tabs.get(activeId);
-  if (!t || !t.panelEl) { toast('No active terminal to capture'); return; }
-  if (t.xfce) { toast('Embedded xfce4-terminal is not visible in the in-app screenshot'); return; }
+  if (!t || !t.panelEl) { toast(window.t('toast.noTerminal')); return; }
+  if (t.embed) { toast(window.t('toast.embedNoShot')); return; }
   const el = t.panelEl.querySelector('.term') || t.panelEl;
   const r = el.getBoundingClientRect();
   const res = await window.api.captureTerminal(
     { x: r.x, y: r.y, width: r.width, height: r.height },
     t.name,
   );
-  toast(res && res.ok ? `📷 Saved: ${res.path.split('/').pop()}` : 'Could not save screenshot');
+  toast(res && res.ok
+    ? window.t('toast.saved', { file: res.path.split('/').pop() })
+    : window.t('toast.shotFailed'));
 });
 
 // ---- Interactive project preview (fixed right dock) ----
@@ -345,6 +384,9 @@ const previewEmpty = document.getElementById('preview-empty');
 
 let previewMode = 'idle';   // idle | starting | live
 let previewLog = '';        // accumulated process output while starting
+let previewUrl = '';        // URL of the live preview, for "open in browser"
+let previewCwd = '';        // project the preview belongs to
+let openInBrowserOnReady = false; // the run menu asked for the browser, not the dock
 
 function setEmptyMessage(html) {
   previewEmpty.innerHTML = html;
@@ -360,15 +402,17 @@ function showWebview() {
 previewView.addEventListener('ipc-message', (e) => {
   if (e.channel !== 'inspect' || previewMode !== 'live') return;
   const d = e.args[0] || {};
-  if (d.resume) { previewCrumb.textContent = 'Hover over the preview to see its code…'; return; }
+  if (d.resume) { previewCrumb.textContent = t('preview.hover'); return; }
   previewCrumb.textContent = (d.pinned ? '📌 ' : '') + (d.path || '');
   previewHtml.textContent = d.html || '';
 });
 
-async function openPreview() {
+// `external: true` means the caller only wants the URL (to hand to the desktop
+// browser), so we start the process without unfolding the dock over the panels.
+async function openPreview({ external = false } = {}) {
   const t = tabs.get(activeId);
-  if (!t || !t.cwd) { toast('Open a project first'); return; }
-  preview.classList.remove('collapsed');
+  if (!t || !t.cwd) { toast(window.t('toast.openProject')); return; }
+  if (!external) preview.classList.remove('collapsed');
 
   // The webview's inspector preload path comes from main (sandboxed preload
   // can't build it). Set it once before the first navigation.
@@ -379,11 +423,14 @@ async function openPreview() {
 
   previewMode = 'starting';
   previewLog = '';
+  previewUrl = '';
+  previewCwd = t.cwd;
   previewTitle.textContent = `👁 ${t.name}`;
-  previewCrumb.textContent = 'Starting…';
+  previewCrumb.textContent = window.t('preview.starting');
   previewHtml.textContent = '';
   previewView.src = 'about:blank';
-  setEmptyMessage(`<p class="spin">◐</p><p>Starting <strong>${t.name}</strong>…</p><p class="hint">See the log below.</p>`);
+  setEmptyMessage(`<p class="spin">◐</p><p>${window.t('preview.startingName', { name: t.name })}</p>`
+    + `<p class="hint">${window.t('preview.seeLog')}</p>`);
   await window.api.startPreview(t.cwd);
 }
 
@@ -400,22 +447,127 @@ window.api.onPreviewEvent((d) => {
     }
   } else if (d.type === 'ready') {
     previewMode = 'live';
+    previewUrl = d.url;
     showWebview();
     previewHtml.textContent = '';
     previewCrumb.textContent = d.kind === 'static'
-      ? 'Hover over the preview to see its code…'
+      ? t('preview.hover')
       : `🟢 ${d.label} · ${d.url}`;
-    previewView.src = d.url;
+    // Hand it to the browser instead of the webview when that's what was asked
+    // for — loading it here too would just hit the dev server twice.
+    if (openInBrowserOnReady) {
+      openInBrowserOnReady = false;
+      window.api.openExternal(d.url);
+      toast(window.t('toast.siteOpened', { url: d.url }));
+    } else {
+      previewView.src = d.url;
+    }
   } else if (d.type === 'error') {
     previewMode = 'idle';
+    openInBrowserOnReady = false;
     previewCrumb.textContent = '⚠ ' + d.message;
-    setEmptyMessage(`<p>⚠</p><p>${d.message}</p><p class="hint">Details in the log below.</p>`);
+    setEmptyMessage(`<p>⚠</p><p>${d.message}</p><p class="hint">${t('preview.details')}</p>`);
     if (previewLog) previewHtml.textContent = previewLog;
     toast(d.message);
   }
 });
 
-document.getElementById('preview-btn').addEventListener('click', openPreview);
+document.getElementById('preview-btn').addEventListener('click', () => openPreview());
+
+// ---- Run menu ----
+// Two things you may want from the project in front of you, and they are not
+// the same thing: run it as the app it actually is (its own window, Electron
+// and Tauri included — the preview dock can't host those), or just look at the
+// site it serves, in a real browser.
+const runBtn = document.getElementById('run-btn');
+const runMenu = document.getElementById('run-menu');
+const runningApps = new Set();  // project paths currently running
+
+function activeProject() {
+  const t = tabs.get(activeId);
+  if (!t || !t.cwd) { toast(window.t('toast.openProject')); return null; }
+  return t;
+}
+
+// The first menu item doubles as the stop switch once the app is up.
+function syncRunUI() {
+  const t = tabs.get(activeId);
+  const on = !!(t && t.cwd && runningApps.has(t.cwd));
+  runBtn.classList.toggle('running', on);
+  runMenu.querySelector('[data-run="app"] .mi-label').textContent =
+    window.t(on ? 'run.stopApp' : 'run.startApp');
+  runMenu.querySelector('[data-run="app"] .mi-hint').textContent =
+    window.t(on ? 'run.stopApp.hint' : 'run.startApp.hint');
+}
+
+function closeRunMenu() {
+  runMenu.classList.add('hidden');
+  runBtn.setAttribute('aria-expanded', 'false');
+}
+
+runBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const open = runMenu.classList.contains('hidden');
+  if (open) syncRunUI();
+  runMenu.classList.toggle('hidden', !open);
+  runBtn.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', closeRunMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeRunMenu(); });
+
+runMenu.addEventListener('click', (e) => {
+  const item = e.target.closest('.menu-item');
+  if (!item) return;
+  closeRunMenu();
+  if (item.dataset.run === 'app') toggleApp();
+  else openSiteInBrowser();
+});
+
+async function toggleApp() {
+  const t = activeProject();
+  if (!t) return;
+  if (runningApps.has(t.cwd)) {
+    await window.api.stopApp(t.cwd);
+    runningApps.delete(t.cwd);
+    syncRunUI();
+    toast(window.t('toast.appStopped', { name: t.name }));
+    return;
+  }
+  // Failures come back as an 'app' event below, so nothing to report here.
+  await window.api.runApp(t.cwd);
+}
+
+async function openSiteInBrowser() {
+  const t = activeProject();
+  if (!t) return;
+  // A preview already serving this project has the URL; anything else needs
+  // the runner started first (its logs still land in the dock).
+  if (previewMode === 'live' && previewUrl && previewCwd === t.cwd) {
+    window.api.openExternal(previewUrl);
+    toast(window.t('toast.siteOpened', { url: previewUrl }));
+    return;
+  }
+  openInBrowserOnReady = true;
+  toast(window.t('toast.siteStarting', { name: t.name }));
+  await openPreview({ external: true });
+}
+
+window.api.onAppEvent((d) => {
+  if (d.type === 'started') {
+    runningApps.add(d.path);
+    if (!d.already) toast(window.t('toast.appStarted', { label: d.label }));
+  } else if (d.type === 'exit') {
+    runningApps.delete(d.path);
+    if (d.code) toast(window.t('toast.appExited', { name: d.name, code: d.code }));
+  } else if (d.type === 'error') {
+    runningApps.delete(d.path);
+    if (d.code === 'site-only') toast(window.t('toast.runUseSite', { name: d.name }));
+    else if (d.code === 'nothing-to-run') toast(window.t('toast.runNothing', { name: d.name }));
+    else toast(d.message);
+  }
+  syncRunUI();
+});
+window.ui.onChange(syncRunUI);   // labels are baked into JS, so re-render them
 document.getElementById('preview-collapse').addEventListener('click', () => {
   preview.classList.toggle('collapsed');
   // Content width changed -> reposition embedded terminals after reflow.
@@ -428,8 +580,139 @@ document.getElementById('preview-reload').addEventListener('click', () => {
 
 // Populate the rail with all projects, most-recently-used first.
 window.api.listProjects().then((projects) => {
-  for (const p of projects) buildTab({ name: p.name, cwd: p.path, startCmd: 'claude --permission-mode auto' });
+  for (const p of projects) buildTab({ name: p.name, cwd: p.path, model: p.model });
 });
+
+// ---- Model picker (bottom system bar) ----
+// The model belongs to the project, not to the app: the bar always shows the
+// active tab's model, and switching tabs switches what it shows. That keeps an
+// expensive model on one project from eating every other project's usage.
+// The pick becomes a --model flag when that project's terminal starts, so a
+// session already running keeps its own until you /model inside it.
+const modelBtn = document.getElementById('model-btn');
+const modelMenu = document.getElementById('model-menu');
+const bootModel = (window.api.boot && window.api.boot.model) || {};
+let modelList = bootModel.list || [];
+let globalModel = bootModel.global || 'default';
+
+// Unknown ids (someone pinned a full model name by hand) show as-is rather
+// than falling back to something that isn't what's actually configured.
+function modelEntry(id) {
+  return modelList.find((m) => m.id === id) || { id, label: id, hint: null };
+}
+
+// The model of the tab in focus — that's what the picker acts on.
+function activeModel() {
+  const t = tabs.get(activeId);
+  return (t && t.model) || 'default';
+}
+
+// 'default' has no label of its own worth showing in a 12px bar; show what it
+// actually resolves to, marked as inherited.
+function barLabel(id) {
+  if (id !== 'default') return modelEntry(id).label;
+  return globalModel === 'default' ? t('bar.model.auto') : modelEntry(globalModel).label;
+}
+
+function renderModelBtn() {
+  const tab = tabs.get(activeId);
+  const id = activeModel();
+  // A terminal keeps the model it launched with. Say so in the bar rather than
+  // only in a toast: while a terminal is open it covers the toast area (native
+  // X window on top of the page), so that message can go unseen.
+  const pending = !!(tab && tab.materialized && tab.runningModel !== tab.model);
+  modelBtn.textContent = barLabel(id) + (pending ? ' •' : '');
+  modelBtn.classList.toggle('inherited', id === 'default' && !pending);
+  modelBtn.classList.toggle('pending', pending);
+  // Only project tabs auto-start Claude; an ad-hoc shell has nothing to flag.
+  modelBtn.disabled = !tab || !tab.cwd;
+  modelBtn.title = !tab || !tab.cwd
+    ? t('bar.model.none')
+    : (pending
+      ? t('bar.model.pending', { model: barLabel(tab.runningModel) })
+      : t('bar.model.title', { project: tab.name }));
+}
+
+function renderModelMenu() {
+  const id = activeModel();
+  modelMenu.innerHTML = '';
+  for (const m of modelList) {
+    const item = document.createElement('button');
+    item.className = 'menu-item' + (m.id === id ? ' current' : '');
+    item.setAttribute('role', 'menuitem');
+    item.dataset.model = m.id;
+    const label = document.createElement('span');
+    label.className = 'mi-label';
+    label.textContent = (m.id === id ? '✓ ' : '') + m.label;
+    const hint = document.createElement('span');
+    hint.className = 'mi-hint';
+    // The "Default" row spells out what following Claude Code means today.
+    hint.textContent = m.id === 'default'
+      ? t('model.hint.default', { model: barLabel('default') })
+      : (m.hint ? t(m.hint) : m.id);
+    item.append(label, hint);
+    modelMenu.appendChild(item);
+  }
+}
+
+function closeModelMenu() {
+  modelMenu.classList.add('hidden');
+  modelBtn.setAttribute('aria-expanded', 'false');
+}
+
+modelBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const open = modelMenu.classList.contains('hidden');
+  if (open) renderModelMenu();
+  modelMenu.classList.toggle('hidden', !open);
+  modelBtn.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', closeModelMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModelMenu(); });
+
+modelMenu.addEventListener('click', async (e) => {
+  const item = e.target.closest('.menu-item');
+  if (!item) return;
+  e.stopPropagation();
+  closeModelMenu();
+  const tab = tabs.get(activeId);
+  if (!tab || !tab.cwd) return;
+  const id = item.dataset.model;
+  if (id === tab.model) return;
+
+  const res = await window.api.setModel(tab.cwd, id);
+  if (!res || !res.ok) {
+    toast(window.t('toast.modelFailed', { error: (res && res.error) || '' }));
+    return;
+  }
+  tab.model = res.model;
+  renderModelBtn();
+
+  const label = barLabel(tab.model);
+  // A live terminal was launched with the old flag and can't be re-flagged.
+  toast(tab.materialized
+    ? window.t('toast.modelLater', { project: tab.name, model: label })
+    : window.t('toast.modelSet', { project: tab.name, model: label }));
+});
+
+// What "Default" resolves to can change under us (an editor, claude config).
+window.api.onGlobalModelChanged((id) => {
+  globalModel = id;
+  renderModelBtn();
+  if (!modelMenu.classList.contains('hidden')) renderModelMenu();
+});
+
+renderModelBtn();
+
+// The boot payload is synchronous and can miss if main wasn't listening yet;
+// re-read over IPC so the bar is right either way.
+if (!modelList.length) {
+  Promise.all([window.api.listModels(), window.api.getGlobalModel()]).then(([list, id]) => {
+    modelList = list || [];
+    globalModel = id || globalModel;
+    renderModelBtn();
+  });
+}
 
 // ---- Bottom system bar ----
 function fmtTokens(n) {
@@ -461,7 +744,7 @@ async function refreshUsage() {
   setStat('m-total', `${fmtTokens(u.total.tokens)} · ${fmtCost(u.total.cost)}`);
   setStat('m-msgs', String(u.today.msgs));
   document.getElementById('m-total').title =
-    `${u.total.tokens.toLocaleString()} tokens over ${u.total.days} days · estimated cost`;
+    t('bar.totalTitle', { tokens: u.total.tokens.toLocaleString(), days: u.total.days });
 }
 
 async function refreshSystem() {
@@ -499,10 +782,32 @@ function tickClock() {
   nextMonday.setDate(nextMonday.getDate() + (daysToMon - 1));
 
   document.querySelector('#m-daily .m-reset').textContent =
-    `(reset ${fmtCountdown(nextMidnight - d)})`;
+    t('bar.reset', { time: fmtCountdown(nextMidnight - d) });
   document.querySelector('#m-weekly .m-reset').textContent =
-    `(reset ${fmtCountdown(nextMonday - d)})`;
+    t('bar.reset', { time: fmtCountdown(nextMonday - d) });
 }
+
+// Strings and colours baked into JS (button labels, live xterm palettes) don't
+// come along with the declarative data-i18n sweep — re-apply them by hand when
+// the desktop's theme or language changes under us.
+window.ui.onChange((kind, payload) => {
+  if (kind === 'language') {
+    updateGridBtn();
+    renderModelBtn();
+    if (!modelMenu.classList.contains('hidden')) renderModelMenu();
+    for (const t of tabs.values()) {
+      t.tabEl.querySelector('.close').title = window.t('tab.close');
+      if (t.panelEl) {
+        const pc = t.panelEl.querySelector('.panel-close');
+        if (pc) pc.title = window.t('panel.close');
+      }
+    }
+  } else if (kind === 'theme' && payload.terminal) {
+    for (const t of tabs.values()) {
+      if (t.term) t.term.options.theme = payload.terminal;
+    }
+  }
+});
 
 refreshUsage();
 refreshSystem();

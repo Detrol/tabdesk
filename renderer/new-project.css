@@ -1,0 +1,136 @@
+/* "New tab" project picker — its own window, so it only borrows the theme
+   tokens from styles.css and lays itself out from scratch. */
+
+.picker-body {
+  display: flex;
+  padding: 18px 20px;
+}
+
+#picker {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  min-height: 0;
+}
+
+#picker-head h1 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: .5px;
+  color: var(--accent-soft);
+  text-shadow: var(--glow-text);
+}
+#picker-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.pk-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+/* Only the project list absorbs the leftover height. */
+.pk-section:first-of-type { flex: 1; }
+
+.pk-section h2 {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--faint);
+}
+
+.pk-row { display: flex; gap: 8px; }
+.pk-row input { flex: 1; }
+
+#picker input {
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: none;
+}
+#picker input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--glow-accent);
+}
+
+#pk-list {
+  flex: 1;
+  min-height: 90px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.pk-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pk-item:hover,
+.pk-item:focus-visible {
+  background: var(--tint-strong);
+  border-color: var(--line);
+  outline: none;
+}
+.pk-item .pk-name { flex: 1; }
+.pk-item .pk-model {
+  font-size: 10px;
+  letter-spacing: .4px;
+  color: var(--faint);
+}
+
+.pk-hint { margin: 0; font-size: 11px; color: var(--faint); }
+.pk-error { margin: 0; font-size: 12px; color: var(--danger); }
+.hidden { display: none !important; }
+
+#picker button {
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+#picker button:hover { background: var(--tint-strong); border-color: var(--accent); }
+
+#picker .pk-primary {
+  color: var(--bg);
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  font-weight: 600;
+}
+#picker .pk-primary:hover { box-shadow: var(--glow-accent-2); }
+
+#picker-foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.pk-spacer { flex: 1; }

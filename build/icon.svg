@@ -1,37 +1,73 @@
 <svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- TabDesk. The app in one glance: the tab rail down the left, a terminal
+       prompt filling the rest. Same palette as the neon theme (#34e2ff cyan,
+       #2b8cff blue, near-black navy ground). Built to survive 32px: two shapes,
+       high contrast, no nested outlines. -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0a1024"/>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.75" y2="1">
+      <stop offset="0" stop-color="#16255c"/>
+      <stop offset="0.45" stop-color="#0a1130"/>
       <stop offset="1" stop-color="#03060f"/>
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#34e2ff"/>
+    <radialGradient id="sheen" cx="0.24" cy="0.14" r="0.72">
+      <stop offset="0" stop-color="#34e2ff" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#2b8cff" stop-opacity="0.07"/>
+      <stop offset="1" stop-color="#2b8cff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#8fe9ff" stop-opacity="0.75"/>
+      <stop offset="0.45" stop-color="#2b8cff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#2b8cff" stop-opacity="0.05"/>
+    </linearGradient>
+    <linearGradient id="rail" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0e1a44"/>
+      <stop offset="1" stop-color="#070d24"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7ff0ff"/>
+      <stop offset="0.5" stop-color="#34e2ff"/>
       <stop offset="1" stop-color="#2b8cff"/>
     </linearGradient>
-    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="6" result="b"/>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="10" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softglow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
+    <!-- the tile shape itself, so the rail can run edge to edge -->
+    <clipPath id="tileClip">
+      <rect x="24" y="24" width="464" height="464" rx="112"/>
+    </clipPath>
   </defs>
 
-  <!-- rounded app tile -->
-  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bg)"/>
-  <rect x="16.5" y="16.5" width="479" height="479" rx="107.5" fill="none" stroke="#2b8cff" stroke-opacity="0.25" stroke-width="1"/>
+  <!-- app tile -->
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#tile)"/>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#sheen)"/>
+  <!-- tab rail: the app's signature. Runs the full height of the tile, like the
+       real one does — a band floating in the middle would read as an unfinished
+       window instead. -->
+  <g clip-path="url(#tileClip)">
+    <rect x="24" y="24" width="144" height="464" fill="url(#rail)"/>
+    <rect x="165" y="24" width="3" height="464" fill="#34e2ff" fill-opacity="0.4"/>
+  </g>
 
-  <!-- terminal window -->
-  <rect x="96" y="120" width="320" height="272" rx="26" fill="#060b1c" stroke="url(#accent)" stroke-opacity="0.7" stroke-width="3"/>
+  <rect x="25.5" y="25.5" width="461" height="461" rx="110.5"
+        fill="none" stroke="url(#rim)" stroke-width="3"/>
 
-  <!-- left tab rail (the app's signature) -->
-  <rect x="96" y="120" width="72" height="272" rx="26" fill="#0a1230"/>
-  <rect x="120" y="120" width="48" height="272" fill="#0a1230"/>
-  <rect x="116" y="156" width="36" height="20" rx="6" fill="url(#accent)"/>
-  <rect x="116" y="192" width="36" height="20" rx="6" fill="#2b8cff" fill-opacity="0.4"/>
-  <rect x="116" y="228" width="36" height="20" rx="6" fill="#2b8cff" fill-opacity="0.4"/>
-  <rect x="116" y="264" width="36" height="20" rx="6" fill="#4ffbdf" fill-opacity="0.6"/>
+  <!-- tabs: one live (cyan), one finished (teal), two idle -->
+  <g filter="url(#softglow)">
+    <rect x="64" y="164" width="76" height="26" rx="13" fill="url(#beam)"/>
+  </g>
+  <rect x="64" y="212" width="76" height="26" rx="13" fill="#2b8cff" fill-opacity="0.32"/>
+  <rect x="64" y="260" width="76" height="26" rx="13" fill="#2b8cff" fill-opacity="0.32"/>
+  <rect x="64" y="308" width="76" height="26" rx="13" fill="#4ffbdf" fill-opacity="0.55"/>
 
-  <!-- prompt in the main area -->
+  <!-- prompt -->
   <g filter="url(#glow)">
-    <path d="M 208 216 L 244 250 L 208 284" fill="none" stroke="url(#accent)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-    <line x1="264" y1="288" x2="336" y2="288" stroke="#eaf4ff" stroke-width="18" stroke-linecap="round"/>
+    <path d="M 226 194 L 300 256 L 226 318" fill="none" stroke="url(#beam)"
+          stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="326" y="300" width="112" height="24" rx="12" fill="#eaf4ff"/>
   </g>
 </svg>

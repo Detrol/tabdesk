@@ -1,0 +1,13 @@
+# Poll GitHub for a new TabDesk release every ~10 min. cdn-pull.sh is idempotent
+# (state file), so a tick with no new release is a cheap no-op. cdn-refresh.sh
+# triggers the service directly for an immediate publish right after a release.
+[Unit]
+Description=Periodically publish the latest TabDesk release to the CDN
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,17 +1,48 @@
+/* Theme tokens. These values are the built-in fallback (the "Neon" preset);
+   at runtime main.js resolves the active theme — by default derived from the
+   desktop's GTK colours — and ui.js stamps the real values onto :root. */
 :root {
   --bg:        #050a18;
   --bg-2:      #060d20;
   --rail:      #04081a;
+  --rail-2:    #03060f;
+  --surface:   rgba(3,7,18,.85);
   --line:      #10306a;
   --line-soft: #0c2350;
-  --white:     #eaf4ff;
+  --text:      #eaf4ff;
   --dim:       #7fa8d8;
-  --blue:      #2b8cff;
-  --cyan:      #34e2ff;
-  --green:     #3ef07a;
-  --xenon:     #a9e6ff;
-  --glow-blue: 0 0 6px rgba(43,140,255,.55), 0 0 14px rgba(43,140,255,.35);
-  --glow-cyan: 0 0 6px rgba(52,226,255,.7), 0 0 16px rgba(52,226,255,.45);
+  --faint:     #5f83b8;
+  --accent:      #2b8cff;
+  --accent-2:    #34e2ff;
+  --accent-soft: #a9e6ff;
+  --ok:      #3ef07a;
+  --warn:    #ff8a3c;
+  --danger:  #ff5c8a;
+
+  --tint:          rgba(43,140,255,.08);
+  --tint-strong:   rgba(43,140,255,.2);
+  --tint-2:        rgba(52,226,255,.08);
+  --tint-2-strong: rgba(52,226,255,.22);
+  --track:         rgba(43,140,255,.12);
+  --overlay:       rgba(4,8,26,.96);
+  --halo-1:        rgba(43,140,255,.10);
+  --halo-2:        rgba(52,226,255,.08);
+
+  --glow-accent:   0 0 6px rgba(43,140,255,.55), 0 0 14px rgba(43,140,255,.35);
+  --glow-accent-2: 0 0 6px rgba(52,226,255,.7), 0 0 16px rgba(52,226,255,.45);
+  --glow-ok:       0 0 8px rgba(62,240,122,.9), 0 0 16px rgba(62,240,122,.5);
+  --glow-danger:   0 0 8px rgba(255,92,138,.8);
+  --glow-text:     0 0 6px rgba(52,226,255,.4);
+
+  --shadow-rail: inset -1px 0 0 rgba(52,226,255,.15), 6px 0 24px -12px rgba(43,140,255,.6);
+  --shadow-dock: inset 1px 0 0 rgba(52,226,255,.15), -6px 0 24px -12px rgba(52,226,255,.6);
+  --shadow-bar:  0 -6px 22px -14px rgba(43,140,255,.7);
+  --shadow-panel:       inset 0 0 0 1px rgba(52,226,255,.08), 0 0 22px -6px rgba(43,140,255,.55);
+  --shadow-panel-focus: inset 0 0 0 1px rgba(52,226,255,.3), 0 0 28px -4px rgba(52,226,255,.7);
+
+  --meter-fill: linear-gradient(90deg, #2b8cff, #34e2ff);
+  --meter-hot:  linear-gradient(90deg, #ff8a3c, #ff5c8a);
+  --meter-glow: 0 0 8px rgba(52,226,255,.7);
 }
 
 * { box-sizing: border-box; }
@@ -21,14 +52,15 @@ html, body {
   height: 100%;
   overflow: hidden;
   font-family: -apple-system, "Segoe UI", Ubuntu, Roboto, sans-serif;
-  color: var(--white);
+  color: var(--text);
   background:
-    radial-gradient(1200px 800px at 80% -10%, rgba(43,140,255,.10), transparent 60%),
-    radial-gradient(900px 700px at 0% 110%, rgba(52,226,255,.08), transparent 60%),
+    radial-gradient(1200px 800px at 80% -10%, var(--halo-1), transparent 60%),
+    radial-gradient(900px 700px at 0% 110%, var(--halo-2), transparent 60%),
     var(--bg);
 }
 
 #root {
+  position: relative;   /* anchor for the model menu, which escapes the bar */
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -49,9 +81,9 @@ html, body {
   max-width: 340px;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, var(--rail), #03060f);
+  background: linear-gradient(180deg, var(--rail), var(--rail-2));
   border-right: 1px solid var(--line);
-  box-shadow: inset -1px 0 0 rgba(52,226,255,.15), 6px 0 24px -12px rgba(43,140,255,.6);
+  box-shadow: var(--shadow-rail);
 }
 
 #rail-header {
@@ -67,24 +99,24 @@ html, body {
   font-size: 13px;
   letter-spacing: 2.5px;
   text-transform: uppercase;
-  color: var(--xenon);
-  text-shadow: var(--glow-cyan);
+  color: var(--accent-soft);
+  text-shadow: var(--glow-accent-2);
 }
 
 #add-terminal {
   width: 28px;
   height: 28px;
-  border: 1px solid var(--cyan);
+  border: 1px solid var(--accent-2);
   border-radius: 7px;
-  background: rgba(52,226,255,.08);
-  color: var(--cyan);
+  background: var(--tint-2);
+  color: var(--accent-2);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
-  box-shadow: var(--glow-cyan);
+  box-shadow: var(--glow-accent-2);
   transition: background .15s, transform .1s;
 }
-#add-terminal:hover { background: rgba(52,226,255,.22); }
+#add-terminal:hover { background: var(--tint-2-strong); }
 #add-terminal:active { transform: scale(.92); }
 
 #tab-list {
@@ -109,54 +141,54 @@ html, body {
   user-select: none;
   transition: background .15s, border-color .15s, color .15s;
 }
-.tab:hover { background: rgba(43,140,255,.08); color: var(--white); }
+.tab:hover { background: var(--tint); color: var(--text); }
 .tab.active {
-  background: linear-gradient(90deg, rgba(43,140,255,.18), rgba(52,226,255,.06));
-  border-color: var(--blue);
-  color: var(--white);
-  box-shadow: var(--glow-blue);
+  background: linear-gradient(90deg, var(--tint-strong), var(--tint-2));
+  border-color: var(--accent);
+  color: var(--text);
+  box-shadow: var(--glow-accent);
 }
 .tab.focused {
-  border-color: var(--cyan);
-  box-shadow: var(--glow-cyan);
+  border-color: var(--accent-2);
+  box-shadow: var(--glow-accent-2);
 }
 
 .tab .dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--cyan);
-  box-shadow: var(--glow-cyan);
+  background: var(--accent-2);
+  box-shadow: var(--glow-accent-2);
   flex: 0 0 auto;
 }
 /* Command running in a background tab: blue, gently pulsing. */
 .tab.busy .dot {
-  background: var(--blue);
-  box-shadow: var(--glow-blue);
+  background: var(--accent);
+  box-shadow: var(--glow-accent);
   animation: dot-pulse 1s ease-in-out infinite;
 }
 /* Command finished in a tab you haven't looked at yet: solid green. */
 .tab.done .dot {
-  background: var(--green);
-  box-shadow: 0 0 8px rgba(62,240,122,.9), 0 0 16px rgba(62,240,122,.5);
+  background: var(--ok);
+  box-shadow: var(--glow-ok);
   animation: none;
 }
 @keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 
 /* A dead process wins over every other state. */
-.tab.dead .dot { background: #ff5c8a; box-shadow: 0 0 8px rgba(255,92,138,.8); animation: none; }
+.tab.dead .dot { background: var(--danger); box-shadow: var(--glow-danger); animation: none; }
 
 .tab .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .tab .close {
   border: none;
   background: transparent;
-  color: #4f74a8;
+  color: var(--faint);
   cursor: pointer;
   font-size: 15px;
   padding: 0 2px;
 }
-.tab .close:hover { color: #ff5c8a; text-shadow: 0 0 8px rgba(255,92,138,.7); }
+.tab .close:hover { color: var(--danger); text-shadow: var(--glow-danger); }
 
 #rail-footer {
   padding: 10px;
@@ -165,21 +197,71 @@ html, body {
 #rail-footer button {
   width: 100%;
   padding: 9px;
-  border: 1px solid var(--blue);
+  border: 1px solid var(--accent);
   border-radius: 8px;
-  background: rgba(43,140,255,.06);
-  color: var(--xenon);
+  background: var(--tint);
+  color: var(--accent-soft);
   cursor: pointer;
   font-size: 12px;
   letter-spacing: .5px;
-  box-shadow: var(--glow-blue);
+  box-shadow: var(--glow-accent);
   transition: background .15s, transform .1s;
 }
 #rail-footer button + button { margin-top: 7px; }
-#rail-footer button:hover { background: rgba(43,140,255,.2); }
+#rail-footer button:hover { background: var(--tint-strong); }
 #rail-footer button:active { transform: scale(.97); }
-#shot-btn { border-color: var(--cyan); color: var(--cyan); box-shadow: var(--glow-cyan); }
-#shot-btn:hover { background: rgba(52,226,255,.18); }
+#shot-btn { border-color: var(--accent-2); color: var(--accent-2); box-shadow: var(--glow-accent-2); }
+#shot-btn:hover { background: var(--tint-2-strong); }
+
+/* ---- Run menu ---- */
+/* Stays inside the rail: the embedded terminals are native X windows stacked
+   above the page, so anything overflowing into the panel area gets clipped by
+   them. Labels wrap instead. */
+#run-wrap { position: relative; }
+#rail-footer #run-wrap { margin-top: 7px; }
+#rail-footer #run-wrap + button { margin-top: 7px; }
+#run-btn.running { border-color: var(--ok); color: var(--ok); box-shadow: var(--glow-ok); }
+
+/* Shared popup shell — used by the run menu and the model menu. */
+.menu {
+  padding: 5px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--overlay);
+  box-shadow: var(--glow-accent);
+}
+.menu.hidden { display: none; }
+
+#run-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: 100%;
+  z-index: 40;
+}
+.menu .menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.menu .menu-item + .menu-item { margin-top: 2px; }
+.menu .menu-item:hover { background: var(--tint-strong); }
+.menu .mi-label { display: block; font-size: 12px; letter-spacing: .5px; }
+.menu .mi-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 10px;
+  letter-spacing: .3px;
+  line-height: 1.35;
+}
 
 /* ---- Middle content: terminals, flexes to fill the gap between the rail
    and the fixed preview dock ---- */
@@ -189,7 +271,7 @@ html, body {
   position: relative;
   overflow: hidden;
   background:
-    linear-gradient(180deg, rgba(43,140,255,.05), transparent 30%),
+    linear-gradient(180deg, var(--tint), transparent 30%),
     var(--bg-2);
 }
 
@@ -204,7 +286,7 @@ html, body {
   color: var(--dim);
   text-align: center;
 }
-#empty-state strong { color: var(--cyan); text-shadow: var(--glow-cyan); }
+#empty-state strong { color: var(--accent-2); text-shadow: var(--glow-accent-2); }
 #empty-state.hidden { display: none; }
 
 #toast {
@@ -212,13 +294,13 @@ html, body {
   bottom: 16px;
   left: 50%;
   transform: translateX(-50%) translateY(12px);
-  background: rgba(4,8,26,.96);
-  border: 1px solid var(--cyan);
-  color: var(--white);
+  background: var(--overlay);
+  border: 1px solid var(--accent-2);
+  color: var(--text);
   padding: 9px 15px;
   border-radius: 9px;
   font-size: 12px;
-  box-shadow: var(--glow-cyan);
+  box-shadow: var(--glow-accent-2);
   opacity: 0;
   pointer-events: none;
   transition: opacity .25s ease, transform .25s ease;
@@ -250,7 +332,7 @@ html, body {
   height: 24px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: rgba(4,8,26,.82);
+  background: var(--overlay);
   color: var(--dim);
   font-size: 16px;
   line-height: 1;
@@ -261,9 +343,9 @@ html, body {
 }
 .panel:hover .panel-close { opacity: 1; }
 .panel-close:hover {
-  color: #ff5c8a;
-  border-color: #ff5c8a;
-  box-shadow: 0 0 10px rgba(255,92,138,.6);
+  color: var(--danger);
+  border-color: var(--danger);
+  box-shadow: var(--glow-danger);
 }
 
 .panel .term {
@@ -272,20 +354,18 @@ html, body {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 8px;
-  background: rgba(3,7,18,.85);
-  box-shadow:
-    inset 0 0 0 1px rgba(52,226,255,.08),
-    0 0 22px -6px rgba(43,140,255,.55);
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
   overflow: hidden;
 }
 
-/* Placeholder shown under the embedded native xfce4-terminal until it maps. */
-.panel .term.xfce {
+/* Placeholder shown under the embedded native terminal until it maps. */
+.panel .term.embed {
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  background: #03060f;
+  background: var(--rail-2);
 }
 .term-loading {
   color: var(--dim);
@@ -298,10 +378,8 @@ html, body {
 
 /* Focused panel (screenshot / keyboard target) gets a brighter neon frame. */
 .panel.focused .term {
-  border-color: var(--cyan);
-  box-shadow:
-    inset 0 0 0 1px rgba(52,226,255,.3),
-    0 0 28px -4px rgba(52,226,255,.7);
+  border-color: var(--accent-2);
+  box-shadow: var(--shadow-panel-focus);
 }
 
 /* ---- Fixed preview dock: 20% of the app on the right ---- */
@@ -311,9 +389,9 @@ html, body {
   max-width: 560px;
   display: flex;
   flex-direction: column;
-  background: rgba(4,8,26,.97);
-  border-left: 1px solid var(--cyan);
-  box-shadow: inset 1px 0 0 rgba(52,226,255,.15), -6px 0 24px -12px rgba(52,226,255,.6);
+  background: var(--overlay);
+  border-left: 1px solid var(--accent-2);
+  box-shadow: var(--shadow-dock);
   overflow: hidden;
 }
 /* Collapsed: a thin strip that reclaims the space for terminals. */
@@ -331,7 +409,7 @@ html, body {
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px;
-  background: linear-gradient(180deg, rgba(52,226,255,.1), transparent);
+  background: linear-gradient(180deg, var(--tint-2), transparent);
   border-bottom: 1px solid var(--line);
   flex: 0 0 auto;
 }
@@ -339,8 +417,8 @@ html, body {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: .5px;
-  color: var(--xenon);
-  text-shadow: var(--glow-cyan);
+  color: var(--accent-soft);
+  text-shadow: var(--glow-accent-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -351,13 +429,13 @@ html, body {
   height: 24px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: rgba(43,140,255,.08);
+  background: var(--tint);
   color: var(--dim);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
 }
-.preview-actions button:hover { color: var(--white); border-color: var(--cyan); }
+.preview-actions button:hover { color: var(--text); border-color: var(--accent-2); }
 
 #preview-body {
   flex: 1 1 auto;
@@ -398,11 +476,11 @@ html, body {
 #preview-empty.hidden { display: none; }
 #preview-empty p { margin: 2px 0; font-size: 13px; }
 #preview-empty p:first-child { font-size: 30px; }
-#preview-empty strong { color: var(--cyan); text-shadow: var(--glow-cyan); }
-#preview-empty .hint { font-size: 11px; color: #5f83b8; }
+#preview-empty strong { color: var(--accent-2); text-shadow: var(--glow-accent-2); }
+#preview-empty .hint { font-size: 11px; color: var(--faint); }
 #preview-empty .spin {
-  color: var(--cyan);
-  text-shadow: var(--glow-cyan);
+  color: var(--accent-2);
+  text-shadow: var(--glow-accent-2);
   animation: spin 1s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -412,13 +490,13 @@ html, body {
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--line);
-  background: #03060f;
+  background: var(--rail-2);
   min-height: 0;
 }
 #preview-crumb {
   padding: 6px 12px;
   font-size: 11px;
-  color: var(--cyan);
+  color: var(--accent-2);
   border-bottom: 1px solid var(--line-soft);
   white-space: nowrap;
   overflow: hidden;
@@ -432,7 +510,7 @@ html, body {
   font-family: Menlo, "DejaVu Sans Mono", monospace;
   font-size: 11.5px;
   line-height: 1.5;
-  color: #a9e6ff;
+  color: var(--accent-soft);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -447,9 +525,9 @@ html, body {
   font-size: 12px;
   letter-spacing: .3px;
   color: var(--dim);
-  background: linear-gradient(180deg, #04081a, #02040d);
+  background: linear-gradient(180deg, var(--rail), var(--rail-2));
   border-top: 1px solid var(--line);
-  box-shadow: 0 -6px 22px -14px rgba(43,140,255,.7);
+  box-shadow: var(--shadow-bar);
   user-select: none;
   overflow: hidden;
   white-space: nowrap;
@@ -458,8 +536,8 @@ html, body {
 .sb-brand {
   font-weight: 700;
   letter-spacing: 2px;
-  color: var(--xenon);
-  text-shadow: var(--glow-cyan);
+  color: var(--accent-soft);
+  text-shadow: var(--glow-accent-2);
 }
 
 .sb-spacer { flex: 1 1 auto; }
@@ -470,7 +548,7 @@ html, body {
   gap: 7px;
 }
 .m-label {
-  color: #5f83b8;
+  color: var(--faint);
   text-transform: uppercase;
   font-size: 11px;
   letter-spacing: .8px;
@@ -479,8 +557,8 @@ html, body {
   width: 99px;
   height: 7px;
   border-radius: 4px;
-  background: rgba(43,140,255,.12);
-  box-shadow: inset 0 0 0 1px rgba(52,226,255,.15);
+  background: var(--track);
+  box-shadow: inset 0 0 0 1px var(--tint-2-strong);
   overflow: hidden;
 }
 .meter.mini .m-track { width: 54px; }
@@ -488,20 +566,51 @@ html, body {
   height: 100%;
   width: 0%;
   border-radius: 4px;
-  background: linear-gradient(90deg, var(--blue), var(--cyan));
-  box-shadow: 0 0 8px rgba(52,226,255,.7);
+  background: var(--meter-fill);
+  box-shadow: var(--meter-glow);
   transition: width .5s ease, background .3s;
 }
-.m-fill.hot { background: linear-gradient(90deg, #ff8a3c, #ff5c8a); box-shadow: 0 0 8px rgba(255,92,138,.7); }
-.m-val { color: var(--white); font-variant-numeric: tabular-nums; min-width: 30px; }
-.m-reset { color: #5f83b8; font-variant-numeric: tabular-nums; font-size: 10px; }
+.m-fill.hot { background: var(--meter-hot); box-shadow: var(--glow-danger); }
+.m-val { color: var(--text); font-variant-numeric: tabular-nums; min-width: 30px; }
+.m-reset { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 10px; }
 
 .stat { display: flex; align-items: center; gap: 6px; }
-.stat .m-val { color: var(--cyan); text-shadow: 0 0 6px rgba(52,226,255,.4); }
+.stat .m-val { color: var(--accent-2); text-shadow: var(--glow-text); }
+
+/* ---- Model picker ---- */
+#model-btn {
+  padding: 3px 9px;
+  border: 1px solid var(--accent-2);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accent-2);
+  font: inherit;
+  letter-spacing: .5px;
+  text-shadow: var(--glow-text);
+  cursor: pointer;
+}
+#model-btn:hover:not(:disabled) { background: var(--tint-2-strong); }
+#model-btn[aria-expanded="true"] { background: var(--tint-2-strong); }
+/* Inherited from Claude Code's own default rather than picked for the project. */
+#model-btn.inherited { border-color: var(--line); color: var(--dim); text-shadow: none; }
+/* Picked, but the open terminal still runs the old one (restart, or /model). */
+#model-btn.pending { border-color: var(--warn); color: var(--warn); text-shadow: none; }
+#model-btn:disabled { border-color: var(--line); color: var(--faint); text-shadow: none; cursor: default; }
+
+/* Bottom-left of the window: 44px bar + a little breathing room. Kept narrow
+   enough to stay inside the rail (min-width 150px) at any window size. */
+#model-menu {
+  position: absolute;
+  left: 10px;
+  bottom: 52px;
+  width: 136px;
+  z-index: 60;
+}
+#model-menu .menu-item.current .mi-label { color: var(--accent-2); }
 
 .sb-clock {
-  color: var(--white);
+  color: var(--text);
   font-variant-numeric: tabular-nums;
   letter-spacing: 1px;
-  text-shadow: var(--glow-blue);
+  text-shadow: var(--glow-accent);
 }

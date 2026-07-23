@@ -1,0 +1,20 @@
+# Pull the latest TabDesk GitHub release and publish it into the local reprepro
+# apt repo. Triggered by tabdesk-cdn-pull.timer, or on demand:
+#   systemctl start tabdesk-cdn-pull.service
+#
+# Install (on cdn.thern.io):
+#   cp deploy/host/cdn-pull.sh /usr/local/bin/tabdesk-cdn-pull
+#   cp deploy/host/systemd/tabdesk-cdn-pull.* /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now tabdesk-cdn-pull.timer
+[Unit]
+Description=Publish latest TabDesk release to the CDN apt repo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# CDN_WWW is pinned here so a future redeploy of the script can't point
+# publishing somewhere else; the token file is read by the script itself.
+Environment=CDN_WWW=/srv/cdn
+Environment=TABDESK_DEB_BASE=/srv/cdn/tabdesk
+ExecStart=/usr/local/bin/tabdesk-cdn-pull

@@ -5,17 +5,82 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "dist": "electron-builder --linux deb",
     "postinstall": "electron-rebuild -f -w node-pty"
   },
-  "author": "",
+  "author": {
+    "name": "Jonaz Thern",
+    "email": "jonaz.thern@gmail.com"
+  },
   "license": "MIT",
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
-    "electron": "^31.0.0"
+    "electron": "^31.0.0",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "node-pty": "^1.0.0",
     "xterm": "^5.3.0",
     "xterm-addon-fit": "^0.8.0"
-  }
+  },
+  "build": {
+    "appId": "io.thern.tabdesk",
+    "productName": "TabDesk",
+    "files": [
+      "main.js",
+      "preload.js",
+      "picker-preload.js",
+      "preview-preload.js",
+      "preview-runner.js",
+      "term-embed.js",
+      "theme.js",
+      "i18n.js",
+      "settings.js",
+      "model.js",
+      "app-runner.js",
+      "usage-worker.js",
+      "renderer/**",
+      "themes/**",
+      "i18n/**",
+      "build/icon.png",
+      "node_modules/**"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "linux": {
+      "target": [
+        "deb"
+      ],
+      "category": "Development;TerminalEmulator",
+      "icon": "build/icon.png",
+      "synopsis": "Terminal workspace for Claude Code projects",
+      "desktop": {
+        "entry": {
+          "Name": "TabDesk",
+          "Comment": "Terminal workspace for Claude Code projects",
+          "Keywords": "terminal;claude;projects;development;",
+          "StartupWMClass": "TabDesk"
+        }
+      },
+      "syncDesktopName": true
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libsecret-1-0",
+        "xterm",
+        "xdotool",
+        "python3-gi"
+      ]
+    }
+  },
+  "homepage": "https://github.com/jonaz/tabdesk",
+  "desktopName": "tabdesk.desktop"
 }

@@ -15,22 +15,37 @@
     <aside id="rail">
       <div id="rail-header">
         <span class="brand">TabDesk</span>
-        <button id="add-terminal" title="New terminal">+</button>
+        <button id="add-terminal" data-i18n-title="rail.new">+</button>
       </div>
       <ul id="tab-list"></ul>
       <div id="rail-footer">
-        <button id="grid-btn" title="Number of panels in the window (1–6)">▦ Grid 1</button>
-        <button id="preview-btn" title="Interactive project preview">👁 Preview</button>
-        <button id="shot-btn" title="Screenshot of the active terminal">📷 Screenshot</button>
-        <button id="fullscreen-btn" title="Fullscreen (F11)">⛶ Fullscreen</button>
+        <button id="grid-btn" data-i18n-title="rail.grid.title">▦ Grid 1</button>
+        <!-- Run menu: start the project as a real app, or open its site in the
+             desktop browser. The menu is anchored to the button below it. -->
+        <div id="run-wrap">
+          <button id="run-btn" data-i18n="rail.run" data-i18n-title="rail.run.title" aria-haspopup="menu" aria-expanded="false">▶ Run ▾</button>
+          <div id="run-menu" class="menu hidden" role="menu">
+            <button class="menu-item" data-run="app" role="menuitem">
+              <span class="mi-label" data-i18n="run.startApp">▶ Start the app</span>
+              <span class="mi-hint" data-i18n="run.startApp.hint">Runs it in its own window</span>
+            </button>
+            <button class="menu-item" data-run="site" role="menuitem">
+              <span class="mi-label" data-i18n="run.openSite">🌐 Open the website</span>
+              <span class="mi-hint" data-i18n="run.openSite.hint">Opens it in your browser</span>
+            </button>
+          </div>
+        </div>
+        <button id="preview-btn" data-i18n="rail.preview" data-i18n-title="rail.preview.title">👁 Preview</button>
+        <button id="shot-btn" data-i18n="rail.screenshot" data-i18n-title="rail.screenshot.title">📷 Screenshot</button>
+        <button id="fullscreen-btn" data-i18n="rail.fullscreen" data-i18n-title="rail.fullscreen.title">⛶ Fullscreen</button>
       </div>
     </aside>
 
     <!-- Middle area: terminals. Flexes to fill space left by rail + preview. -->
     <main id="content">
       <div id="empty-state">
-        <p>Select a <strong>project</strong> on the left to open a terminal.</p>
-        <p>Use <strong>▦ Grid</strong> to show 1–6 at once.</p>
+        <p data-i18n-html="empty.select">Select a <strong>project</strong> on the left to open a terminal.</p>
+        <p data-i18n-html="empty.grid">Use <strong>▦ Grid</strong> to show 1–6 at once.</p>
       </div>
       <div id="panels"></div>
       <div id="toast"></div>
@@ -41,10 +56,10 @@
          source of whatever element you hover / click in the rendered page. -->
     <aside id="preview">
       <div id="preview-head">
-        <span id="preview-title">👁 Preview</span>
+        <span id="preview-title" data-i18n="preview.title">👁 Preview</span>
         <div class="preview-actions">
-          <button id="preview-reload" title="Reload / start preview">⟳</button>
-          <button id="preview-collapse" title="Collapse the panel">⟩</button>
+          <button id="preview-reload" data-i18n-title="preview.reload">⟳</button>
+          <button id="preview-collapse" data-i18n-title="preview.collapse">⟩</button>
         </div>
       </div>
       <div id="preview-body">
@@ -52,12 +67,12 @@
           <webview id="preview-view" src="about:blank"></webview>
           <div id="preview-empty">
             <p>👁</p>
-            <p>Select a project and press <strong>Preview</strong>.</p>
-            <p class="hint">HTML, Python, Rust, Node, Go … run live here.</p>
+            <p data-i18n-html="preview.empty">Select a project and press <strong>Preview</strong>.</p>
+            <p class="hint" data-i18n="preview.hint">HTML, Python, Rust, Node, Go … run live here.</p>
           </div>
         </div>
         <div id="preview-code">
-          <div id="preview-crumb">No preview active.</div>
+          <div id="preview-crumb" data-i18n="preview.none">No preview active.</div>
           <pre id="preview-html"></pre>
         </div>
       </div>
@@ -68,38 +83,53 @@
   <footer id="systembar">
     <span class="sb-brand">⚡ TABDESK</span>
 
+    <!-- Model of the project in focus. Sits by the brand, ahead of the usage
+         meters, because it's the one control here — the rest are readouts. The
+         menu itself lives outside the bar (see below), clear of its overflow
+         clip. -->
+    <div class="stat" id="m-model">
+      <span class="m-label" data-i18n="bar.model">Model</span>
+      <button id="model-btn" aria-haspopup="menu" aria-expanded="false">–</button>
+    </div>
+
     <div class="meter" id="m-daily">
-      <span class="m-label">Daily</span>
+      <span class="m-label" data-i18n="bar.daily">Daily</span>
       <div class="m-track"><div class="m-fill"></div></div>
       <span class="m-val">–</span>
       <span class="m-reset">(–)</span>
     </div>
     <div class="meter" id="m-weekly">
-      <span class="m-label">Weekly</span>
+      <span class="m-label" data-i18n="bar.weekly">Weekly</span>
       <div class="m-track"><div class="m-fill"></div></div>
       <span class="m-val">–</span>
       <span class="m-reset">(–)</span>
     </div>
 
-    <div class="stat" id="m-total"><span class="m-label">Total</span><span class="m-val">–</span></div>
-    <div class="stat" id="m-msgs"><span class="m-label">Msgs today</span><span class="m-val">–</span></div>
+    <div class="stat" id="m-total"><span class="m-label" data-i18n="bar.total">Total</span><span class="m-val">–</span></div>
+    <div class="stat" id="m-msgs"><span class="m-label" data-i18n="bar.msgs">Msgs today</span><span class="m-val">–</span></div>
 
     <div class="sb-spacer"></div>
 
     <div class="meter mini" id="m-cpu">
-      <span class="m-label">CPU</span>
+      <span class="m-label" data-i18n="bar.cpu">CPU</span>
       <div class="m-track"><div class="m-fill"></div></div>
       <span class="m-val">–</span>
     </div>
     <div class="meter mini" id="m-ram">
-      <span class="m-label">RAM</span>
+      <span class="m-label" data-i18n="bar.ram">RAM</span>
       <div class="m-track"><div class="m-fill"></div></div>
       <span class="m-val">–</span>
     </div>
     <span class="sb-clock" id="m-clock">--:--:--</span>
   </footer>
+
+  <!-- Model menu. Anchored to the window's bottom-left so it rises over the
+       rail, which is ordinary DOM: over the panels it would be hidden behind
+       the embedded terminals (native X windows stacked above the page). -->
+  <div id="model-menu" class="menu hidden" role="menu"></div>
   </div>
 
+  <script src="ui.js"></script>
   <script src="../node_modules/xterm/lib/xterm.js"></script>
   <script src="../node_modules/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
   <script src="renderer.js"></script>

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>TabDesk</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="new-project.css" />
+</head>
+<body class="picker-body">
+  <div id="picker">
+    <header id="picker-head">
+      <h1 data-i18n="picker.title">New tab</h1>
+      <p data-i18n="picker.lead">Pick the project this terminal belongs to.</p>
+    </header>
+
+    <!-- Existing projects under ~/claude-projects, most recently used first. -->
+    <section class="pk-section">
+      <h2 data-i18n="picker.existing">Existing project</h2>
+      <input id="pk-search" type="search" autocomplete="off" data-i18n-placeholder="picker.search" />
+      <ul id="pk-list"></ul>
+      <p id="pk-none" class="pk-hint hidden" data-i18n="picker.noneFound">No project matches.</p>
+    </section>
+
+    <!-- New project: a directory under ~/claude-projects. -->
+    <section class="pk-section">
+      <h2 data-i18n="picker.create">New project</h2>
+      <div class="pk-row">
+        <input id="pk-name" type="text" autocomplete="off" data-i18n-placeholder="picker.namePlaceholder" />
+        <button id="pk-create" class="pk-primary" data-i18n="picker.createBtn">Create</button>
+      </div>
+      <p id="pk-error" class="pk-error hidden"></p>
+      <p class="pk-hint" data-i18n="picker.createHint">Created in ~/claude-projects</p>
+    </section>
+
+    <footer id="picker-foot">
+      <button id="pk-browse" data-i18n="picker.browse">📁 Other folder…</button>
+      <button id="pk-shell" data-i18n="picker.shell">⌨ Plain terminal</button>
+      <span class="pk-spacer"></span>
+      <button id="pk-cancel" data-i18n="picker.cancel">Cancel</button>
+    </footer>
+  </div>
+
+  <script src="ui.js"></script>
+  <script src="new-project.js"></script>
+</body>
+</html>
