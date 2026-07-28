@@ -37,12 +37,12 @@ less td.sh
 sudo bash td.sh</pre>
 
   <h2>Eller steg för steg</h2>
-  <pre>B=https://cdn.thern.io/tabdesk
-K=/usr/share/keyrings/tabdesk.gpg
-L=/etc/apt/sources.list.d/tabdesk.list</pre>
+  <p class="muted">Kommandona är avsiktligt skrivna utan variabler. Raderna blir långa,
+     men kopiera hela raden – en halvt inklistrad variabelrad ger annars en tom
+     <code>[signed-by=]</code> och felet <code>Malformed entry 1 in list file</code>.</p>
 
   <p>1) Hämta signeringsnyckeln till en temporär fil:</p>
-  <pre>curl -fsSL $B/tabdesk-archive-keyring.gpg -o /tmp/td.gpg</pre>
+  <pre>curl -fsSL https://cdn.thern.io/tabdesk/tabdesk-archive-keyring.gpg -o /tmp/td.gpg</pre>
 
   <p>2) Kontrollera att det verkligen <em>är</em> nyckeln – innan den skrivs:</p>
   <pre>gpg --show-keys /tmp/td.gpg</pre>
@@ -51,13 +51,24 @@ L=/etc/apt/sources.list.d/tabdesk.list</pre>
      Står det något annat: sluta här, inget är skrivet än.</p>
 
   <p>3) Lägg nyckeln på plats:</p>
-  <pre>sudo install -m644 /tmp/td.gpg $K</pre>
+  <pre>sudo install -m644 /tmp/td.gpg /usr/share/keyrings/tabdesk.gpg</pre>
 
-  <p>4) Apt-källa:</p>
-  <pre>echo "deb [signed-by=$K] $B stable main" | sudo tee $L</pre>
+  <p>4) Apt-källa (en enda rad):</p>
+  <pre>echo "deb [signed-by=/usr/share/keyrings/tabdesk.gpg] https://cdn.thern.io/tabdesk stable main" | sudo tee /etc/apt/sources.list.d/tabdesk.list</pre>
 
   <p>5) Installera:</p>
   <pre>sudo apt update &amp;&amp; sudo apt install tabdesk</pre>
+
+  <h2>Om något gick fel</h2>
+  <p><code>Malformed entry 1 in list file … ([option] no value)</code><br>
+     Källfilen innehåller <code>[signed-by=]</code> utan värde – steg 4 klistrades in
+     ofullständigt. Kontrollera med <code>cat /etc/apt/sources.list.d/tabdesk.list</code>;
+     raden ska innehålla hela sökvägen till nyckeln. Enklast är att låta skriptet
+     skriva om filen:</p>
+  <pre>curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash</pre>
+  <p class="muted">Parse-fel om nyckelringen från apt: då är
+     <code>/usr/share/keyrings/tabdesk.gpg</code> inte en nyckel utan troligen en
+     HTML-sida – ta bort filen och kör samma rad som ovan.</p>
 
   <h2>Underhåll</h2>
   <pre>sudo apt update &amp;&amp; sudo apt upgrade tabdesk   # uppdatera

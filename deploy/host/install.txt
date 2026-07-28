@@ -14,13 +14,13 @@ Vill du granska skriptet först:
 
 Steg för steg
 -------------
-  B=https://cdn.thern.io/tabdesk
-  K=/usr/share/keyrings/tabdesk.gpg
-  L=/etc/apt/sources.list.d/tabdesk.list
+Kommandona nedan är avsiktligt skrivna utan variabler. Raderna blir långa,
+men kopiera hela raden – en halvt inklistrad variabelrad ger annars en tom
+[signed-by=] och felet "Malformed entry 1 in list file".
 
 1) Hämta signeringsnyckeln till en temporär fil:
 
-  curl -fsSL $B/tabdesk-archive-keyring.gpg -o /tmp/td.gpg
+  curl -fsSL https://cdn.thern.io/tabdesk/tabdesk-archive-keyring.gpg -o /tmp/td.gpg
 
 2) Kontrollera att det verkligen ÄR nyckeln – innan den skrivs:
 
@@ -33,11 +33,11 @@ Steg för steg
 
 3) Lägg nyckeln på plats:
 
-  sudo install -m644 /tmp/td.gpg $K
+  sudo install -m644 /tmp/td.gpg /usr/share/keyrings/tabdesk.gpg
 
-4) Apt-källa:
+4) Apt-källa (en enda rad):
 
-  echo "deb [signed-by=$K] $B stable main" | sudo tee $L
+  echo "deb [signed-by=/usr/share/keyrings/tabdesk.gpg] https://cdn.thern.io/tabdesk stable main" | sudo tee /etc/apt/sources.list.d/tabdesk.list
 
 5) Installera:
 
@@ -48,6 +48,23 @@ Avinstallera:  sudo apt remove tabdesk
 
 Direkt .deb:
 https://cdn.thern.io/tabdesk/pool/main/t/tabdesk/tabdesk_0.1.1_amd64.deb
+
+Om något gick fel
+-----------------
+"Malformed entry 1 in list file ... ([option] no value)"
+  Källfilen innehåller [signed-by=] utan värde – steg 4 klistrades in
+  ofullständigt. Kontrollera med:
+
+  cat /etc/apt/sources.list.d/tabdesk.list
+
+  Raden ska innehålla hela sökvägen till nyckeln. Enklast är att låta
+  skriptet skriva om filen:
+
+  curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash
+
+Parse-fel om nyckelringen från apt
+  Då är /usr/share/keyrings/tabdesk.gpg inte en nyckel, utan troligen en
+  HTML-sida. Se nästa stycke – ta bort filen och kör skriptet ovan.
 
 OBS om du fick de här instruktionerna via mejl
 ----------------------------------------------
