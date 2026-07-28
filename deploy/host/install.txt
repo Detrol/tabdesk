@@ -1,0 +1,63 @@
+TabDesk – installation (Debian / Kali / Ubuntu)
+================================================
+Aktuell version: 0.1.1
+
+Enklast – allt i ett (hämtar nyckeln, kontrollerar den, installerar):
+
+  curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash
+
+Vill du granska skriptet först:
+
+  curl -fsSL https://cdn.thern.io/tabdesk/install.sh -o td.sh
+  less td.sh
+  sudo bash td.sh
+
+Steg för steg
+-------------
+  B=https://cdn.thern.io/tabdesk
+  K=/usr/share/keyrings/tabdesk.gpg
+  L=/etc/apt/sources.list.d/tabdesk.list
+
+1) Hämta signeringsnyckeln till en temporär fil:
+
+  curl -fsSL $B/tabdesk-archive-keyring.gpg -o /tmp/td.gpg
+
+2) Kontrollera att det verkligen ÄR nyckeln – innan den skrivs:
+
+  gpg --show-keys /tmp/td.gpg
+
+   Ska visa fingeravtrycket
+   B40E D009 54B3 B564 21F5  8C99 B9D4 4CBC 6F2B D93E
+   och "TabDesk APT repository <info@thern.io>".
+   Står det något annat: sluta här, inget är skrivet än.
+
+3) Lägg nyckeln på plats:
+
+  sudo install -m644 /tmp/td.gpg $K
+
+4) Apt-källa:
+
+  echo "deb [signed-by=$K] $B stable main" | sudo tee $L
+
+5) Installera:
+
+  sudo apt update && sudo apt install tabdesk
+
+Uppdatera:     sudo apt update && sudo apt upgrade tabdesk
+Avinstallera:  sudo apt remove tabdesk
+
+Direkt .deb:
+https://cdn.thern.io/tabdesk/pool/main/t/tabdesk/tabdesk_0.1.1_amd64.deb
+
+OBS om du fick de här instruktionerna via mejl
+----------------------------------------------
+Skicka INTE nyckeln direkt in i nyckelringen med en pipe. Mejlklienter skriver
+om länkar (Gmail gör om URL:en till www.google.com/url?q=...). En sådan länk
+svarar 200 med en HTML-sida, curl accepterar den, och HTML:en hamnar i
+nyckelringen. Enda symtomet blir ett parse-fel från apt som inte pekar på
+orsaken. Kontrollera nyckeln först, skriv den sedan.
+
+Ser en länk ovan ut att gå till www.google.com i stället för cdn.thern.io –
+skriv adressen för hand.
+
+Repot är olistat – dela inte länken vidare.

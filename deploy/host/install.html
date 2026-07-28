@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>TabDesk – installation</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, "Segoe UI", Ubuntu, Roboto, sans-serif;
+         max-width: 760px; margin: 40px auto; padding: 0 18px; line-height: 1.55;
+         background: #0f1420; color: #e6edf7; }
+  h1 { font-size: 22px; } h2 { font-size: 15px; margin-top: 28px; color: #8ecbff; }
+  a { color: #4ea3ff; }
+  pre { background: #060b16; border: 1px solid #1d2b45; border-radius: 8px;
+        padding: 12px 14px; overflow-x: auto; font-size: 13px;
+        font-family: "DejaVu Sans Mono", Consolas, monospace; }
+  code { font-family: "DejaVu Sans Mono", Consolas, monospace; }
+  .muted { color: #7f95b5; font-size: 13px; }
+  .pill { display:inline-block; background:#12325e; color:#bfe0ff; border-radius:999px;
+          padding:2px 10px; font-size:12px; }
+  .warn { background:#2a1a10; border:1px solid #5c3a1e; border-radius:8px;
+          padding:12px 14px; font-size:13px; }
+  .fpr { color:#9ff5c8; }
+</style>
+</head>
+<body>
+  <h1>TabDesk – installation <span class="pill">v0.1.1</span></h1>
+  <p class="muted">Debian / Kali / Ubuntu. Repot är olistat – dela inte länken vidare.</p>
+
+  <h2>Enklast – allt i ett</h2>
+  <p>Hämtar nyckeln, kontrollerar fingeravtrycket innan den skrivs, installerar:</p>
+  <pre>curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash</pre>
+  <p class="muted">Vill du granska skriptet först:</p>
+  <pre>curl -fsSL https://cdn.thern.io/tabdesk/install.sh -o td.sh
+less td.sh
+sudo bash td.sh</pre>
+
+  <h2>Eller steg för steg</h2>
+  <pre>B=https://cdn.thern.io/tabdesk
+K=/usr/share/keyrings/tabdesk.gpg
+L=/etc/apt/sources.list.d/tabdesk.list</pre>
+
+  <p>1) Hämta signeringsnyckeln till en temporär fil:</p>
+  <pre>curl -fsSL $B/tabdesk-archive-keyring.gpg -o /tmp/td.gpg</pre>
+
+  <p>2) Kontrollera att det verkligen <em>är</em> nyckeln – innan den skrivs:</p>
+  <pre>gpg --show-keys /tmp/td.gpg</pre>
+  <p class="muted">Ska visa <span class="fpr">B40E D009 54B3 B564 21F5&nbsp; 8C99 B9D4 4CBC 6F2B D93E</span>
+     och <code>TabDesk APT repository &lt;info@thern.io&gt;</code>.
+     Står det något annat: sluta här, inget är skrivet än.</p>
+
+  <p>3) Lägg nyckeln på plats:</p>
+  <pre>sudo install -m644 /tmp/td.gpg $K</pre>
+
+  <p>4) Apt-källa:</p>
+  <pre>echo "deb [signed-by=$K] $B stable main" | sudo tee $L</pre>
+
+  <p>5) Installera:</p>
+  <pre>sudo apt update &amp;&amp; sudo apt install tabdesk</pre>
+
+  <h2>Underhåll</h2>
+  <pre>sudo apt update &amp;&amp; sudo apt upgrade tabdesk   # uppdatera
+sudo apt remove tabdesk                        # avinstallera</pre>
+
+  <h2>Om du fick instruktionerna via mejl</h2>
+  <p class="warn">Skicka <strong>inte</strong> nyckeln direkt in i nyckelringen med en pipe.
+     Mejlklienter skriver om länkar – Gmail gör om URL:en till
+     <code>www.google.com/url?q=…</code>. En sådan länk svarar 200 med en HTML-sida,
+     <code>curl -f</code> accepterar den, och HTML:en hamnar i nyckelringen. Enda symtomet
+     blir ett parse-fel från <code>apt</code> som inte pekar på orsaken.
+     Kontrollera nyckeln först, skriv den sedan. Ser en länk ut att gå till
+     www.google.com i stället för cdn.thern.io – skriv adressen för hand.</p>
+
+  <h2>Direkt .deb</h2>
+  <p><a href="https://cdn.thern.io/tabdesk/pool/main/t/tabdesk/tabdesk_0.1.1_amd64.deb">tabdesk_0.1.1_amd64.deb</a></p>
+</body>
+</html>

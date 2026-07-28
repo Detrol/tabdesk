@@ -27,6 +27,9 @@ host's timer picks the release up within ~10 min anyway.
     # reprepro base + dedicated signing key + public key export
     ssh cdn 'bash -s' < deploy/host/apt-repo-setup.sh
 
+    # the published installer (re-copy whenever deploy/host/install.sh changes)
+    scp deploy/host/install.sh cdn:/srv/cdn/tabdesk/install.sh
+
     # the pull script + its systemd timer
     scp deploy/host/cdn-pull.sh cdn:/usr/local/bin/tabdesk-cdn-pull
     scp deploy/host/systemd/tabdesk-cdn-pull.* cdn:/etc/systemd/system/
@@ -44,13 +47,28 @@ When the repo goes public, delete that file — the pull works unauthenticated.
 
 ## Install (on the laptop)
 
-    curl -fsSL https://cdn.thern.io/tabdesk/tabdesk-archive-keyring.gpg \
-      | sudo tee /usr/share/keyrings/tabdesk.gpg >/dev/null
+    curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash
+
+That's `deploy/host/install.sh`, which fetches the key, **checks its fingerprint
+before writing the keyring**, then adds the source and installs. By hand:
+
+    curl -fsSL https://cdn.thern.io/tabdesk/tabdesk-archive-keyring.gpg -o /tmp/tabdesk.gpg
+    gpg --show-keys /tmp/tabdesk.gpg     # must print B40E D009 54B3 B564 21F5  8C99 B9D4 4CBC 6F2B D93E
+    sudo install -m644 /tmp/tabdesk.gpg /usr/share/keyrings/tabdesk.gpg
     echo "deb [signed-by=/usr/share/keyrings/tabdesk.gpg] https://cdn.thern.io/tabdesk stable main" \
       | sudo tee /etc/apt/sources.list.d/tabdesk.list
     sudo apt update && sudo apt install tabdesk
 
 Update later: `sudo apt update && sudo apt upgrade tabdesk`.
+
+**Do not pipe the key straight into the keyring.** If the URL is reached through
+anything but the CDN — a mail client's link wrapper (Gmail rewrites URLs to
+`www.google.com/url?q=…`), a proxy, a captive portal — the fetch still returns
+200, with an HTML page. `curl -f` accepts it, the markup lands in the keyring,
+and the only symptom is a keyring parse error from `apt update` that points
+nowhere near the actual mistake. Verify first, write second. When sending these
+instructions by mail, send **plain text** and check the URLs in the received
+copy are bare `cdn.thern.io` links.
 
 ## Signing key
 
