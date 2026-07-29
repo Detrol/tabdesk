@@ -135,6 +135,59 @@ function xdo(args) {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---- Asking X what actually happened ----------------------------------------
+//
+// Every placement here is fire-and-forget: we run an xdotool chain and then
+// write down what we asked for as if it had happened. It usually has — but when
+// it hasn't, the note is what makes the failure permanent, because drain() skips
+// a rect it believes is already applied and hide() never revisits a window it
+// believes is down. Both leave the same thing on screen: an xterm at its default
+// 80x24 in the corner of the Electron window, over the rail, above the page,
+// for the rest of the session. So the two moments that can diverge — the first
+// placement and every unmap — are checked against X instead of assumed.
+
+// `xdotool search` matches on name alone and returns windows that are not on
+// screen (every hidden pane still answers to its title), so "is it actually
+// up?" is a --onlyvisible search, not a plain one.
+async function onScreen(rec) {
+  const out = await xdo(['search', '--onlyvisible', '--name', `^${rec.title}$`]);
+  return !!out && out.split('\n').some((l) => l.trim() === rec.win);
+}
+
+// xterm rounds its window to whole character cells, so an exact match is the
+// wrong test; this only has to tell a placed pane from an unplaced one.
+const SIZE_SLACK = 32;
+async function sized(rec, rect) {
+  const out = await xdo(['getwindowgeometry', '--shell', rec.win]);
+  const w = /WIDTH=(\d+)/.exec(out || '');
+  const h = /HEIGHT=(\d+)/.exec(out || '');
+  if (!w || !h) return true;   // no answer: believe the move rather than loop on it
+  return Math.abs(Number(w[1]) - rect.w) <= SIZE_SLACK &&
+         Math.abs(Number(h[1]) - rect.h) <= SIZE_SLACK;
+}
+
+// Take the window down and make sure it stays down.
+//
+// `-into` reparents AND maps, with no flag to hold that back, so hiding a pane
+// that is still starting is a race rather than a command: an unmap that lands
+// before xterm's own map is a no-op on an already-unmapped window, xterm maps a
+// moment later, and the pane we think is hidden is on screen at its default
+// geometry with nothing left to move or hide it. Re-check for a couple of
+// seconds after launch — and once always, because a failed xdotool call reads
+// exactly like a successful one from here.
+const STARTUP_RACE_MS = 10000;
+const UNMAP_RECHECKS = [120, 250, 500, 1000];
+
+async function unmap(rec) {
+  await xdo(['windowunmap', rec.win]);
+  for (const delay of UNMAP_RECHECKS) {
+    await wait(delay);
+    if (rec.dead || !rec.hidden) return;      // a show landed; drain() maps it
+    if (await onScreen(rec)) { await xdo(['windowunmap', rec.win]); continue; }
+    if (Date.now() - rec.startedAt > STARTUP_RACE_MS) return;  // down, and past the race
+  }
+}
+
 // Poll for the window carrying our unique title until it maps (or we give up).
 //
 // The pattern is ANCHORED, and that is not a detail: `xdotool search --name`
@@ -188,9 +241,10 @@ async function create(id, { cwd, startCmd }) {
     '-e', shell, '-lc', inner,
   ];
 
-  const rec = { id, proc: null, win: null, applied: null, pending: null, busy: false,
+  const rec = { id, title, proc: null, win: null, applied: null, pending: null, busy: false,
                 mapped: false, hidden: false, ready: false, dead: false, wchar: null,
-                settle: null, wantFocus: false, startedAt: Date.now() };
+                settle: null, wantFocus: false, startedAt: Date.now(),
+                fails: 0, verified: false };
   embeds.set(id, rec);
   startActivityPolling();
 
@@ -223,7 +277,7 @@ async function create(id, { cwd, startCmd }) {
   if (rec.hidden || !rec.pending) {
     rec.mapped = false;
     rec.applied = null;
-    await xdo(['windowunmap', win]);
+    await unmap(rec);                     // and see that it stays unmapped
   }
   await drain(rec);
 }
@@ -232,14 +286,44 @@ async function create(id, { cwd, startCmd }) {
 // each other, and a resize drag pushes a new rect every frame. Without --sync
 // (we serialise ourselves in drain(), so we don't need X round-trips) the call
 // stays cheap enough to keep up with the drag.
+const APPLY_RETRIES = 3;
+const APPLY_RETRY_MS = 200;
+
 async function apply(rec, rect) {
   const args = ['windowmove', rec.win, String(rect.x), String(rect.y),
                 'windowsize', rec.win, String(rect.w), String(rect.h)];
   if (!rec.mapped) args.push('windowmap', rec.win);
   args.push('windowraise', rec.win);   // see raise()
-  await xdo(args);
+  // xdotool runs a chain and stops at the first command that fails, so a failed
+  // call tells us nothing about how much of it landed. Writing the rect down
+  // anyway is what turns one hiccup into a ghost: the next sync sees its own
+  // rect in rec.applied, takes the "nothing to move" path, raises — and keeps
+  // raising an unplaced terminal for the rest of the session.
+  if ((await xdo(args)) === null) {
+    rec.applied = null;
+    if (rec.fails++ < APPLY_RETRIES) {
+      if (!rec.pending) rec.pending = rect;   // a newer rect wins over this one
+      await wait(APPLY_RETRY_MS);
+    }
+    return;
+  }
+  rec.fails = 0;
   rec.mapped = true;
   rec.applied = rect;
+  // The first placement is the one that can lose to xterm's own startup: it
+  // maps and sizes the window when it realises it, over whatever we set first —
+  // and since we skip windowmap for a window xterm has already mapped, a map
+  // that hadn't happened yet leaves the pane placed but invisible. Confirm both,
+  // once, so a pane that reads back odd can't loop here.
+  if (!rec.verified) {
+    rec.verified = true;
+    if (!(await onScreen(rec)) || !(await sized(rec, rect))) {
+      rec.applied = null;
+      rec.mapped = false;      // make the retry map it explicitly
+      rec.pending = rect;
+      return;
+    }
+  }
   // First time on screen — the renderer can drop its placeholder now.
   if (!rec.ready) { rec.ready = true; if (notifyReady) notifyReady(rec.id); }
   // A focus asked for before the window existed (opening a tab starts xterm and
@@ -305,7 +389,7 @@ async function drain(rec) {
         if (!rec.mapped) break;
         rec.mapped = false;
         rec.applied = null;   // force a full move+size on the next show
-        await xdo(['windowunmap', rec.win]);
+        await unmap(rec);
         continue;             // a show may have landed during the round trip
       }
       if (!rec.pending) break;

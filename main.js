@@ -85,12 +85,32 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   // F11 toggles fullscreen.
+  //
+  // Ctrl/Cmd+R and F5 are swallowed. The default menu is hidden, not gone, so
+  // its Reload accelerator is still live — and a reload is not a refresh in this
+  // app: the page comes back empty, every tab is gone, and the terminals behind
+  // them are orphaned (see did-start-loading below). preventDefault() here also
+  // cancels the menu shortcut, which is what makes it catchable at all.
   win.webContents.on('before-input-event', (event, input) => {
-    if (input.type === 'keyDown' && input.key === 'F11') {
+    if (input.type !== 'keyDown') return;
+    if (input.key === 'F11') {
       win.setFullScreen(!win.isFullScreen());
       event.preventDefault();
+      return;
     }
+    const key = String(input.key).toLowerCase();
+    if (key === 'f5' || ((input.control || input.meta) && key === 'r')) event.preventDefault();
   });
+
+  // A reload can still arrive by a route the keys don't cover (devtools, a
+  // renderer crash), and it leaves main holding every embed the old page made:
+  // those xterms stay mapped over the new page, which knows nothing about them
+  // and will never place or hide them again. Worse, tab ids restart at t1, so
+  // the new page's first tabs collide with the survivors — create() sees the id
+  // already registered, spawns nothing, and the tab drives the previous page's
+  // terminal, showing another project's session. Nothing can hand those windows
+  // back to a page that has forgotten them, so they go with it.
+  win.webContents.on('did-start-loading', () => termEmbed.killAll());
 
   return win;
 }
