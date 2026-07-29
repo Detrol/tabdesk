@@ -188,6 +188,33 @@ function createProject(rawName) {
   }
 }
 
+// ---- Projects the user closed ---------------------------------------------
+//
+// The rail is built from the project directories on disk, so closing a tab with
+// the × only emptied it until the next start — the directory was still there and
+// the tab came back. The choice is remembered here instead, as a list of paths
+// the rail skips. It is not a hide-forever: the picker still lists them, and
+// opening one is what clears the mark, so nothing needs a separate "unhide".
+function closedProjects() {
+  const list = settings.get('closedProjects');
+  return Array.isArray(list) ? list.filter((p) => typeof p === 'string') : [];
+}
+
+function setProjectClosed(dir, closed) {
+  if (typeof dir !== 'string' || !dir) return;
+  const set = new Set(closedProjects());
+  // Only what the rail rebuilds is worth remembering: a folder opened from
+  // elsewhere ("Other folder…") is never listed at start, so closing its tab
+  // has nothing to suppress and would just leave a dead entry behind.
+  if (closed) {
+    if (path.dirname(path.resolve(dir)) !== path.resolve(PROJECTS_DIR)) return;
+    set.add(dir);
+  } else {
+    set.delete(dir);
+  }
+  settings.set('closedProjects', [...set]);
+}
+
 // ---- Export / import of the portable "light layer" ------------------------
 //
 // Its own top-level window, for the same reason the picker is one: the
@@ -485,21 +512,28 @@ app.whenReady().then(async () => {
   // ---- Terminal lifecycle over IPC ----
 
   // List project directories under PROJECTS_DIR, most-recently-modified first.
+  // `closed` carries the user's × on that tab: the rail leaves those out, the
+  // picker still offers them (see closedProjects below).
   ipcMain.handle('projects:list', () => {
     try {
+      const closed = new Set(closedProjects());
       return fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
         .filter((e) => e.isDirectory())
         .map((e) => {
           const full = path.join(PROJECTS_DIR, e.name);
           let mtime = 0;
           try { mtime = fs.statSync(full).mtimeMs; } catch (_) { /* skip */ }
-          return { name: e.name, path: full, mtime, model: model.getFor(full) };
+          return { name: e.name, path: full, mtime, model: model.getFor(full), closed: closed.has(full) };
         })
         .sort((a, b) => b.mtime - a.mtime);
     } catch (_) {
       return [];
     }
   });
+
+  // Closing a tab is a decision about the rail, so it has to outlive the
+  // session; opening the project again takes it back.
+  ipcMain.on('projects:closed', (event, { path: dir, closed }) => setProjectClosed(dir, closed));
 
   // ---- New tab: pick an existing project, or create one ----
   ipcMain.handle('projects:pick', () => openProjectPicker(win));

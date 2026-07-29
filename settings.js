@@ -3,13 +3,14 @@
 // Theme and language default to 'system': the app follows the desktop until the
 // user explicitly pins one. projectModels maps a project path to the Claude
 // model that project runs with; a project with no entry follows Claude Code's
-// own default.
+// own default. closedProjects lists the project paths whose tab was closed with
+// the ×, so the rail doesn't rebuild them from the directories on disk.
 
 const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
-const DEFAULTS = { theme: 'system', language: 'system', projectModels: {} };
+const DEFAULTS = { theme: 'system', language: 'system', projectModels: {}, closedProjects: [] };
 
 let cache = null;
 const file = () => path.join(app.getPath('userData'), 'settings.json');

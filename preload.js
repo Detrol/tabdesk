@@ -88,6 +88,8 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   listProjects: () => ipcRenderer.invoke('projects:list'),
+  // Remembers a closed tab across restarts (and an opened one as no longer closed).
+  setProjectClosed: (dir, closed) => ipcRenderer.send('projects:closed', { path: dir, closed }),
   // Opens the "new tab" picker window; resolves with the choice, or null.
   pickProject: () => ipcRenderer.invoke('projects:pick'),
   getUsageStats: () => ipcRenderer.invoke('usage:stats'),

@@ -388,6 +388,10 @@ function materialize(t) {
 function closeTab(id) {
   const t = tabs.get(id);
   if (!t) return;
+  // The rail is rebuilt from the projects on disk at every start, so closing a
+  // project tab has to be written down or it is back tomorrow. Reopening it
+  // from the picker clears the mark.
+  if (t.cwd) window.api.setProjectClosed(t.cwd, true);
   if (t.materialized) {
     if (t.embed) {
       window.api.killEmbedTerminal(id);
@@ -441,6 +445,9 @@ addBtn.addEventListener('click', async () => {
   const existing = [...tabs.values()].find((x) => x.cwd === choice.path);
   if (existing) { setActive(existing.id); return; }
 
+  // Opening it is the undo for having closed it: it belongs in the rail again
+  // at the next start.
+  window.api.setProjectClosed(choice.path, false);
   setActive(buildTab({ name: choice.name, cwd: choice.path, model: choice.model, atTop: true }));
 });
 
@@ -831,9 +838,13 @@ document.getElementById('preview-reload').addEventListener('click', () => {
   else openPreview();
 });
 
-// Populate the rail with all projects, most-recently-used first.
+// Populate the rail with all projects, most-recently-used first. A project
+// whose tab was closed with the × stays out until it is picked again.
 window.api.listProjects().then((projects) => {
-  for (const p of projects) buildTab({ name: p.name, cwd: p.path, model: p.model });
+  for (const p of projects) {
+    if (p.closed) continue;
+    buildTab({ name: p.name, cwd: p.path, model: p.model });
+  }
 });
 
 // ---- Model picker (bottom system bar) ----

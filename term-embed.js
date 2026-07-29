@@ -328,7 +328,9 @@ async function apply(rec, rect) {
   if (!rec.ready) { rec.ready = true; if (notifyReady) notifyReady(rec.id); }
   // A focus asked for before the window existed (opening a tab starts xterm and
   // selects it in the same breath) lands here, once there is something to focus.
-  if (rec.wantFocus) { rec.wantFocus = false; await xdo(['windowfocus', rec.win]); }
+  // Not awaited: focus() retries for up to a second, and drain() is still on the
+  // hook for the next resize frame.
+  if (rec.wantFocus) { rec.wantFocus = false; focus(rec.id); }
 }
 
 // Put the keyboard in this terminal.
@@ -340,11 +342,41 @@ async function apply(rec, rect) {
 //
 // A tab opened for the first time asks for this while its xterm is still
 // starting, so an unready window records the wish and apply() honours it.
+//
+// One XSetInputFocus does not hold. What gets us here is a click in the page,
+// and Chromium claims the keyboard for its own render widget as it finishes
+// handling that click — landing after our call as often as before it, which
+// undoes it with nothing to show for it. A window that was mapped this frame
+// can also refuse focus outright. So the focus is asked for, read back from X,
+// and asked for again until it sticks: the tab you clicked is the one you can
+// type in, without clicking a second time inside the terminal.
+const FOCUS_TRIES = [0, 60, 150, 350, 700];
+
+// Only the newest request retries. Clicking through three tabs must not leave
+// two loops fighting the third one for the keyboard.
+let focusSeq = 0;
+
+// `getwindowfocus` on its own walks up from the focused window to the nearest
+// one the window manager knows about — and an xterm reparented into the app is
+// not one, so it answers "the Electron window" for every terminal alike. `-f`
+// is the question actually being asked here: which window has the input focus.
+async function focusStuck(rec) {
+  const out = await xdo(['getwindowfocus', '-f']);
+  return out !== null && out === rec.win;
+}
+
 async function focus(id) {
   const rec = embeds.get(id);
   if (!rec || rec.dead) return;
   if (!rec.win || !rec.mapped || rec.hidden) { rec.wantFocus = true; return; }
-  await xdo(['windowfocus', rec.win]);
+  const seq = ++focusSeq;
+  for (const delay of FOCUS_TRIES) {
+    if (delay) await wait(delay);
+    // A newer pick, a hide, or a closed tab: this one is no longer the answer.
+    if (rec.dead || rec.hidden || seq !== focusSeq) return;
+    await xdo(['windowfocus', rec.win]);
+    if (await focusStuck(rec)) return;
+  }
 }
 
 // Chromium's rendering surface is itself a child X window covering the whole
