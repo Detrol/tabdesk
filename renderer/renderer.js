@@ -126,8 +126,15 @@ function setActive(id) {
   activeId = id;
   applyLayout();
   for (const vid of visible) fitSoon(vid);
-  requestAnimationFrame(() => { if (t.term) t.term.focus(); });
   scheduleSync();
+  // Selecting a tab puts the cursor in that terminal, so you can start typing
+  // without clicking the panel first. The in-app terminal takes focus in the
+  // DOM; a native one is its own X11 window and has to be told (see
+  // term-embed focus(), which waits for the window when it isn't up yet).
+  requestAnimationFrame(() => {
+    if (t.embed) window.api.focusEmbedTerminal(id);
+    else if (t.term) t.term.focus();
+  });
   syncTray();
 }
 
@@ -188,8 +195,9 @@ function applyLayout() {
       tt.panelEl.classList.toggle('focused', tid === activeId && n > 1);
     }
   }
-  // The model belongs to the focused project, so the bar follows it.
+  // The model and the agent belong to the focused project, so both follow it.
   renderModelBtn();
+  renderAgentBtn();
   scheduleSync();
 }
 
@@ -214,6 +222,19 @@ function fitSoon(id) {
   });
 }
 
+// ---- Which CLI a project starts ----
+// Declared up here rather than with the menu that edits it: startCmdFor() runs
+// as soon as the first tab materialises, which is before the rail's own wiring
+// further down has been reached.
+const bootAgents = (window.api.boot && window.api.boot.agents) || {};
+let agentList = bootAgents.list || [];            // installed only
+let agentByProject = bootAgents.byProject || {};  // cwd -> agent id
+const agentFallback = bootAgents.fallback || 'claude';
+// The button lives in the rail's footer and its wiring is further down, but
+// applyLayout() repaints it and can run before that point is reached.
+const agentBtn = document.getElementById('agent-btn');
+const agentMenu = document.getElementById('agent-menu');
+
 // The command a project tab starts with. Built at materialize time, not at
 // tab-build time, so a model picked while the tab sits unopened still counts.
 // Ad-hoc tabs (no project) get a plain shell.
@@ -221,15 +242,33 @@ function fitSoon(id) {
 // are what keep an alias like opus[1m] from being read as a glob by bash.
 function startCmdFor(t) {
   // A tab opened to run one specific thing (the update installer) carries its
-  // own command and isn't a Claude session.
+  // own command and isn't an agent session.
   if (t.startCmd) return t.startCmd;
   if (!t.cwd) return null;
   // Demo hook (TABDESK_START_CMD): a screenshot or layout run that shouldn't
-  // open real Claude sessions in every panel.
+  // open real agent sessions in every panel.
   const demo = (window.api.boot || {}).demoStartCmd;
   if (demo) return demo;
-  const flag = t.model && t.model !== 'default' ? ` --model '${t.model}'` : '';
-  return `claude --permission-mode auto${flag}`;
+  const spec = agentList.find((a) => a.id === agentFor(t));
+  // No command is the plain-shell choice, not a failure.
+  if (!spec || !spec.command) return null;
+  // Only Claude Code takes TabDesk's model flag; see agents.js.
+  const flag = spec.takesModel && t.model && t.model !== 'default'
+    ? ` --model '${t.model}'` : '';
+  return spec.command + flag;
+}
+
+// Which CLI this project starts. Mirrors agents.getFor() in main, including
+// its fallback: an agent that has since been uninstalled must not leave a tab
+// starting a command that no longer exists.
+function agentFor(t) {
+  if (!t.cwd) return 'shell';
+  const has = (id) => agentList.some((a) => a.id === id);
+  const stored = t.agent || agentByProject[t.cwd];
+  if (stored && has(stored)) return stored;
+  if (has(agentFallback)) return agentFallback;
+  const first = agentList.find((a) => a.id !== 'shell');
+  return first ? first.id : 'shell';
 }
 
 // Build only the tab row in the rail. The terminal/pty is created lazily.
@@ -640,6 +679,102 @@ runMenu.addEventListener('click', (e) => {
   if (item.dataset.run === 'app') toggleApp();
   else openSiteInBrowser();
 });
+
+// ---- Agent menu ----
+// Picks what the active project's terminal starts: any agent CLI found on PATH,
+// or a plain shell. The choice belongs to the project, so a tab that is already
+// running keeps the CLI it was opened with and takes the new one next time.
+// (agentBtn / agentMenu are resolved with the rest of the agent state above.)
+
+function agentLabel(id) {
+  const spec = agentList.find((a) => a.id === id);
+  return spec ? spec.label : id;
+}
+
+function renderAgentBtn() {
+  const t = tabs.get(activeId);
+  const project = t && t.cwd;
+  agentBtn.textContent = project
+    ? `🤖 ${agentLabel(agentFor(t))} ▾`
+    : `🤖 ${window.t('rail.agent')} ▾`;
+  agentBtn.disabled = !project;
+  agentBtn.title = project
+    ? window.t('rail.agent.title.project', { project: t.name })
+    : window.t('rail.agent.title');
+}
+
+function renderAgentMenu() {
+  const t = tabs.get(activeId);
+  const current = t && t.cwd ? agentFor(t) : null;
+  agentMenu.innerHTML = '';
+  for (const a of agentList) {
+    const item = document.createElement('button');
+    item.className = 'menu-item' + (a.id === current ? ' current' : '');
+    item.setAttribute('role', 'menuitem');
+    item.dataset.agent = a.id;
+    const label = document.createElement('span');
+    label.className = 'mi-label';
+    label.textContent = (a.id === current ? '✓ ' : '') + a.label;
+    const hint = document.createElement('span');
+    hint.className = 'mi-hint';
+    hint.textContent = a.hint ? window.t(a.hint) : (a.command || '');
+    item.append(label, hint);
+    agentMenu.appendChild(item);
+  }
+}
+
+function closeAgentMenu() {
+  agentMenu.classList.add('hidden');
+  agentBtn.setAttribute('aria-expanded', 'false');
+}
+
+agentBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  const open = agentMenu.classList.contains('hidden');
+  if (open) {
+    // Re-read on open: an agent installed since boot should be selectable
+    // without restarting TabDesk.
+    const fresh = await window.api.listAgents();
+    if (fresh && fresh.length) agentList = fresh;
+    renderAgentMenu();
+    renderAgentBtn();
+  }
+  agentMenu.classList.toggle('hidden', !open);
+  agentBtn.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', closeAgentMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAgentMenu(); });
+
+agentMenu.addEventListener('click', async (e) => {
+  const item = e.target.closest('.menu-item');
+  if (!item) return;
+  e.stopPropagation();
+  closeAgentMenu();
+  const t = tabs.get(activeId);
+  if (!t || !t.cwd) return;
+  const id = item.dataset.agent;
+  if (id === agentFor(t)) return;
+
+  const res = await window.api.setAgent(t.cwd, id);
+  if (!res || !res.ok) {
+    toast(window.t('toast.agentFailed', { error: (res && res.error) || '' }));
+    return;
+  }
+  t.agent = res.agent;
+  agentByProject[t.cwd] = res.agent;
+  renderAgentBtn();
+  // A running terminal was started by the old CLI and can't be swapped under it.
+  toast(window.t(t.materialized ? 'toast.agentLater' : 'toast.agentSet',
+    { project: t.name, agent: agentLabel(res.agent) }));
+});
+
+// A plain terminal, no project and no agent — the same thing the picker's
+// "Terminal" row opens, one click closer.
+document.getElementById('term-btn').addEventListener('click', () => {
+  setActive(buildTab({ name: `Terminal ${++adHoc}`, cwd: null, atTop: true }));
+});
+
+renderAgentBtn();
 
 async function toggleApp() {
   const t = activeProject();

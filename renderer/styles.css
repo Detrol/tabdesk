@@ -217,9 +217,9 @@ html, body {
 /* Stays inside the rail: the embedded terminals are native X windows stacked
    above the page, so anything overflowing into the panel area gets clipped by
    them. Labels wrap instead. */
-#run-wrap { position: relative; }
-#rail-footer #run-wrap { margin-top: 7px; }
-#rail-footer #run-wrap + button { margin-top: 7px; }
+#run-wrap, #agent-wrap { position: relative; }
+#rail-footer #run-wrap, #rail-footer #agent-wrap { margin-top: 7px; }
+#rail-footer #run-wrap + button, #rail-footer #agent-wrap + button { margin-top: 7px; }
 #run-btn.running { border-color: var(--ok); color: var(--ok); box-shadow: var(--glow-ok); }
 
 /* Shared popup shell — used by the run menu and the model menu. */
@@ -232,13 +232,14 @@ html, body {
 }
 .menu.hidden { display: none; }
 
-#run-menu {
+#run-menu, #agent-menu {
   position: absolute;
   bottom: calc(100% + 6px);
   left: 0;
   width: 100%;
   z-index: 40;
 }
+#agent-menu .menu-item.current .mi-label { color: var(--accent-2); }
 .menu .menu-item {
   display: block;
   width: 100%;

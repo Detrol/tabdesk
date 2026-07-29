@@ -35,6 +35,13 @@
             </button>
           </div>
         </div>
+        <!-- What the active project's terminal starts. The menu lists the agent
+             CLIs actually installed, plus a plain shell. -->
+        <div id="agent-wrap">
+          <button id="agent-btn" data-i18n-title="rail.agent.title" aria-haspopup="menu" aria-expanded="false">🤖 Agent ▾</button>
+          <div id="agent-menu" class="menu hidden" role="menu"></div>
+        </div>
+        <button id="term-btn" data-i18n="rail.terminal" data-i18n-title="rail.terminal.title">⌨ Terminal</button>
         <button id="preview-btn" data-i18n="rail.preview" data-i18n-title="rail.preview.title">👁 Preview</button>
         <button id="shot-btn" data-i18n="rail.screenshot" data-i18n-title="rail.screenshot.title">📷 Screenshot</button>
         <button id="portable-btn" data-i18n="rail.portable" data-i18n-title="rail.portable.title">⇄ Sync</button>

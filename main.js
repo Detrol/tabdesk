@@ -13,6 +13,7 @@ const theme = require('./theme');
 const i18n = require('./i18n');
 const settings = require('./settings');
 const model = require('./model');
+const agents = require('./agents');
 const portable = require('./portable');
 const updater = require('./updater');
 const usageLimits = require('./usage-limits');
@@ -399,6 +400,7 @@ app.whenReady().then(async () => {
       i18n: activeI18n,
       settings: settings.all(),
       model: { list: model.list(), global: model.globalDefault(), byProject: model.allFor() },
+      agents: { list: agents.list(), byProject: agents.allFor(), fallback: agents.DEFAULT_ID },
       demoStartCmd: DEMO_START_CMD,
     };
   });
@@ -408,6 +410,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('model:global', () => model.globalDefault());
   ipcMain.handle('model:get', (event, projectPath) => model.getFor(projectPath));
   ipcMain.handle('model:set', (event, { path: projectPath, id }) => model.setFor(projectPath, id));
+
+  // ---- Which CLI a project starts (Claude Code, another agent, plain shell) ----
+  // The list is re-read rather than cached in the renderer: an agent installed
+  // while TabDesk runs should turn up the next time the menu opens.
+  ipcMain.handle('agents:list', () => agents.list());
+  ipcMain.handle('agents:get', (event, projectPath) => agents.getFor(projectPath));
+  ipcMain.handle('agents:set', (event, { path: projectPath, id }) => agents.setFor(projectPath, id));
 
   // What "Default" resolves to can change under us (an editor, `claude config`).
   const unwatchModel = model.watchGlobal((id) => {
@@ -450,6 +459,7 @@ app.whenReady().then(async () => {
   ipcMain.on('embed:create', (event, { id, cwd, startCmd }) => termEmbed.create(id, { cwd, startCmd }));
   ipcMain.on('embed:place', (event, { id, rect }) => termEmbed.place(id, rect));
   ipcMain.on('embed:hide', (event, { id }) => termEmbed.hide(id));
+  ipcMain.on('embed:focus', (event, { id }) => termEmbed.focus(id));
   ipcMain.on('embed:kill', (event, { id }) => termEmbed.kill(id));
 
   // ---- Terminal lifecycle over IPC ----

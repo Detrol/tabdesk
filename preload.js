@@ -31,6 +31,13 @@ contextBridge.exposeInMainWorld('api', {
   getGlobalModel: () => ipcRenderer.invoke('model:global'),
   getModel: (projectPath) => ipcRenderer.invoke('model:get', projectPath),
   setModel: (projectPath, id) => ipcRenderer.invoke('model:set', { path: projectPath, id }),
+
+  // Which CLI a project's terminal starts. listAgents() returns only what is
+  // actually installed, each with the command line it starts — those strings
+  // are main's own constants, never anything the user typed.
+  listAgents: () => ipcRenderer.invoke('agents:list'),
+  getAgent: (projectPath) => ipcRenderer.invoke('agents:get', projectPath),
+  setAgent: (projectPath, id) => ipcRenderer.invoke('agents:set', { path: projectPath, id }),
   onGlobalModelChanged: (cb) => {
     const listener = (_event, id) => cb(id);
     ipcRenderer.on('model:global-changed', listener);
@@ -96,6 +103,8 @@ contextBridge.exposeInMainWorld('api', {
   createEmbedTerminal: (id, cwd, startCmd) => ipcRenderer.send('embed:create', { id, cwd, startCmd }),
   placeEmbedTerminal: (id, rect) => ipcRenderer.send('embed:place', { id, rect }),
   hideEmbedTerminal: (id) => ipcRenderer.send('embed:hide', { id }),
+  // Hands the keyboard to the terminal window itself — see term-embed focus().
+  focusEmbedTerminal: (id) => ipcRenderer.send('embed:focus', { id }),
   killEmbedTerminal: (id) => ipcRenderer.send('embed:kill', { id }),
   onEmbedReady: (cb) => {
     const listener = (_event, { id }) => cb(id);
