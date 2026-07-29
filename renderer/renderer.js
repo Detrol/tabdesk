@@ -25,30 +25,103 @@ const IDLE_MS = 1500;
 // A tab is "watched" while it's visible in the grid — no need to flag it.
 function isWatched(id) { return visible.includes(id); }
 
+// ---- System tray mirror ----------------------------------------------------
+// The tray menu in the main process is a mirror of the rail. Push a snapshot on
+// every change that the menu shows: which tabs exist, their names, which is
+// active, and whether they're busy.
+//
+// Coalesced through rAF because markActivity() fires on every chunk of pty
+// output — sending an IPC message per chunk would flood main for no benefit,
+// since the menu only rerenders when the user opens it.
+let trayQueued = false;
+function syncTray() {
+  if (trayQueued || !window.api || !window.api.syncTray) return;
+  trayQueued = true;
+  requestAnimationFrame(() => {
+    trayQueued = false;
+    window.api.syncTray({
+      activeId,
+      tabs: [...tabs.values()].map((t) => ({
+        id: t.id,
+        name: t.name,
+        cwd: t.cwd || null,
+        busy: !!t.busy,
+      })),
+    });
+  });
+}
+
 // Clear any busy/done flags on a tab (called when the user looks at it).
 function clearTabFlag(t) {
   clearTimeout(t.idleTimer);
+  const wasBusy = t.busy;
   t.busy = false;
   t.tabEl.classList.remove('busy', 'done');
+  if (wasBusy) syncTray();
 }
 
-// Called on every chunk of pty output. Marks background tabs busy while output
-// flows, then green ("done") once they fall silent.
+// Most-recently-worked-in first: a project you're actually using climbs out of
+// a long rail instead of staying buried where you first opened it.
+//
+// Ordering by raw recency breaks down the moment two projects work at once:
+// both stream output, each chunk re-hoists, and the two trade first and second
+// place several times a second. So the top spot is *held*, not contested — the
+// leader keeps it for as long as it's still producing output, and a rival can
+// only take over once the leader has genuinely fallen quiet. Reordering then
+// happens on the scale of "that project finished", not per chunk.
+const LEAD_HOLD_MS = 12000; // silence before the leader's claim on the top expires
+
+let leadId = null;  // tab currently holding the top of the rail
+let leadAt = 0;     // last time it produced output (or was picked by hand)
+
+function leaderIsWorking() {
+  if (!leadId || !tabs.has(leadId)) return false;
+  return performance.now() - leadAt < LEAD_HOLD_MS;
+}
+
+function takeLead(t) {
+  leadId = t.id;
+  leadAt = performance.now();
+  if (tabList.firstElementChild !== t.tabEl) tabList.prepend(t.tabEl);
+}
+
+// Output arrived from a tab. The leader just renews its hold; anyone else has
+// to wait for the leader to go quiet before it may climb.
+function hoistOnActivity(t) {
+  if (t.id === leadId) { leadAt = performance.now(); return; }
+  if (leaderIsWorking()) return;
+  takeLead(t);
+}
+
+// Opening/clicking a project is explicit intent and always wins the top spot,
+// however busy another tab is.
+function hoistByHand(t) { takeLead(t); }
+
+// Called on every chunk of pty output (xterm.js backend) or whenever the
+// embedded terminal writes. Marks background tabs busy while output flows, then
+// green ("done") once they fall silent.
 function markActivity(id) {
   const t = tabs.get(id);
   if (!t || t.tabEl.classList.contains('dead')) return;
 
+  // Hoist on any activity, watched or not — that's the whole point of it being
+  // activity-driven rather than click-driven.
+  hoistOnActivity(t);
+
   if (isWatched(id)) { clearTabFlag(t); return; }
 
+  const wasBusy = t.busy;
   t.busy = true;
   t.tabEl.classList.add('busy');
   t.tabEl.classList.remove('done');
+  if (!wasBusy) syncTray();
   clearTimeout(t.idleTimer);
   t.idleTimer = setTimeout(() => {
     if (!t.busy) return;
     t.busy = false;
     t.tabEl.classList.remove('busy');
     if (!isWatched(id)) t.tabEl.classList.add('done');
+    syncTray();
   }, IDLE_MS);
 }
 
@@ -59,6 +132,9 @@ function setActive(id) {
 
   // Opening a tab means you're now watching it — drop the "done" flag.
   clearTabFlag(t);
+  // Choosing to work in a project counts as activity in its own right: an
+  // already-running tab you switch back to emits nothing until you type.
+  hoistByHand(t);
 
   // Move id to the front of the visible set, trimmed to gridSize.
   const i = visible.indexOf(id);
@@ -71,6 +147,7 @@ function setActive(id) {
   for (const vid of visible) fitSoon(vid);
   requestAnimationFrame(() => { if (t.term) t.term.focus(); });
   scheduleSync();
+  syncTray();
 }
 
 // ---- Embedded native terminal placement ----
@@ -105,6 +182,9 @@ if (EMBED_NATIVE) {
     const ph = t && t.panelEl && t.panelEl.querySelector('.term-loading');
     if (ph) ph.remove();
   });
+  // Main polls each embedded terminal's bytes-written counter and reports the
+  // moves; from here on it's the same path pty output takes.
+  window.api.onEmbedActivity((id) => markActivity(id));
 }
 
 // Lay out the visible panels in a grid and highlight the focused one.
@@ -159,13 +239,20 @@ function fitSoon(id) {
 // Ids are validated in main (model.js) before they are ever stored; the quotes
 // are what keep an alias like opus[1m] from being read as a glob by bash.
 function startCmdFor(t) {
+  // A tab opened to run one specific thing (the update installer) carries its
+  // own command and isn't a Claude session.
+  if (t.startCmd) return t.startCmd;
   if (!t.cwd) return null;
+  // Demo hook (TABDESK_START_CMD): a screenshot or layout run that shouldn't
+  // open real Claude sessions in every panel.
+  const demo = (window.api.boot || {}).demoStartCmd;
+  if (demo) return demo;
   const flag = t.model && t.model !== 'default' ? ` --model '${t.model}'` : '';
   return `claude --permission-mode auto${flag}`;
 }
 
 // Build only the tab row in the rail. The terminal/pty is created lazily.
-function buildTab({ name, cwd, model }) {
+function buildTab({ name, cwd, model, startCmd }) {
   const id = `t${++seq}`;
   const tabEl = document.createElement('li');
   tabEl.className = 'tab';
@@ -185,7 +272,8 @@ function buildTab({ name, cwd, model }) {
   });
   tabList.appendChild(tabEl);
 
-  tabs.set(id, { id, name, cwd, model: model || 'default', tabEl, materialized: false });
+  tabs.set(id, { id, name, cwd, model: model || 'default', startCmd, tabEl, materialized: false });
+  syncTray();
   return id;
 }
 
@@ -299,6 +387,7 @@ function closeTab(id) {
     }
   }
   applyLayout();
+  syncTray();
   if (visible.length === 0 && tabs.size === 0) emptyState.classList.remove('hidden');
 }
 
@@ -330,6 +419,30 @@ addBtn.addEventListener('click', async () => {
 });
 
 document.getElementById('fullscreen-btn').addEventListener('click', () => window.api.toggleFullscreen());
+document.getElementById('portable-btn').addEventListener('click', () => window.api.openPortable());
+
+// ---- Update chip ----
+// Hidden until the background check finds something newer than the installed
+// .deb; the window it opens does the downloading and installing.
+const updateBtn = document.getElementById('update-btn');
+updateBtn.addEventListener('click', () => window.api.openUpdate());
+
+window.api.onUpdateAvailable((state) => {
+  const show = Boolean(state && state.available);
+  updateBtn.classList.toggle('hidden', !show);
+  if (show) {
+    document.getElementById('update-ver').textContent = state.latest;
+    updateBtn.title = window.t('update.chip.title', {
+      from: state.installed || state.running, to: state.latest,
+    });
+  }
+});
+
+// The update window couldn't get a polkit prompt, so the install command comes
+// back here to run in a real terminal where a password can be typed.
+window.api.onUpdateTerminal(({ command }) => {
+  setActive(buildTab({ name: window.t('update.tabName'), cwd: null, startCmd: command }));
+});
 window.addEventListener('resize', () => { for (const vid of visible) fitTerm(vid); scheduleSync(); });
 
 // Grid button: cycle 1 → 6 → 1 panels shown at once.
@@ -376,7 +489,7 @@ document.getElementById('shot-btn').addEventListener('click', async () => {
 // — in the webview, streaming its startup logs into the code panel until it
 // binds a port, then swapping to element-inspection on hover.
 const preview = document.getElementById('preview');
-const previewView = document.getElementById('preview-view');
+const previewStage = document.getElementById('preview-stage');
 const previewTitle = document.getElementById('preview-title');
 const previewCrumb = document.getElementById('preview-crumb');
 const previewHtml = document.getElementById('preview-html');
@@ -388,24 +501,47 @@ let previewUrl = '';        // URL of the live preview, for "open in browser"
 let previewCwd = '';        // project the preview belongs to
 let openInBrowserOnReady = false; // the run menu asked for the browser, not the dock
 
+// The <webview> is created on demand rather than declared in index.html.
+// Electron reads `preload` when the element attaches to the document and
+// ignores the attribute afterwards, and the inspector's preload path only
+// arrives from main asynchronously — so the element has to be built with the
+// attribute already on it. Declared in markup it attaches preload-less, and
+// the code panel stays empty however long you hover.
+let previewView = null;
+
+async function ensureWebview() {
+  if (previewView) return previewView;
+
+  const view = document.createElement('webview');
+  view.id = 'preview-view';
+  const purl = await window.api.getPreviewPreloadUrl();
+  if (purl) view.setAttribute('preload', purl);
+  view.setAttribute('src', 'about:blank');
+
+  // Element inspector messages from the running page. Only meaningful once live.
+  view.addEventListener('ipc-message', (e) => {
+    if (e.channel !== 'inspect' || previewMode !== 'live') return;
+    const d = e.args[0] || {};
+    if (d.resume) { previewCrumb.textContent = t('preview.hover'); return; }
+    previewCrumb.textContent = (d.pinned ? '📌 ' : '') + (d.path || '');
+    previewHtml.textContent = d.html || '';
+  });
+
+  // Ahead of #preview-empty so the status overlay keeps covering it.
+  previewStage.prepend(view);
+  previewView = view;
+  return view;
+}
+
 function setEmptyMessage(html) {
   previewEmpty.innerHTML = html;
   previewEmpty.classList.remove('hidden');
-  previewView.classList.add('dim');
+  if (previewView) previewView.classList.add('dim');
 }
 function showWebview() {
   previewEmpty.classList.add('hidden');
-  previewView.classList.remove('dim');
+  if (previewView) previewView.classList.remove('dim');
 }
-
-// Element inspector messages from the running page. Only meaningful once live.
-previewView.addEventListener('ipc-message', (e) => {
-  if (e.channel !== 'inspect' || previewMode !== 'live') return;
-  const d = e.args[0] || {};
-  if (d.resume) { previewCrumb.textContent = t('preview.hover'); return; }
-  previewCrumb.textContent = (d.pinned ? '📌 ' : '') + (d.path || '');
-  previewHtml.textContent = d.html || '';
-});
 
 // `external: true` means the caller only wants the URL (to hand to the desktop
 // browser), so we start the process without unfolding the dock over the panels.
@@ -414,12 +550,7 @@ async function openPreview({ external = false } = {}) {
   if (!t || !t.cwd) { toast(window.t('toast.openProject')); return; }
   if (!external) preview.classList.remove('collapsed');
 
-  // The webview's inspector preload path comes from main (sandboxed preload
-  // can't build it). Set it once before the first navigation.
-  if (!previewView.getAttribute('preload')) {
-    const purl = await window.api.getPreviewPreloadUrl();
-    if (purl) previewView.setAttribute('preload', purl);
-  }
+  const view = await ensureWebview();
 
   previewMode = 'starting';
   previewLog = '';
@@ -428,7 +559,7 @@ async function openPreview({ external = false } = {}) {
   previewTitle.textContent = `👁 ${t.name}`;
   previewCrumb.textContent = window.t('preview.starting');
   previewHtml.textContent = '';
-  previewView.src = 'about:blank';
+  view.src = 'about:blank';
   setEmptyMessage(`<p class="spin">◐</p><p>${window.t('preview.startingName', { name: t.name })}</p>`
     + `<p class="hint">${window.t('preview.seeLog')}</p>`);
   await window.api.startPreview(t.cwd);
@@ -459,7 +590,7 @@ window.api.onPreviewEvent((d) => {
       openInBrowserOnReady = false;
       window.api.openExternal(d.url);
       toast(window.t('toast.siteOpened', { url: d.url }));
-    } else {
+    } else if (previewView) {
       previewView.src = d.url;
     }
   } else if (d.type === 'error') {
@@ -702,6 +833,17 @@ window.api.onGlobalModelChanged((id) => {
   if (!modelMenu.classList.contains('hidden')) renderModelMenu();
 });
 
+// An import can rewrite the per-project model map wholesale. Re-read it for
+// every open tab rather than trust what each one cached at open time.
+window.api.onPortableImported(({ models }) => {
+  for (const tab of tabs.values()) {
+    if (!tab.cwd) continue;
+    tab.model = (models && models[tab.cwd]) || 'default';
+  }
+  renderModelBtn();
+  if (!modelMenu.classList.contains('hidden')) renderModelMenu();
+});
+
 renderModelBtn();
 
 // The boot payload is synchronous and can miss if main wasn't listening yet;
@@ -736,11 +878,99 @@ function setStat(sel, valText) {
   document.getElementById(sel).querySelector('.m-val').textContent = valText;
 }
 
+function setMeterLabel(sel, key) {
+  const el = document.getElementById(sel).querySelector('.m-label');
+  el.dataset.i18n = key;          // keeps it in the declarative re-translate sweep
+  el.textContent = t(key);
+}
+
+// A label that comes from the API (a model name) isn't translatable, and must
+// not be re-stamped by the language sweep — so it drops the data-i18n hook.
+function setMeterLabelRaw(sel, text) {
+  const el = document.getElementById(sel).querySelector('.m-label');
+  delete el.dataset.i18n;
+  el.textContent = text;
+}
+
+// The three meters read the plan's own quota when we can reach it, and the
+// local transcript estimate when we can't. Both states are legible on their
+// own; what's not acceptable is a bar that silently shows one while looking
+// like the other, so the labels and titles change with the mode.
+const PLAN_METERS = [['m-session', 'session'], ['m-week', 'week'], ['m-scoped', 'scoped']];
+let usage = null;          // last local scan
+let limits = { ok: false }; // last plan-limit read
+
+// The API grades each window itself; trust that when it's there and fall back
+// to a threshold of our own when it isn't.
+const HOT_SEVERITIES = ['warning', 'critical', 'exhausted'];
+function meterHot(win) {
+  if (win.severity) return HOT_SEVERITIES.includes(win.severity);
+  return win.pct >= 80;
+}
+
+// t() echoes unknown keys back, so an HTTP status can't be interpolated into
+// one — anything outside the known set goes through a generic string.
+const REASONS = ['no-token', 'auth', 'network', 'timeout', 'shape'];
+function reasonText(r) {
+  return REASONS.includes(r) ? t(`bar.reason.${r}`) : t('bar.reason.other', { code: r || '?' });
+}
+
+function renderPlanMeters() {
+  for (const [sel, key] of PLAN_METERS) {
+    const el = document.getElementById(sel);
+    const win = limits[key];
+    // Not every plan meters every window (Opus in particular) — a window the
+    // account doesn't have is hidden, not shown at zero.
+    el.classList.toggle('hidden', !win);
+    if (!win) continue;
+    if (win.label) setMeterLabelRaw(sel, win.label);
+    else setMeterLabel(sel, `bar.${key}`);
+    setMeter(sel, win.pct, Math.round(win.pct) + '%', meterHot(win));
+    el.title = t(limits.stale ? 'bar.planTitleStale' : 'bar.planTitle');
+  }
+}
+
+// Fallback: no plan quota, so the two meters revert to what the transcripts can
+// tell us — tokens spent today and this week, scaled against your own busiest
+// day/week on record. Same numbers the bar showed before, honestly labelled.
+function renderLocalMeters() {
+  document.getElementById('m-scoped').classList.add('hidden');
+  const pairs = [
+    ['m-session', 'bar.daily', usage && usage.today, usage && usage.peakDay],
+    ['m-week', 'bar.weekly', usage && usage.week, usage && usage.peakWeek],
+  ];
+  for (const [sel, key, bucket, peak] of pairs) {
+    const el = document.getElementById(sel);
+    el.classList.remove('hidden');
+    setMeterLabel(sel, key);
+    if (!bucket) { setMeter(sel, 0, '–'); continue; }
+    setMeter(sel, pct(bucket.tokens, peak), fmtTokens(bucket.tokens));
+    el.title = t('bar.localTitle', { reason: reasonText(limits.reason) });
+  }
+}
+
+function renderMeters() {
+  if (limits.ok) renderPlanMeters();
+  else renderLocalMeters();
+  tickResets();
+}
+
+// The plan windows are the live number, so they refresh on their own (cheap)
+// timer. Main caches them for a minute, so polling faster than that only costs
+// an IPC round trip.
+async function refreshLimits() {
+  limits = (await window.api.getUsageLimits()) || { ok: false, reason: 'network' };
+  renderMeters();
+}
+
+// The transcript scan walks every .jsonl under ~/.claude/projects — worth doing
+// rarely. It feeds Total/Msgs, and the meters too whenever the plan quota is
+// out of reach.
 async function refreshUsage() {
   const u = await window.api.getUsageStats();
   if (!u) return;
-  setMeter('m-daily', pct(u.today.tokens, u.peakDay), fmtTokens(u.today.tokens));
-  setMeter('m-weekly', pct(u.week.tokens, u.peakWeek), fmtTokens(u.week.tokens));
+  usage = u;
+  renderMeters();
   setStat('m-total', `${fmtTokens(u.total.tokens)} · ${fmtCost(u.total.cost)}`);
   setStat('m-msgs', String(u.today.msgs));
   document.getElementById('m-total').title =
@@ -766,25 +996,31 @@ function fmtCountdown(ms) {
   return `${m}m ${String(sec).padStart(2, '0')}s`;
 }
 
+// Countdown under each meter. In plan mode these are the account's real reset
+// timestamps. In local mode only the daily bucket has a boundary to count down
+// to — the local week is a rolling 7-day window that never resets — so the week
+// meter shows no countdown rather than a made-up one.
+function tickResets() {
+  const now = Date.now();
+  const midnight = new Date();
+  midnight.setHours(24, 0, 0, 0);
+
+  for (const [sel, key] of PLAN_METERS) {
+    const node = document.querySelector(`#${sel} .m-reset`);
+    if (!node) continue;
+    const at = limits.ok
+      ? (limits[key] && limits[key].resetsAt)
+      : (sel === 'm-session' ? midnight.getTime() : null);
+    node.textContent = at ? t('bar.reset', { time: fmtCountdown(at - now) }) : '';
+  }
+}
+
 function tickClock() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
   document.getElementById('m-clock').textContent =
     `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-
-  // Daily resets at next local midnight.
-  const nextMidnight = new Date(d);
-  nextMidnight.setHours(24, 0, 0, 0);
-  // Weekly resets at the start of next Monday (ISO week).
-  const nextMonday = new Date(d);
-  nextMonday.setHours(24, 0, 0, 0);
-  const daysToMon = (8 - (d.getDay() || 7)); // Sun=0 -> 7
-  nextMonday.setDate(nextMonday.getDate() + (daysToMon - 1));
-
-  document.querySelector('#m-daily .m-reset').textContent =
-    t('bar.reset', { time: fmtCountdown(nextMidnight - d) });
-  document.querySelector('#m-weekly .m-reset').textContent =
-    t('bar.reset', { time: fmtCountdown(nextMonday - d) });
+  tickResets();
 }
 
 // Strings and colours baked into JS (button labels, live xterm palettes) don't
@@ -809,9 +1045,19 @@ window.ui.onChange((kind, payload) => {
   }
 });
 
+// Picking a tab from the tray menu goes through the same setActive() as a click
+// in the rail — the tray is a remote control, not a second code path.
+// Guarded so a preload that predates the tray can't take the renderer down.
+if (window.api.onTraySelect) {
+  window.api.onTraySelect((id) => { if (tabs.has(id)) setActive(id); });
+}
+
+refreshLimits();
 refreshUsage();
 refreshSystem();
 tickClock();
+syncTray();   // seed the menu with the empty state before the first tab opens
 setInterval(refreshSystem, 2000);
 setInterval(tickClock, 1000);
-setInterval(refreshUsage, 300000); // re-scan usage every 5 min
+setInterval(refreshLimits, 60000);  // plan quota: the number that actually moves
+setInterval(refreshUsage, 300000);  // re-scan transcripts every 5 min

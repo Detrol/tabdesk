@@ -12,8 +12,17 @@ const theme = require('./theme');
 const i18n = require('./i18n');
 const settings = require('./settings');
 const model = require('./model');
+const portable = require('./portable');
+const updater = require('./updater');
+const usageLimits = require('./usage-limits');
+const tray = require('./tray');
 
-const PROJECTS_DIR = path.join(os.homedir(), 'claude-projects');
+// Demo/testing hooks, unset in normal use. TABDESK_PROJECTS_DIR points the rail
+// at a scratch set of projects (screenshots, trying layout changes against a
+// known set) without touching the real one; TABDESK_START_CMD gives those tabs
+// a command other than a live Claude session.
+const PROJECTS_DIR = process.env.TABDESK_PROJECTS_DIR || path.join(os.homedir(), 'claude-projects');
+const DEMO_START_CMD = process.env.TABDESK_START_CMD || null;
 
 // Aggregate Claude Code usage off the main thread.
 function scanUsage() {
@@ -157,6 +166,108 @@ function createProject(rawName) {
   }
 }
 
+// ---- Export / import of the portable "light layer" ------------------------
+//
+// Its own top-level window, for the same reason the picker is one: the
+// embedded terminals are native X windows stacked above the page, so an
+// in-page modal would sit behind whichever one is open.
+//
+// The bundle being imported never crosses to the renderer — main holds it
+// while the window shows the diff, and drops it when the window closes. The
+// renderer only ever sees an inventory and a plan.
+let portableWin = null;
+const pendingBundles = new Map();
+
+function openPortableWindow(parent) {
+  if (portableWin && !portableWin.isDestroyed()) { portableWin.focus(); return portableWin; }
+
+  const win = new BrowserWindow({
+    parent,
+    modal: true,
+    width: 760,
+    height: 700,
+    minWidth: 560,
+    minHeight: 460,
+    show: false,
+    minimizable: false,
+    maximizable: false,
+    backgroundColor: (activeTheme && activeTheme.tokens.bg) || '#1e1e2e',
+    title: 'TabDesk',
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'portable-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  win.setMenuBarVisibility(false);
+  win.loadFile(path.join(__dirname, 'renderer', 'portable.html'));
+  win.once('ready-to-show', () => win.show());
+  // Read the id now: webContents is gone by the time 'closed' fires.
+  const contentsId = win.webContents.id;
+  win.on('closed', () => {
+    pendingBundles.delete(contentsId);
+    if (portableWin === win) portableWin = null;
+  });
+
+  portableWin = win;
+  return win;
+}
+
+// ---- Updates ---------------------------------------------------------------
+//
+// A background check asks the CDN's apt index what's published and tells the
+// renderer, which raises a chip in the system bar. Everything privileged lives
+// in updater.js; this is the window and the plumbing around it.
+let updateWin = null;
+let updateState = null;     // last check result, or null before the first one
+let updateBusy = false;     // an install is in flight
+
+function openUpdateWindow(parent) {
+  if (updateWin && !updateWin.isDestroyed()) { updateWin.focus(); return updateWin; }
+
+  const win = new BrowserWindow({
+    parent,
+    modal: false,   // unlike the picker: an update can download while you work
+    width: 560,
+    // Snug for the resting state; the progress bar, status line and dpkg output
+    // all appear inside this, pushing the pinned footer down as they arrive.
+    height: 360,
+    minWidth: 460,
+    minHeight: 320,
+    show: false,
+    minimizable: false,
+    maximizable: false,
+    backgroundColor: (activeTheme && activeTheme.tokens.bg) || '#1e1e2e',
+    title: 'TabDesk',
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'update-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  win.setMenuBarVisibility(false);
+  win.loadFile(path.join(__dirname, 'renderer', 'update.html'));
+  win.once('ready-to-show', () => win.show());
+  win.on('closed', () => { if (updateWin === win) updateWin = null; });
+
+  updateWin = win;
+  return win;
+}
+
+// Ask apt what's published, remember it, and let the main window know.
+async function checkForUpdate(win, options) {
+  try {
+    updateState = await updater.check(options);
+  } catch (err) {
+    console.warn('[update] check failed:', String(err.message || err));
+    return { ok: false, error: String(err.message || err) };
+  }
+  if (win && !win.isDestroyed()) win.webContents.send('update:available', updateState);
+  return { ok: true, state: updateState };
+}
+
 // ---- Theme + language plumbing --------------------------------------------
 
 // Re-resolve the active theme and push it to the renderer. Called on startup,
@@ -211,6 +322,7 @@ app.whenReady().then(async () => {
 
   const win = createWindow();
   watchDesktopTheme(win);
+  tray.init(win, activeI18n.strings);
 
   // Sync boot payload: the renderer needs theme + strings before first paint,
   // otherwise the UI flashes untranslated in the wrong colours.
@@ -220,6 +332,7 @@ app.whenReady().then(async () => {
       i18n: activeI18n,
       settings: settings.all(),
       model: { list: model.list(), global: model.globalDefault(), byProject: model.allFor() },
+      demoStartCmd: DEMO_START_CMD,
     };
   });
 
@@ -244,14 +357,26 @@ app.whenReady().then(async () => {
   ipcMain.handle('i18n:list', () => i18n.list());
   ipcMain.handle('language:set', (event, code) => {
     settings.set('language', code);
-    return applyLanguage(win);
+    const next = applyLanguage(win);
+    tray.setStrings(next.strings);
+    return next;
   });
+
+  // ---- Tray ----
+  // The renderer owns the tab list; this is the mirror it pushes on every
+  // add / close / rename / switch. The tray menu is rebuilt from it.
+  ipcMain.on('tray:tabs', (event, payload) => tray.setTabs(payload));
 
   // Embedded native terminal windows (xterm) reparent into this window (X11).
   win.once('ready-to-show', () => termEmbed.init(win));
   termEmbed.init(win);
   termEmbed.setReadyNotifier((id) => {
     if (!win.isDestroyed()) win.webContents.send('embed:ready', { id });
+  });
+  // Drives the rail's busy/done dots for embedded terminals, the way pty data
+  // does for the xterm.js backend.
+  termEmbed.setActivityNotifier((id) => {
+    if (!win.isDestroyed()) win.webContents.send('embed:activity', { id });
   });
 
   // ---- Embedded native terminal lifecycle ----
@@ -301,7 +426,150 @@ app.whenReady().then(async () => {
     return { name: path.basename(dir), path: dir, model: model.getFor(dir) };
   });
 
+  // ---- Portable state: export / import ----
+  ipcMain.handle('portable:open', () => { openPortableWindow(win); return true; });
+  ipcMain.on('portable:close', (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (owner && !owner.isDestroyed()) owner.close();
+  });
+
+  ipcMain.handle('portable:scan', () => {
+    try { return { ok: true, scan: portable.scan() }; }
+    catch (err) { return { ok: false, error: String(err.message || err) }; }
+  });
+
+  ipcMain.handle('portable:export', async (event, slugs) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showSaveDialog(owner, {
+      defaultPath: path.join(app.getPath('documents') || os.homedir(), portable.suggestedName()),
+      filters: [{ name: 'TabDesk bundle', extensions: ['tabdesk'] }],
+    });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+    try {
+      const bundle = portable.buildBundle({ slugs: Array.isArray(slugs) ? slugs : null });
+      const written = portable.writeBundle(res.filePath, bundle);
+      return {
+        ok: true,
+        path: written.path,
+        bytes: written.bytes,
+        projects: bundle.projects.length,
+        memoryFiles: bundle.projects.reduce((n, p) => n + p.memory.length, 0),
+      };
+    } catch (err) {
+      return { ok: false, error: String(err.message || err) };
+    }
+  });
+
+  // Parse a bundle and hand back its diff. The bundle itself stays here.
+  ipcMain.handle('portable:open-bundle', async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(owner, {
+      properties: ['openFile'],
+      filters: [
+        { name: 'TabDesk bundle', extensions: ['tabdesk'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+    if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
+    try {
+      const bundle = portable.readBundle(res.filePaths[0]);
+      pendingBundles.set(event.sender.id, bundle);
+      return { ok: true, file: res.filePaths[0], plan: portable.plan(bundle) };
+    } catch (err) {
+      pendingBundles.delete(event.sender.id);
+      return { ok: false, error: String(err.message || err) };
+    }
+  });
+
+  // Re-diff the bundle that's already open — the plan goes stale the moment an
+  // import writes anything.
+  ipcMain.handle('portable:replan', (event) => {
+    const bundle = pendingBundles.get(event.sender.id);
+    if (!bundle) return { ok: false, error: 'no bundle open' };
+    try { return { ok: true, plan: portable.plan(bundle) }; }
+    catch (err) { return { ok: false, error: String(err.message || err) }; }
+  });
+
+  ipcMain.handle('portable:apply', (event, options) => {
+    const bundle = pendingBundles.get(event.sender.id);
+    if (!bundle) return { ok: false, error: 'no bundle open' };
+    let result;
+    try { result = portable.apply(bundle, options || {}); }
+    catch (err) { return { ok: false, error: String(err.message || err) }; }
+    if (!result.ok) return result;
+
+    // An import can change theme, language and model choices out from under the
+    // main window — re-push all three rather than leave it showing stale state.
+    if (result.prefsChanged.includes('theme')) applyTheme(win);
+    if (result.prefsChanged.includes('language')) applyLanguage(win);
+    if (result.modelsWritten && !win.isDestroyed()) {
+      win.webContents.send('portable:imported', { models: model.allFor() });
+    }
+    return result;
+  });
+
+  // ---- Updates ----
+  ipcMain.handle('update:open', () => { openUpdateWindow(win); return true; });
+  ipcMain.on('update:close', (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (owner && !owner.isDestroyed()) owner.close();
+  });
+
+  ipcMain.handle('update:state', () => (updateState ? { ok: true, state: updateState } : null));
+  // `refresh` is only ever true for an explicit "check again": it runs
+  // `apt-get update` under pkexec, and the background timer must not prompt.
+  ipcMain.handle('update:check', (event, options) => checkForUpdate(win, options));
+
+  ipcMain.handle('update:run', async (event) => {
+    if (!updateState || !updateState.available) return { ok: false, error: 'nothing to install' };
+    if (updateBusy) return { ok: false, error: 'an update is already running' };
+    updateBusy = true;
+    const sender = event.sender;
+    const send = (payload) => { if (!sender.isDestroyed()) sender.send('update:progress', payload); };
+    try {
+      // apt does the fetching, the signature check and the install in one step,
+      // so there is no download phase of our own to report progress for.
+      send({ step: 'install' });
+      const res = await updater.install();
+      if (res.ok) {
+        // The installed version moved; re-read it so the chip settles.
+        await checkForUpdate(win);
+        return { ok: true, version: updateState ? updateState.installed : null };
+      }
+      return { ok: false, ...res };
+    } catch (err) {
+      return { ok: false, error: String(err.message || err) };
+    } finally {
+      updateBusy = false;
+    }
+  });
+
+  // Fallback when the polkit prompt is unavailable or dismissed: hand the
+  // command to a real TabDesk terminal and let the user type their password.
+  ipcMain.handle('update:terminal', () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('update:open-terminal', { command: updater.installCommand() });
+      win.focus();
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle('update:restart', () => {
+    app.relaunch();
+    app.quit();
+    return true;
+  });
+
+  // First check once the window has settled, then on a slow timer.
+  const firstCheck = setTimeout(() => checkForUpdate(win), 8000);
+  const recheck = setInterval(() => checkForUpdate(win), updater.CHECK_INTERVAL_MS);
+  app.on('will-quit', () => { clearTimeout(firstCheck); clearInterval(recheck); });
+
   ipcMain.handle('usage:stats', () => scanUsage());
+
+  // Plan limits (what /usage shows). Separate from usage:stats: that one is a
+  // local scan of the transcripts, this one is the account's real quota.
+  ipcMain.handle('usage:limits', () => usageLimits.getLimits());
 
   ipcMain.handle('system:stats', () => ({
     cpu: cpuPercent(),

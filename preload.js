@@ -57,10 +57,34 @@ contextBridge.exposeInMainWorld('api', {
   },
   openExternal: (url) => ipcRenderer.invoke('site:open-external', url),
 
+  // Export / import of the portable light layer (memory, CLAUDE.md, prefs).
+  openPortable: () => ipcRenderer.invoke('portable:open'),
+  onPortableImported: (cb) => {
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on('portable:imported', listener);
+    return () => ipcRenderer.removeListener('portable:imported', listener);
+  },
+
+  // Updates: a background check raises the chip in the system bar; the window
+  // does the rest.
+  openUpdate: () => ipcRenderer.invoke('update:open'),
+  onUpdateAvailable: (cb) => {
+    const listener = (_event, state) => cb(state);
+    ipcRenderer.on('update:available', listener);
+    return () => ipcRenderer.removeListener('update:available', listener);
+  },
+  // The update window asks for the install command to be run in a real tab.
+  onUpdateTerminal: (cb) => {
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on('update:open-terminal', listener);
+    return () => ipcRenderer.removeListener('update:open-terminal', listener);
+  },
+
   listProjects: () => ipcRenderer.invoke('projects:list'),
   // Opens the "new tab" picker window; resolves with the choice, or null.
   pickProject: () => ipcRenderer.invoke('projects:pick'),
   getUsageStats: () => ipcRenderer.invoke('usage:stats'),
+  getUsageLimits: () => ipcRenderer.invoke('usage:limits'),
   getSystemStats: () => ipcRenderer.invoke('system:stats'),
   captureTerminal: (rect, name) => ipcRenderer.invoke('screenshot:capture', { rect, name }),
   createTerminal: (id, cols, rows, cwd, startCmd) => ipcRenderer.send('term:create', { id, cols, rows, cwd, startCmd }),
@@ -74,6 +98,13 @@ contextBridge.exposeInMainWorld('api', {
     const listener = (_event, { id }) => cb(id);
     ipcRenderer.on('embed:ready', listener);
     return () => ipcRenderer.removeListener('embed:ready', listener);
+  },
+  // The embedded terminal wrote something — the stand-in for the pty data
+  // stream the xterm.js backend gets.
+  onEmbedActivity: (cb) => {
+    const listener = (_event, { id }) => cb(id);
+    ipcRenderer.on('embed:activity', listener);
+    return () => ipcRenderer.removeListener('embed:activity', listener);
   },
 
   sendInput: (id, data) => ipcRenderer.send('term:input', { id, data }),
@@ -92,5 +123,15 @@ contextBridge.exposeInMainWorld('api', {
     const listener = () => cb();
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
+  },
+
+  // ---- System tray ----
+  // Push a snapshot of the rail so the tray menu can mirror it. Sent on every
+  // tab add / close / rename / switch; the tray keeps no state of its own.
+  syncTray: (payload) => ipcRenderer.send('tray:tabs', payload),
+  onTraySelect: (cb) => {
+    const listener = (_event, id) => cb(id);
+    ipcRenderer.on('tray:select', listener);
+    return () => ipcRenderer.removeListener('tray:select', listener);
   },
 });

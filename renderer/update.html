@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>TabDesk</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="update.css" />
+</head>
+<body class="up-body">
+  <div id="up">
+    <header id="up-head">
+      <h1 data-i18n="update.title">Update TabDesk</h1>
+      <p id="up-lead" data-i18n="update.checking">Checking…</p>
+    </header>
+
+    <!-- Current → available, plus the download size. -->
+    <div id="up-versions" class="up-versions hidden">
+      <div class="up-ver">
+        <span class="up-ver-label" data-i18n="update.installed">Installed</span>
+        <span class="up-ver-num" id="up-from">–</span>
+      </div>
+      <span class="up-arrow">→</span>
+      <div class="up-ver">
+        <span class="up-ver-label" data-i18n="update.available">Available</span>
+        <span class="up-ver-num accent" id="up-to">–</span>
+      </div>
+      <span class="up-size" id="up-size"></span>
+    </div>
+
+    <!-- Shown only when the running build isn't the installed one (a dev
+         checkout started with npm start). -->
+    <p id="up-running" class="up-note hidden"></p>
+
+    <div id="up-progress" class="up-progress hidden">
+      <div class="up-track"><div class="up-fill" id="up-fill"></div></div>
+      <span class="up-pct" id="up-pct">0%</span>
+    </div>
+
+    <p id="up-status" class="up-status hidden"></p>
+    <pre id="up-output" class="up-output hidden"></pre>
+
+    <footer id="up-foot">
+      <button id="up-run" class="up-primary hidden" data-i18n="update.install">Download &amp; install</button>
+      <button id="up-restart" class="up-primary hidden" data-i18n="update.restart">Restart TabDesk</button>
+      <button id="up-terminal" class="hidden" data-i18n="update.inTerminal">Run in a terminal</button>
+      <button id="up-recheck" data-i18n="update.recheck">Check again</button>
+      <span class="up-spacer"></span>
+      <button id="up-close" data-i18n="update.close">Close</button>
+    </footer>
+  </div>
+
+  <script src="ui.js"></script>
+  <script src="update.js"></script>
+</body>
+</html>

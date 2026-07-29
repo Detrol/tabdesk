@@ -1,0 +1,157 @@
+/* Update window — its own window, borrowing only the theme tokens. */
+
+.up-body {
+  display: flex;
+  padding: 18px 20px;
+}
+
+#up {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  min-height: 0;
+}
+
+#up-head h1 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: .5px;
+  color: var(--accent-soft);
+  text-shadow: var(--glow-text);
+}
+#up-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* ---- version pair ---- */
+
+.up-versions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+.up-ver { display: flex; flex-direction: column; gap: 2px; }
+.up-ver-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.1px;
+  color: var(--faint);
+}
+.up-ver-num { font-size: 17px; color: var(--text); }
+.up-ver-num.accent { color: var(--accent-2); text-shadow: var(--glow-text); }
+.up-arrow { color: var(--faint); font-size: 15px; }
+.up-size { margin-left: auto; font-size: 11px; color: var(--faint); }
+
+.up-note {
+  margin: 0;
+  padding: 7px 10px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--warn);
+  border-radius: 6px;
+}
+
+/* ---- progress ---- */
+
+.up-progress { display: flex; align-items: center; gap: 10px; }
+.up-track {
+  flex: 1;
+  height: 8px;
+  background: var(--tint);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.up-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent-2);
+  box-shadow: var(--glow-accent-2);
+  transition: width .18s ease-out;
+}
+/* Verifying and installing have no percentage to show — stripe it instead. */
+.up-fill.busy {
+  width: 100% !important;
+  background: repeating-linear-gradient(
+    90deg, var(--accent-2) 0 10px, var(--tint-strong) 10px 20px);
+}
+.up-pct { min-width: 3.5em; font-size: 11px; color: var(--dim); text-align: right; }
+
+/* ---- status ---- */
+
+.up-status {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--ok);
+  border-radius: 6px;
+}
+.up-status.bad { border-left-color: var(--danger); color: var(--danger); }
+.up-status.busy { border-left-color: var(--accent-2); }
+
+.up-output {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 150px;
+  overflow: auto;
+  font-family: ui-monospace, "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.hidden { display: none !important; }
+
+/* ---- buttons ---- */
+
+#up button:not(.up-primary) {
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+#up button:not(.up-primary):hover { background: var(--tint-strong); border-color: var(--accent); }
+
+#up .up-primary {
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent-2);
+  border: 1px solid var(--accent-2);
+  border-radius: 6px;
+  cursor: pointer;
+}
+#up .up-primary:hover { box-shadow: var(--glow-accent-2); }
+#up button[disabled] { opacity: .5; cursor: default; box-shadow: none; }
+
+#up-foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.up-spacer { flex: 1; }

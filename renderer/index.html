@@ -37,6 +37,7 @@
         </div>
         <button id="preview-btn" data-i18n="rail.preview" data-i18n-title="rail.preview.title">👁 Preview</button>
         <button id="shot-btn" data-i18n="rail.screenshot" data-i18n-title="rail.screenshot.title">📷 Screenshot</button>
+        <button id="portable-btn" data-i18n="rail.portable" data-i18n-title="rail.portable.title">⇄ Sync</button>
         <button id="fullscreen-btn" data-i18n="rail.fullscreen" data-i18n-title="rail.fullscreen.title">⛶ Fullscreen</button>
       </div>
     </aside>
@@ -64,7 +65,11 @@
       </div>
       <div id="preview-body">
         <div id="preview-stage">
-          <webview id="preview-view" src="about:blank"></webview>
+          <!-- The <webview> is built in JS on first preview, not declared here:
+               Electron reads its `preload` attribute when the element attaches,
+               and the inspector's preload path is only known after a round trip
+               to main. Declared here it would attach preload-less, and hovering
+               the running app would never report any code. -->
           <div id="preview-empty">
             <p>👁</p>
             <p data-i18n-html="preview.empty">Select a project and press <strong>Preview</strong>.</p>
@@ -92,14 +97,25 @@
       <button id="model-btn" aria-haspopup="menu" aria-expanded="false">–</button>
     </div>
 
-    <div class="meter" id="m-daily">
-      <span class="m-label" data-i18n="bar.daily">Daily</span>
+    <!-- The plan's own limit windows, the same three /usage reports. Labels are
+         set from JS: if the account's quota can't be read these fall back to
+         the local token estimate and rename themselves accordingly. -->
+    <div class="meter" id="m-session">
+      <span class="m-label" data-i18n="bar.session">Session</span>
       <div class="m-track"><div class="m-fill"></div></div>
       <span class="m-val">–</span>
       <span class="m-reset">(–)</span>
     </div>
-    <div class="meter" id="m-weekly">
-      <span class="m-label" data-i18n="bar.weekly">Weekly</span>
+    <div class="meter" id="m-week">
+      <span class="m-label" data-i18n="bar.week">Week</span>
+      <div class="m-track"><div class="m-fill"></div></div>
+      <span class="m-val">–</span>
+      <span class="m-reset">(–)</span>
+    </div>
+    <!-- The weekly per-model cap, when the plan has one. Its label is the model
+         the API says it's scoped to, so it isn't pinned to any one model. -->
+    <div class="meter hidden" id="m-scoped">
+      <span class="m-label" data-i18n="bar.scoped">Model</span>
       <div class="m-track"><div class="m-fill"></div></div>
       <span class="m-val">–</span>
       <span class="m-reset">(–)</span>
@@ -109,6 +125,10 @@
     <div class="stat" id="m-msgs"><span class="m-label" data-i18n="bar.msgs">Msgs today</span><span class="m-val">–</span></div>
 
     <div class="sb-spacer"></div>
+
+    <!-- Raised by the background update check; hidden until there's something
+         newer than the installed .deb. -->
+    <button id="update-btn" class="hidden" data-i18n-title="update.chip.title">⬆ <span id="update-ver">–</span></button>
 
     <div class="meter mini" id="m-cpu">
       <span class="m-label" data-i18n="bar.cpu">CPU</span>

@@ -1,0 +1,252 @@
+/* Export / import window — like the picker, its own window, borrowing only the
+   theme tokens from styles.css. */
+
+.pt-body {
+  display: flex;
+  padding: 18px 20px;
+}
+
+#pt {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  min-height: 0;
+}
+
+#pt-head h1 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: .5px;
+  color: var(--accent-soft);
+  text-shadow: var(--glow-text);
+}
+#pt-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* ---- tabs ---- */
+
+#pt-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.pt-tab {
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: .4px;
+  color: var(--dim);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.pt-tab:hover { color: var(--text); }
+.pt-tab.active {
+  color: var(--accent-soft);
+  border-bottom-color: var(--accent);
+}
+
+/* ---- shared view chrome ---- */
+
+.pt-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+#pt-im-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.pt-summary { margin: 0; font-size: 12px; color: var(--text); }
+.pt-hint { margin: 0; font-size: 11px; color: var(--faint); }
+.pt-note {
+  margin: 0;
+  padding: 7px 10px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--warn);
+  border-radius: 6px;
+}
+.pt-note.bad { border-left-color: var(--danger); }
+.pt-result {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--ok);
+  color: var(--text);
+}
+.pt-result.bad { border-left-color: var(--danger); color: var(--danger); }
+.hidden { display: none !important; }
+
+/* ---- the project list ---- */
+
+.pt-listwrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 100px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.pt-listbar {
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.pt-link {
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--accent-soft);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.pt-link:hover { text-decoration: underline; }
+
+#pt-ex-list, #pt-im-list {
+  flex: 1;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.pt-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+.pt-item:hover { background: var(--tint); }
+.pt-item input { margin: 0; accent-color: var(--accent); }
+.pt-item label { display: flex; align-items: baseline; gap: 8px; flex: 1; cursor: pointer; min-width: 0; }
+.pt-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.pt-path {
+  font-size: 10px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+/* Per-project counts and per-file verdicts. */
+.pt-badge {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 10px;
+  letter-spacing: .3px;
+  border-radius: 999px;
+  background: var(--tint-strong);
+  color: var(--dim);
+}
+.pt-badge.new     { color: var(--ok);     background: var(--tint); }
+.pt-badge.changed { color: var(--warn);   background: var(--tint); }
+.pt-badge.same    { color: var(--faint);  background: none; }
+.pt-badge.blocked { color: var(--danger); background: var(--tint); }
+
+/* ---- import options ---- */
+
+.pt-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding-top: 2px;
+}
+.pt-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.pt-options input { accent-color: var(--accent); }
+.pt-opt-danger span { color: var(--warn); }
+
+/* ---- empty state ---- */
+
+.pt-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--dim);
+  font-size: 12px;
+  text-align: center;
+}
+.pt-empty p:first-child { font-size: 30px; margin: 0; opacity: .6; }
+.pt-empty p { margin: 0; }
+
+/* ---- buttons / footer ---- */
+
+/* The :not() chain has to exclude .pt-primary as well: :not() carries its
+   argument's specificity, so an unexcluded primary would lose to this rule. */
+#pt button:not(.pt-tab):not(.pt-link):not(.pt-primary) {
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+#pt button:not(.pt-tab):not(.pt-link):not(.pt-primary):hover {
+  background: var(--tint-strong);
+  border-color: var(--accent);
+}
+#pt .pt-primary {
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--on-accent);
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  font-weight: 600;
+}
+#pt .pt-primary:hover { box-shadow: var(--glow-accent-2); }
+#pt button[disabled] { opacity: .5; cursor: default; }
+#pt button[disabled]:hover { background: var(--tint); border-color: var(--line); box-shadow: none; }
+
+#pt-foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.pt-spacer { flex: 1; }

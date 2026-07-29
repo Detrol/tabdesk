@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>TabDesk</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="portable.css" />
+</head>
+<body class="pt-body">
+  <div id="pt">
+    <header id="pt-head">
+      <h1 data-i18n="portable.title">Move your setup</h1>
+      <p data-i18n="portable.lead">Memory, CLAUDE.md and preferences — not the code, and not the transcripts.</p>
+    </header>
+
+    <nav id="pt-tabs" role="tablist">
+      <button id="pt-tab-export" class="pt-tab active" role="tab" data-i18n="portable.tab.export">Export</button>
+      <button id="pt-tab-import" class="pt-tab" role="tab" data-i18n="portable.tab.import">Import</button>
+    </nav>
+
+    <!-- ---- Export ---- -->
+    <section id="pt-export" class="pt-view">
+      <p id="pt-ex-summary" class="pt-summary" data-i18n="portable.scanning">Reading…</p>
+      <div class="pt-listwrap">
+        <div class="pt-listbar">
+          <button id="pt-ex-all" class="pt-link" data-i18n="portable.selectAll">Select all</button>
+          <button id="pt-ex-none" class="pt-link" data-i18n="portable.selectNone">Select none</button>
+        </div>
+        <ul id="pt-ex-list"></ul>
+      </div>
+      <p id="pt-ex-note" class="pt-hint" data-i18n="portable.exportNote">
+        Session transcripts and project files stay put — move those with git or rsync.
+      </p>
+      <p id="pt-ex-result" class="pt-result hidden"></p>
+    </section>
+
+    <!-- ---- Import ---- -->
+    <section id="pt-import" class="pt-view hidden">
+      <div id="pt-im-pick" class="pt-empty">
+        <p>⇄</p>
+        <p data-i18n="portable.importEmpty">Open a .tabdesk bundle to see what it would change.</p>
+        <button id="pt-im-open" class="pt-primary" data-i18n="portable.chooseFile">Choose file…</button>
+        <p id="pt-im-error" class="pt-result bad hidden"></p>
+      </div>
+
+      <div id="pt-im-plan" class="hidden">
+        <p id="pt-im-source" class="pt-summary"></p>
+        <p id="pt-im-rewrite" class="pt-note hidden"></p>
+        <p id="pt-im-dropped" class="pt-note bad hidden"></p>
+        <div class="pt-listwrap">
+          <ul id="pt-im-list"></ul>
+        </div>
+        <div id="pt-im-options" class="pt-options">
+          <label><input type="checkbox" id="pt-opt-memory" checked /> <span data-i18n="portable.opt.memory">Memory files</span></label>
+          <label><input type="checkbox" id="pt-opt-claudemd" checked /> <span data-i18n="portable.opt.claudeMd">CLAUDE.md</span></label>
+          <label><input type="checkbox" id="pt-opt-models" checked /> <span data-i18n="portable.opt.models">Model choices</span></label>
+          <label><input type="checkbox" id="pt-opt-prefs" checked /> <span data-i18n="portable.opt.prefs">Theme &amp; language</span></label>
+          <label class="pt-opt-danger"><input type="checkbox" id="pt-opt-overwrite" /> <span data-i18n="portable.opt.overwrite">Overwrite files that differ</span></label>
+        </div>
+        <p id="pt-im-result" class="pt-result hidden"></p>
+      </div>
+    </section>
+
+    <footer id="pt-foot">
+      <button id="pt-export-btn" class="pt-primary" data-i18n="portable.exportBtn">Export…</button>
+      <button id="pt-import-btn" class="pt-primary hidden" data-i18n="portable.importBtn">Import</button>
+      <button id="pt-im-other" class="hidden" data-i18n="portable.otherFile">Other file…</button>
+      <span class="pt-spacer"></span>
+      <button id="pt-close" data-i18n="portable.close">Close</button>
+    </footer>
+  </div>
+
+  <script src="ui.js"></script>
+  <script src="portable.js"></script>
+</body>
+</html>

@@ -562,6 +562,12 @@ html, body {
   overflow: hidden;
 }
 .meter.mini .m-track { width: 54px; }
+/* Three plan windows share the space two local meters used to have, so their
+   tracks give a little back to keep the bar off the overflow clip. */
+#m-session .m-track, #m-week .m-track, #m-scoped .m-track { width: 82px; }
+/* No blanket .hidden in this file (see #update-btn) — a window the plan doesn't
+   meter hides its meter entirely rather than parking it at 0%. */
+.meter.hidden { display: none; }
 .m-fill {
   height: 100%;
   width: 0%;
@@ -576,6 +582,27 @@ html, body {
 
 .stat { display: flex; align-items: center; gap: 6px; }
 .stat .m-val { color: var(--accent-2); text-shadow: var(--glow-text); }
+
+/* The bar clips instead of wrapping, and three plan windows need more room than
+   the two local meters did — at the default 1280×820 window the machine stats
+   fell off the end. So give ground in order of how little each part earns its
+   width, and only as far as each breakpoint actually requires:
+     1500 — drop the reset countdowns (the percentage is the point; when it
+            resets is context, and it's still in the tooltip)
+     1400 — narrow the quota tracks and drop the lifetime total, a number that
+            moves so slowly you'd never watch it
+     1150 — drop today's message count too
+   The live readouts — quota, CPU, RAM, clock — survive to the last. */
+@media (max-width: 1500px) {
+  #systembar .m-reset { display: none; }
+}
+@media (max-width: 1400px) {
+  #m-session .m-track, #m-week .m-track, #m-scoped .m-track { width: 64px; }
+  #m-total { display: none; }
+}
+@media (max-width: 1150px) {
+  #m-msgs { display: none; }
+}
 
 /* ---- Model picker ---- */
 #model-btn {
@@ -596,6 +623,27 @@ html, body {
 /* Picked, but the open terminal still runs the old one (restart, or /model). */
 #model-btn.pending { border-color: var(--warn); color: var(--warn); text-shadow: none; }
 #model-btn:disabled { border-color: var(--line); color: var(--faint); text-shadow: none; cursor: default; }
+
+/* "Update available" chip. Sits after the spacer, so it lands between the usage
+   meters and the machine stats — visible without competing with either. Styled
+   like the model button but in the accent colour, since it's an invitation
+   rather than a readout. */
+#update-btn {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--ok);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ok);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: .5px;
+  cursor: pointer;
+}
+#update-btn:hover { background: var(--tint); }
+/* styles.css has no blanket .hidden — each hideable element scopes its own,
+   and without this the chip sits there showing its placeholder forever. */
+#update-btn.hidden { display: none; }
 
 /* Bottom-left of the window: 44px bar + a little breathing room. Kept narrow
    enough to stay inside the rail (min-width 150px) at any window size. */
