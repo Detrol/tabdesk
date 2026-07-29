@@ -25,3 +25,9 @@ deploy/repo/
 
 # FTP credentials for the tabdesk.thern.io deploy (chmod 600, never committed)
 deploy/.ftp.env
+
+# Besöksdatabasen skapas av visitors.php och lever bara på servern
+site/data/*.sqlite*
+
+# Token som visitors.php läser — delad med thern.io:s övriga statistik-endpoints
+site/stats-token.php

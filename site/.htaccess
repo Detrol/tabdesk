@@ -1,0 +1,11 @@
+# TabDesk site — Apache-konfiguration (Inleed, shared hosting).
+#
+# Minimal med flit: sidan är statisk, och det enda som behöver regleras är att
+# besöksdatabasen aldrig får serveras. data/.htaccess gör samma sak en gång till
+# på katalogen; den här regeln gäller oavsett var filen råkar hamna.
+
+Options -Indexes
+
+<FilesMatch "\.(sqlite|sqlite-wal|sqlite-shm|db)$">
+    Require all denied
+</FilesMatch>

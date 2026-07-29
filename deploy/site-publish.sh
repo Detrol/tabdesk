@@ -25,7 +25,12 @@ local_dir="$root/site"
 : "${FTP_HOST:?}" "${FTP_USER:?}" "${FTP_PASS:?}"
 FTP_DIR="${FTP_DIR:-/}"
 
-mirror_flags="--verbose --parallel=3 --exclude-glob .*"
+# Reglerna läses i ordning och första träffen avgör: .htaccess ska med (den
+# håller besöksdatabasen oåtkomlig utifrån), databasen ska varken laddas upp
+# eller städas bort av --delete, och övriga dotfiler ska inte upp alls. Sista
+# regeln är en avsiktlig fångst-alla — när första regeln är en include blir
+# lftp:s implicita default "exkludera resten", och utan den åker inget upp.
+mirror_flags="--verbose --parallel=3 --include-glob .htaccess --exclude-glob visitors.sqlite* --exclude-glob .* --include ."
 for arg in "$@"; do
   case "$arg" in
     --dry-run) mirror_flags="$mirror_flags --dry-run" ;;

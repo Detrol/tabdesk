@@ -342,5 +342,8 @@
 </footer>
 
 <script src="rail.js"></script>
+<!-- Anonym besöksräkning: en pling till visitors.php, som lagrar en saltad hash
+     av IP-adressen och ingenting annat. Inga cookies, ingen tredje part. -->
+<script>fetch('visitors.php', { method: 'GET', cache: 'no-store' }).catch(function () {});</script>
 </body>
 </html>
