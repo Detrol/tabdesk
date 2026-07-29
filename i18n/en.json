@@ -121,7 +121,6 @@
   "run.openSite.hint": "Opens it in your browser",
   "toast.openProject": "Open a project first",
   "toast.noTerminal": "No active terminal to capture",
-  "toast.embedNoShot": "Embedded native terminal is not visible in the in-app screenshot",
   "toast.saved": "📷 Saved: {file}",
   "toast.shotFailed": "Could not save screenshot",
   "toast.appStarted": "▶ {label}",

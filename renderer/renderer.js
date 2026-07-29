@@ -6,9 +6,9 @@ const panels = document.getElementById('panels');
 const emptyState = document.getElementById('empty-state');
 
 // Terminal backend. true: embed a real native terminal (xterm) per panel as an
-// X11 window reparented over the panel — actual native window, but not visible
-// to the app's in-app screenshot. false: in-app xterm.js (renders in the DOM,
-// screenshottable). Native embedding is X11-only.
+// X11 window reparented over the panel. false: in-app xterm.js (renders in the
+// DOM). Native embedding is X11-only, and being a window of its own rather than
+// DOM is what the screenshot button has to work around.
 const EMBED_NATIVE = true;
 
 let seq = 0;
@@ -459,12 +459,12 @@ function toast(msg) {
 document.getElementById('shot-btn').addEventListener('click', async () => {
   const t = tabs.get(activeId);
   if (!t || !t.panelEl) { toast(window.t('toast.noTerminal')); return; }
-  if (t.embed) { toast(window.t('toast.embedNoShot')); return; }
   const el = t.panelEl.querySelector('.term') || t.panelEl;
   const r = el.getBoundingClientRect();
   const res = await window.api.captureTerminal(
     { x: r.x, y: r.y, width: r.width, height: r.height },
     t.name,
+    !!t.embed,
   );
   toast(res && res.ok
     ? window.t('toast.saved', { file: res.path.split('/').pop() })

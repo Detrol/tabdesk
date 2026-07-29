@@ -121,7 +121,6 @@
   "run.openSite.hint": "Öppnar den i din webbläsare",
   "toast.openProject": "Öppna ett projekt först",
   "toast.noTerminal": "Ingen aktiv terminal att fånga",
-  "toast.embedNoShot": "Den inbäddade terminalen syns inte i appens skärmbild",
   "toast.saved": "📷 Sparad: {file}",
   "toast.shotFailed": "Kunde inte spara skärmbilden",
   "toast.appStarted": "▶ {label}",

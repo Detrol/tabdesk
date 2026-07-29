@@ -86,7 +86,10 @@ contextBridge.exposeInMainWorld('api', {
   getUsageStats: () => ipcRenderer.invoke('usage:stats'),
   getUsageLimits: () => ipcRenderer.invoke('usage:limits'),
   getSystemStats: () => ipcRenderer.invoke('system:stats'),
-  captureTerminal: (rect, name) => ipcRenderer.invoke('screenshot:capture', { rect, name }),
+  // `embed` picks the capture path in main: a native terminal window isn't part
+  // of the app's own surface, so it has to be cut out of the screen instead.
+  captureTerminal: (rect, name, embed) =>
+    ipcRenderer.invoke('screenshot:capture', { rect, name, embed }),
   createTerminal: (id, cols, rows, cwd, startCmd) => ipcRenderer.send('term:create', { id, cols, rows, cwd, startCmd }),
 
   // Embedded native terminal (xterm as a real X11 window reparented into a panel).

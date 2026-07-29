@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, nativeTheme, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, shell, dialog,
+        desktopCapturer, screen } = require('electron');
 const { Worker } = require('worker_threads');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -314,6 +315,72 @@ function watchDesktopTheme(win) {
   app.on('will-quit', () => monitors.forEach((p) => p && p.kill()));
 }
 
+// ---- Screenshots -----------------------------------------------------------
+//
+// Capture path for embedded native terminals.
+//
+// capturePage() renders the window's OWN Chromium surface, and an embedded
+// terminal is a separate X11 window stacked above that surface (see
+// term-embed.js) — it is simply not in that picture, so a capturePage() shot of
+// a native pane comes back as the empty panel underneath. desktopCapturer sees
+// what the compositor sees, terminals included.
+//
+// The source has to be the SCREEN, not our own window. desktopCapturer will
+// hand out a window source too, and from another process that one does contain
+// the terminals — but asked for the window it lives in, Chromium answers with
+// its own compositor surface, which has the same blind spot capturePage() has.
+// The screen is a genuine X11 grab, so the terminals are in it.
+//
+// The cost of going through the screen is that it captures what is actually on
+// display: anything covering the panel is captured instead of the panel. The
+// app is normally on top when this runs (the user just clicked a button in it),
+// and moveTop() makes that hold in the cases where it isn't.
+//
+// `rect` is in CSS pixels relative to the window's content area — the units
+// getBoundingClientRect() hands the renderer.
+async function captureEmbedRegion(win, rect) {
+  win.moveTop();
+  await new Promise((resolve) => setTimeout(resolve, 150));   // let it repaint
+
+  const content = win.getContentBounds();          // screen coords, DIP
+  const display = screen.getDisplayMatching(content);
+  const scale = display.scaleFactor || 1;
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: {
+      width: Math.round(display.size.width * scale),
+      height: Math.round(display.size.height * scale),
+    },
+  });
+  const shot = (sources.find((s) => String(s.display_id) === String(display.id))
+                || sources[0] || {}).thumbnail;
+  if (!shot || shot.isEmpty()) return null;
+  return cropRegion(shot, {
+    ...rect,
+    x: content.x + rect.x - display.bounds.x,
+    y: content.y + rect.y - display.bounds.y,
+  }, display.size.width, display.size.height);
+}
+
+// Cut `rect` — DIP, relative to a `w`x`h` DIP area — out of a capture of that
+// area. Ask for a size, get a size: the capture backend may hand back something
+// other than the thumbnailSize we requested, so the DIP -> captured pixel
+// factor comes from the image we actually got, not from the display's scale.
+function cropRegion(image, rect, w, h) {
+  const size = image.getSize();
+  const kx = size.width / w;
+  const ky = size.height / h;
+  const clamp = (v, max) => Math.max(0, Math.min(Math.round(v), max));
+  const x = clamp(rect.x * kx, size.width - 1);
+  const y = clamp(rect.y * ky, size.height - 1);
+  return image.crop({
+    x,
+    y,
+    width: Math.max(1, clamp(rect.width * kx, size.width - x)),
+    height: Math.max(1, clamp(rect.height * ky, size.height - y)),
+  });
+}
+
 app.whenReady().then(async () => {
   // Resolve before the first window so it opens in the right colours.
   activeTheme = await theme.resolve(settings.get('theme'));
@@ -579,14 +646,19 @@ app.whenReady().then(async () => {
   }));
 
   // Capture a region of the window (the focused terminal) to a PNG file.
-  ipcMain.handle('screenshot:capture', async (event, { rect, name }) => {
+  // An in-app xterm.js pane is DOM, so the window's own surface has it; a
+  // native embedded pane needs the compositor (see captureEmbedRegion).
+  ipcMain.handle('screenshot:capture', async (event, { rect, name, embed }) => {
     try {
-      const image = await win.webContents.capturePage({
-        x: Math.max(0, Math.round(rect.x)),
-        y: Math.max(0, Math.round(rect.y)),
-        width: Math.round(rect.width),
-        height: Math.round(rect.height),
-      });
+      const image = embed
+        ? await captureEmbedRegion(win, rect)
+        : await win.webContents.capturePage({
+          x: Math.max(0, Math.round(rect.x)),
+          y: Math.max(0, Math.round(rect.y)),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        });
+      if (!image || image.isEmpty()) return { ok: false, error: 'empty capture' };
       const pics = path.join(os.homedir(), 'Pictures');
       const dir = fs.existsSync(pics) ? pics : os.homedir();
       const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
