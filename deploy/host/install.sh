@@ -6,7 +6,13 @@
 #   scp deploy/host/install.sh cdn:/srv/cdn/tabdesk/install.sh
 #
 # Usage on the target machine:
-#   curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash
+#   curl -fsSL -u USER:PASS https://cdn.thern.io/tabdesk/install.sh \
+#     | sudo TABDESK_CDN_AUTH=USER:PASS bash
+#
+# The repo is private (HTTP Basic auth on the CDN), so credentials are needed
+# twice: once by the curl that fetches this script, and once by the script for
+# the key, apt's own fetches, and the credentials file it leaves behind. They
+# are never passed on a command line — see the curl --config below.
 #
 # The keyring is verified before it is written. That matters because the step
 # people get wrong is fetching the key through something that is not the CDN:
@@ -21,6 +27,7 @@ set -euo pipefail
 BASE="https://cdn.thern.io/tabdesk"
 KEYRING="/usr/share/keyrings/tabdesk.gpg"
 LIST="/etc/apt/sources.list.d/tabdesk.list"
+AUTHFILE="/etc/apt/auth.conf.d/tabdesk.conf"
 
 # The repo signing key ('TabDesk APT repository', deploy/host/apt-repo-setup.sh).
 # Clients pin it, so it does not change between releases — see deploy/README.md.
@@ -28,10 +35,23 @@ KEY_FPR="B40ED00954B3B56421F58C99B9D44CBC6F2BD93E"
 
 [ "$(id -u)" = "0" ] || { echo "run as root (sudo bash)" >&2; exit 1; }
 
+: "${TABDESK_CDN_AUTH:?set TABDESK_CDN_AUTH=user:password (the repo is private)}"
+case "$TABDESK_CDN_AUTH" in
+    *:*) ;;
+    *) echo "TABDESK_CDN_AUTH must look like user:password" >&2; exit 2 ;;
+esac
+CDN_USER="${TABDESK_CDN_AUTH%%:*}"
+CDN_PASS="${TABDESK_CDN_AUTH#*:}"
+
 echo "==> fetching signing key"
 tmpkey="$(mktemp)"
-trap 'rm -f "$tmpkey"' EXIT
-curl -fsSL "$BASE/tabdesk-archive-keyring.gpg" -o "$tmpkey"
+# Credentials go in a curl config file rather than on the command line: argv is
+# world-readable through ps, and this script runs as root.
+tmpcfg="$(mktemp)"
+chmod 600 "$tmpcfg"
+printf 'user = "%s"\n' "$TABDESK_CDN_AUTH" > "$tmpcfg"
+trap 'rm -f "$tmpkey" "$tmpcfg"' EXIT
+curl -fsSL --config "$tmpcfg" "$BASE/tabdesk-archive-keyring.gpg" -o "$tmpkey"
 
 echo "==> verifying signing key"
 if command -v gpg >/dev/null 2>&1; then
@@ -65,6 +85,17 @@ install -m644 "$tmpkey" "$KEYRING"
 
 echo "==> writing apt source"
 echo "deb [signed-by=$KEYRING] $BASE stable main" > "$LIST"
+
+echo "==> writing apt credentials"
+# 0600 and root-owned: this is the repo password, and apt reads it as root.
+mkdir -p "$(dirname "$AUTHFILE")"
+touch "$AUTHFILE"
+chmod 600 "$AUTHFILE"
+cat > "$AUTHFILE" <<CRED
+machine cdn.thern.io/tabdesk
+login $CDN_USER
+password $CDN_PASS
+CRED
 
 echo "==> apt update + install"
 apt-get update

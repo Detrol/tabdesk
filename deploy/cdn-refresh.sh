@@ -56,10 +56,29 @@ fi
 log "triggering a publish on '$SSH_CDN'…"
 if ssh -o ConnectTimeout=25 "$SSH_CDN" "$TRIGGER"; then
     sleep 5
-    got="$(curl -fsS -4 --max-time 15 \
-            https://cdn.thern.io/tabdesk/dists/stable/main/binary-amd64/Packages 2>/dev/null \
-            | awk -F': ' '/^Version:/{print $2; exit}')"
-    log "done — CDN now serves TabDesk ${got:-<unknown>} (wanted $VER)."
+    # The repo is behind HTTP Basic auth. Read the password from apt's own
+    # credentials file if this machine has the repo configured; otherwise the
+    # check is skipped rather than reported as a failure — publishing already
+    # succeeded at this point either way.
+    got=""
+    authfile=/etc/apt/auth.conf.d/tabdesk.conf
+    cdn_auth="${TABDESK_CDN_AUTH:-}"
+    if [ -z "$cdn_auth" ] && [ -r "$authfile" ]; then
+        cdn_auth="$(awk '/^login/{u=$2} /^password/{p=$2} END{if (u && p) print u ":" p}' "$authfile")"
+    fi
+    if [ -n "$cdn_auth" ]; then
+        cfg="$(mktemp)"; chmod 600 "$cfg"
+        printf 'user = "%s"\n' "$cdn_auth" > "$cfg"
+        got="$(curl -fsS -4 --max-time 15 --config "$cfg" \
+                https://cdn.thern.io/tabdesk/dists/stable/main/binary-amd64/Packages 2>/dev/null \
+                | awk -F': ' '/^Version:/{print $2; exit}')"
+        rm -f "$cfg"
+    fi
+    if [ -n "$got" ]; then
+        log "done — CDN now serves TabDesk $got (wanted $VER)."
+    else
+        log "done — published; could not read back the version (no CDN credentials here)."
+    fi
 else
     log "could not reach '$SSH_CDN' — the CDN will still update within ~10 min via its timer." >&2
     exit 1

@@ -45,21 +45,50 @@ Read-only) and drop it on the host:
 
 When the repo goes public, delete that file — the pull works unauthenticated.
 
+## The repo is private
+
+Everything under `https://cdn.thern.io/tabdesk/` sits behind **HTTP Basic auth**
+(nginx, `location ^~ /tabdesk/`, users in `/etc/nginx/tabdesk.htpasswd`). The
+index, the `.deb`s, the keyring and `install.sh` all need credentials.
+
+`^~` and not a plain prefix matters: the site's `\.(deb|rpm|…)$` regex location
+would otherwise take precedence for package files and serve them with no
+password, leaving the index protected and the payload wide open. `^~` stops
+regex locations being considered once the prefix matches.
+
+Add or rotate a user (on the host):
+
+    ssh cdn "printf '%s:%s\n' USER \"\$(openssl passwd -apr1 'PASSWORD')\" \
+      >> /etc/nginx/tabdesk.htpasswd && nginx -t && systemctl reload nginx"
+
+Publishing is unaffected: `cdn-pull.sh` runs on the host and writes through
+reprepro, never through nginx.
+
 ## Install (on the laptop)
 
-    curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash
+    curl -fsSL -u USER:PASS https://cdn.thern.io/tabdesk/install.sh \
+      | sudo TABDESK_CDN_AUTH=USER:PASS bash
 
-That's `deploy/host/install.sh`, which fetches the key, **checks its fingerprint
-before writing the keyring**, then adds the source and installs. By hand:
+Credentials are needed twice — once for the curl that fetches the script, once
+by the script itself. That's `deploy/host/install.sh`, which fetches the key,
+**checks its fingerprint before writing the keyring**, then adds the source, the
+credentials file and installs. By hand:
 
-    curl -fsSL https://cdn.thern.io/tabdesk/tabdesk-archive-keyring.gpg -o /tmp/tabdesk.gpg
+    curl -fsSL -u USER:PASS https://cdn.thern.io/tabdesk/tabdesk-archive-keyring.gpg -o /tmp/tabdesk.gpg
     gpg --show-keys /tmp/tabdesk.gpg     # must print B40E D009 54B3 B564 21F5  8C99 B9D4 4CBC 6F2B D93E
     sudo install -m644 /tmp/tabdesk.gpg /usr/share/keyrings/tabdesk.gpg
     echo "deb [signed-by=/usr/share/keyrings/tabdesk.gpg] https://cdn.thern.io/tabdesk stable main" \
       | sudo tee /etc/apt/sources.list.d/tabdesk.list
+    printf 'machine cdn.thern.io/tabdesk\nlogin USER\npassword PASS\n' \
+      | sudo tee /etc/apt/auth.conf.d/tabdesk.conf >/dev/null
+    sudo chmod 600 /etc/apt/auth.conf.d/tabdesk.conf
     sudo apt update && sudo apt install tabdesk
 
-Update later: `sudo apt update && sudo apt upgrade tabdesk`.
+Update later: `sudo apt update && sudo apt upgrade tabdesk`, or the **⬆ chip** in
+TabDesk's system bar. The in-app updater reads apt's own package list (world
+readable, no root) and installs with `apt-get install --only-upgrade` through
+pkexec — it deliberately never fetches from the CDN itself, so the repo password
+lives only in root's `auth.conf.d` and never in the user's home.
 
 **Do not pipe the key straight into the keyring.** If the URL is reached through
 anything but the CDN — a mail client's link wrapper (Gmail rewrites URLs to

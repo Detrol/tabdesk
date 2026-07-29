@@ -23,7 +23,13 @@ REPO="${TABDESK_REPO:-TheJonaz/tabdesk}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEB_BASE="${TABDESK_DEB_BASE:-/srv/cdn/tabdesk}"      # reprepro base (nginx serves it)
 CODENAME="${TABDESK_CODENAME:-stable}"
-STATE="${TABDESK_CDN_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tabdesk-cdn/published}"
+# NOT under $HOME. systemd gives a system service no HOME, and `set -u` turns
+# the bare expansion into a fatal error — which is exactly what happened: every
+# timer run died on this line while running it by hand kept working, so the repo
+# stayed current and the breakage was invisible outside the journal. A host
+# service's state belongs in /var/lib anyway, and this way the path doesn't
+# depend on who or what invoked the script.
+STATE="${TABDESK_CDN_STATE:-/var/lib/tabdesk-cdn/published}"
 ENV_FILE="${TABDESK_ENV:-/etc/tabdesk/pull.env}"
 
 log(){ printf '==> %s\n' "$*"; }
