@@ -1,10 +1,11 @@
 {
   "name": "tabdesk",
   "version": "0.1.2",
-  "description": "Desktop app sketch: left tab rail (10%) with terminals, right main area, windowed on launch with fullscreen toggle.",
+  "description": "Terminal workspace for Claude Code projects: a tab rail of terminals on the left, the active project on the right.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "icons": "./build/render-icons.sh",
     "dist": "electron-builder --linux deb",
     "postinstall": "electron-rebuild -f -w node-pty"
   },
@@ -49,6 +50,8 @@
       "themes/**",
       "i18n/**",
       "build/icon.png",
+      "build/tray.png",
+      "build/tray@2x.png",
       "node_modules/**"
     ],
     "asarUnpack": [
@@ -59,7 +62,7 @@
         "deb"
       ],
       "category": "Development;TerminalEmulator",
-      "icon": "build/icon.png",
+      "icon": "build/icons",
       "synopsis": "Terminal workspace for Claude Code projects",
       "desktop": {
         "entry": {
@@ -74,6 +77,7 @@
     "deb": {
       "depends": [
         "libgtk-3-0",
+        "libdbusmenu-glib4",
         "libnotify4",
         "libnss3",
         "libxss1",

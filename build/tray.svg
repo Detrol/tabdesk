@@ -1,0 +1,16 @@
+<svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
+  <!-- Panel glyph, not the app tile. A tray slot is ~22px on a panel that is
+       usually dark but sometimes light, so this drops the navy tile (which read
+       as a black square next to the symbolic icons around it) and keeps only
+       the prompt mark on transparency.
+
+       Drawn twice: a wide near-black pass first so the glyph still has an edge
+       on a light panel, then the bright pass on top. Two strokes, no fills, no
+       gradients — everything here has to survive at 22px. -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 10 13 L 20 22 L 10 31" stroke="#04070f" stroke-opacity="0.72" stroke-width="9"/>
+    <path d="M 26 31 L 35 31" stroke="#04070f" stroke-opacity="0.72" stroke-width="9"/>
+    <path d="M 10 13 L 20 22 L 10 31" stroke="#34e2ff" stroke-width="5"/>
+    <path d="M 26 31 L 35 31" stroke="#eaf4ff" stroke-width="5"/>
+  </g>
+</svg>

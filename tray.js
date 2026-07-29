@@ -96,11 +96,11 @@ function init(targetWindow, i18nStrings) {
   win = targetWindow;
   strings = i18nStrings || {};
 
-  // Resize explicitly: the packaged icon is 512px, and some Linux trays scale a
-  // large source badly (or not at all) and end up with a giant or clipped icon.
-  const icon = nativeImage
-    .createFromPath(path.join(__dirname, 'build', 'icon.png'))
-    .resize({ width: 22, height: 22 });
+  // A dedicated glyph, not the app tile. Squeezing the 1024px tile down to tray
+  // size gave a dark navy square that disappeared into a dark panel; build/tray
+  // is the prompt mark alone on transparency, drawn for this size. tray@2x.png
+  // sits next to it and Electron picks it up by name on HiDPI panels.
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'build', 'tray.png'));
 
   tray = new Tray(icon);
   refresh();
