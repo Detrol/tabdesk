@@ -60,42 +60,22 @@ function clearTabFlag(t) {
   if (wasBusy) syncTray();
 }
 
-// Most-recently-worked-in first: a project you're actually using climbs out of
-// a long rail instead of staying buried where you first opened it.
+// The top of the rail means one thing: this one finished and wants you.
 //
-// Ordering by raw recency breaks down the moment two projects work at once:
-// both stream output, each chunk re-hoists, and the two trade first and second
-// place several times a second. So the top spot is *held*, not contested — the
-// leader keeps it for as long as it's still producing output, and a rival can
-// only take over once the leader has genuinely fallen quiet. Reordering then
-// happens on the scale of "that project finished", not per chunk.
-const LEAD_HOLD_MS = 12000; // silence before the leader's claim on the top expires
-
-let leadId = null;  // tab currently holding the top of the rail
-let leadAt = 0;     // last time it produced output (or was picked by hand)
-
-function leaderIsWorking() {
-  if (!leadId || !tabs.has(leadId)) return false;
-  return performance.now() - leadAt < LEAD_HOLD_MS;
-}
-
-function takeLead(t) {
-  leadId = t.id;
-  leadAt = performance.now();
+// A tab moves on exactly one event — the moment its dot turns green, i.e. a
+// command that was running has gone quiet and nobody was watching. Nothing else
+// reorders the rail: not output while it streams, not opening a tab, not
+// switching back to one.
+//
+// Hoisting on output instead turns the rail into a leaderboard that two working
+// projects trade places in several times a second; hoisting on click shuffles
+// the rail under the cursor you are clicking with. Both make position noise.
+// Tying it to "done" makes position mean something, and it can only fire for
+// background tabs (a watched tab never goes green), so the rail is guaranteed
+// to hold still while you are looking at it.
+function hoistOnDone(t) {
   if (tabList.firstElementChild !== t.tabEl) tabList.prepend(t.tabEl);
 }
-
-// Output arrived from a tab. The leader just renews its hold; anyone else has
-// to wait for the leader to go quiet before it may climb.
-function hoistOnActivity(t) {
-  if (t.id === leadId) { leadAt = performance.now(); return; }
-  if (leaderIsWorking()) return;
-  takeLead(t);
-}
-
-// Opening/clicking a project is explicit intent and always wins the top spot,
-// however busy another tab is.
-function hoistByHand(t) { takeLead(t); }
 
 // Called on every chunk of pty output (xterm.js backend) or whenever the
 // embedded terminal writes. Marks background tabs busy while output flows, then
@@ -104,10 +84,8 @@ function markActivity(id) {
   const t = tabs.get(id);
   if (!t || t.tabEl.classList.contains('dead')) return;
 
-  // Hoist on any activity, watched or not — that's the whole point of it being
-  // activity-driven rather than click-driven.
-  hoistOnActivity(t);
-
+  // Output while it streams only ever changes a tab's colour. The move comes
+  // later, when it stops — see hoistOnDone().
   if (isWatched(id)) { clearTabFlag(t); return; }
 
   const wasBusy = t.busy;
@@ -120,7 +98,12 @@ function markActivity(id) {
     if (!t.busy) return;
     t.busy = false;
     t.tabEl.classList.remove('busy');
-    if (!isWatched(id)) t.tabEl.classList.add('done');
+    // Green dot and top of the rail are the same event, deliberately: the
+    // position is what makes the colour findable in a rail too long to scan.
+    if (!isWatched(id)) {
+      t.tabEl.classList.add('done');
+      hoistOnDone(t);
+    }
     syncTray();
   }, IDLE_MS);
 }
@@ -130,11 +113,9 @@ function setActive(id) {
   if (!t) return;
   if (!t.materialized) materialize(t);
 
-  // Opening a tab means you're now watching it — drop the "done" flag.
+  // Opening a tab means you're now watching it — drop the "done" flag. It keeps
+  // whatever place in the rail it earned; clearing the flag is not a demotion.
   clearTabFlag(t);
-  // Choosing to work in a project counts as activity in its own right: an
-  // already-running tab you switch back to emits nothing until you type.
-  hoistByHand(t);
 
   // Move id to the front of the visible set, trimmed to gridSize.
   const i = visible.indexOf(id);
@@ -252,7 +233,12 @@ function startCmdFor(t) {
 }
 
 // Build only the tab row in the rail. The terminal/pty is created lazily.
-function buildTab({ name, cwd, model, startCmd }) {
+//
+// `atTop` is for tabs the user just created by hand — those go straight to the
+// top so a new project isn't born at the bottom of a rail that no longer
+// reshuffles to bring it up. It is placement, not a hoist: the boot loop that
+// lists every known project leaves it off and keeps the order it was given.
+function buildTab({ name, cwd, model, startCmd, atTop }) {
   const id = `t${++seq}`;
   const tabEl = document.createElement('li');
   tabEl.className = 'tab';
@@ -270,7 +256,8 @@ function buildTab({ name, cwd, model, startCmd }) {
     e.stopPropagation();
     closeTab(id);
   });
-  tabList.appendChild(tabEl);
+  if (atTop) tabList.prepend(tabEl);
+  else tabList.appendChild(tabEl);
 
   tabs.set(id, { id, name, cwd, model: model || 'default', startCmd, tabEl, materialized: false });
   syncTray();
@@ -407,7 +394,7 @@ addBtn.addEventListener('click', async () => {
   if (!choice) return;
 
   if (choice.kind === 'shell') {
-    setActive(buildTab({ name: `Terminal ${++adHoc}`, cwd: null }));
+    setActive(buildTab({ name: `Terminal ${++adHoc}`, cwd: null, atTop: true }));
     return;
   }
 
@@ -415,7 +402,7 @@ addBtn.addEventListener('click', async () => {
   const existing = [...tabs.values()].find((x) => x.cwd === choice.path);
   if (existing) { setActive(existing.id); return; }
 
-  setActive(buildTab({ name: choice.name, cwd: choice.path, model: choice.model }));
+  setActive(buildTab({ name: choice.name, cwd: choice.path, model: choice.model, atTop: true }));
 });
 
 document.getElementById('fullscreen-btn').addEventListener('click', () => window.api.toggleFullscreen());
@@ -441,7 +428,7 @@ window.api.onUpdateAvailable((state) => {
 // The update window couldn't get a polkit prompt, so the install command comes
 // back here to run in a real terminal where a password can be typed.
 window.api.onUpdateTerminal(({ command }) => {
-  setActive(buildTab({ name: window.t('update.tabName'), cwd: null, startCmd: command }));
+  setActive(buildTab({ name: window.t('update.tabName'), cwd: null, startCmd: command, atTop: true }));
 });
 window.addEventListener('resize', () => { for (const vid of visible) fitTerm(vid); scheduleSync(); });
 
