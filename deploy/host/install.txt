@@ -1,6 +1,6 @@
 TabDesk – installation (Debian / Kali / Ubuntu)
 ================================================
-Aktuell version: 0.1.1
+Aktuell version: 0.1.4
 
 Enklast – allt i ett (hämtar nyckeln, kontrollerar den, installerar):
 
@@ -47,7 +47,7 @@ Uppdatera:     sudo apt update && sudo apt upgrade tabdesk
 Avinstallera:  sudo apt remove tabdesk
 
 Direkt .deb:
-https://cdn.thern.io/tabdesk/pool/main/t/tabdesk/tabdesk_0.1.1_amd64.deb
+https://cdn.thern.io/tabdesk/pool/main/t/tabdesk/tabdesk_0.1.4_amd64.deb
 
 Om något gick fel
 -----------------
