@@ -13,7 +13,9 @@
 //
 // Caveats (inherent to native embedding, not bugs):
 //   * The terminal is a native X window stacked ABOVE the Chromium content,
-//     so it covers whatever DOM sits in that rectangle.
+//     so it covers whatever DOM sits in that rectangle — and that stacking has
+//     to be re-asserted, because Chromium takes it back on a window resize
+//     (see raise()).
 //   * Electron's in-app capturePage() screenshot cannot see it.
 //   * It must be repositioned whenever the panel moves or resizes.
 
@@ -59,6 +61,21 @@ let notifyActivity = null;
 function setActivityNotifier(fn) { notifyActivity = fn; }
 
 const ACTIVITY_POLL_MS = 500;
+
+// An idle terminal is not a silent one. xterm keeps writing to its X connection
+// for repaints and cursor blink, and the counter sees that traffic just as it
+// sees command output. Measured on a genuinely untouched pane: ~80 bytes per
+// 12 s, a few bytes per poll — while a pane actually producing output runs to
+// thousands of bytes per poll. Reporting any byte at all as activity is what
+// painted tabs green that nobody had worked in.
+const ACTIVITY_MIN_BYTES = 512;
+
+// Starting up is not activity either: xterm writes tens of kB before the first
+// prompt and the command draws its own banner on top of that. Without a grace
+// period a tab you open and immediately switch away from goes "done" a few
+// seconds later, having done nothing but start.
+const ACTIVITY_GRACE_MS = 8000;
+
 let activityTimer = null;
 
 function wcharOf(pid) {
@@ -71,14 +88,17 @@ function wcharOf(pid) {
 }
 
 function pollActivity() {
+  const at = Date.now();
   for (const [id, rec] of embeds) {
     if (rec.dead || !rec.proc) continue;
-    const now = wcharOf(rec.proc.pid);
-    if (now === null) continue;
-    // The first reading is a baseline, not activity: xterm writes ~20 kB just
-    // starting up, which would flag a tab the moment it's created.
-    if (rec.wchar !== null && now > rec.wchar && notifyActivity) notifyActivity(id);
-    rec.wchar = now;
+    const w = wcharOf(rec.proc.pid);
+    if (w === null) continue;
+    const prev = rec.wchar;
+    rec.wchar = w;
+    if (prev === null) continue;                              // baseline, not activity
+    if (at - rec.startedAt < ACTIVITY_GRACE_MS) continue;     // still starting up
+    if (w - prev < ACTIVITY_MIN_BYTES) continue;              // idle repaint trickle
+    if (notifyActivity) notifyActivity(id);
   }
 }
 
@@ -156,7 +176,8 @@ async function create(id, { cwd, startCmd }) {
   ];
 
   const rec = { id, proc: null, win: null, applied: null, pending: null, busy: false,
-                mapped: false, hidden: false, ready: false, dead: false, wchar: null };
+                mapped: false, hidden: false, ready: false, dead: false, wchar: null,
+                settle: null, startedAt: Date.now() };
   embeds.set(id, rec);
   startActivityPolling();
 
@@ -191,11 +212,38 @@ async function apply(rec, rect) {
   const args = ['windowmove', rec.win, String(rect.x), String(rect.y),
                 'windowsize', rec.win, String(rect.w), String(rect.h)];
   if (!rec.mapped) args.push('windowmap', rec.win);
+  args.push('windowraise', rec.win);   // see raise()
   await xdo(args);
   rec.mapped = true;
   rec.applied = rect;
   // First time on screen — the renderer can drop its placeholder now.
   if (!rec.ready) { rec.ready = true; if (notifyReady) notifyReady(rec.id); }
+}
+
+// Chromium's rendering surface is itself a child X window covering the whole
+// client area, and dragging the main window's edge restacks it ABOVE our
+// terminals. They stay mapped, correctly sized and correctly placed — they just
+// end up underneath, which on screen is indistinguishable from having vanished,
+// in every tab at once, for the rest of the session. Nothing puts them back:
+// the geometry never changed, so the renderer's next sync is a no-op.
+//
+// So every placement ends with a raise, a placement that would otherwise be
+// skipped raises anyway, and a burst of them raises once more after it settles —
+// a restack that lands just after the drag's final move would otherwise stand.
+// A programmatic resize does not trigger it, which is why this survived testing.
+async function raise(rec) {
+  if (rec.win && !rec.dead && rec.mapped) await xdo(['windowraise', rec.win]);
+}
+
+const SETTLE_MS = 250;
+function raiseWhenSettled(rec) {
+  if (rec.settle) clearTimeout(rec.settle);
+  rec.settle = setTimeout(() => {
+    rec.settle = null;
+    if (!rec.hidden) raise(rec);
+  }, SETTLE_MS);
+  // A pending raise must not be the reason the process stays alive at quit.
+  if (rec.settle.unref) rec.settle.unref();
 }
 
 // Serialise placement per embed and keep only the newest rect: overlapping
@@ -221,9 +269,15 @@ async function drain(rec) {
       const rect = rec.pending;
       rec.pending = null;
       const a = rec.applied;
-      if (a && a.x === rect.x && a.y === rect.y && a.w === rect.w && a.h === rect.h && rec.mapped) continue;
+      if (a && a.x === rect.x && a.y === rect.y && a.w === rect.w && a.h === rect.h && rec.mapped) {
+        // Nothing to move, but this is the only moment a buried terminal gets
+        // noticed at all — a tab switch or any later sync brings it back up.
+        await raise(rec);
+        continue;
+      }
       await apply(rec, rect);
     }
+    if (!rec.hidden && rec.mapped) raiseWhenSettled(rec);
   } finally {
     rec.busy = false;
   }
@@ -262,6 +316,7 @@ function kill(id) {
   const rec = embeds.get(id);
   if (!rec) return;
   embeds.delete(id);
+  if (rec.settle) { clearTimeout(rec.settle); rec.settle = null; }
   if (rec.proc && !rec.proc.killed) {
     try { process.kill(-rec.proc.pid, 'SIGTERM'); }
     catch (_) { try { rec.proc.kill(); } catch (_) { /* gone */ } }
