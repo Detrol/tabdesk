@@ -16,14 +16,16 @@
 //     so it covers whatever DOM sits in that rectangle — and that stacking has
 //     to be re-asserted, because Chromium takes it back on a window resize
 //     (see raise()).
-//   * Electron's in-app capturePage() screenshot cannot see it.
+//   * Electron's in-app capturePage() cannot see it, so screenshots of a native
+//     pane go via the screen instead (captureEmbedRegion in main.js).
 //   * It must be repositioned whenever the panel moves or resizes.
 
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 
 let parentXid = null;
-// id -> { id, proc, win, applied, pending, busy, mapped, hidden, ready, dead, wchar }
+// id -> { id, proc, win, applied, pending, busy, mapped, hidden, ready, dead,
+//         wchar, wantFocus }
 const embeds = new Map();
 
 // Colours for newly spawned terminals, pushed from the active theme. xterm
@@ -134,9 +136,20 @@ function xdo(args) {
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Poll for the window carrying our unique title until it maps (or we give up).
+//
+// The pattern is ANCHORED, and that is not a detail: `xdotool search --name`
+// takes a regular expression and matches it unanchored, so a bare `tabdesk-99-t4`
+// also matches `tabdesk-99-t43` — every tab id that is a prefix of another one
+// collides, and t1/t11, t2/t23 and t4/t43 all turn up in an ordinary session.
+// The loser takes whichever window X happens to list first, so two panes end up
+// driving the SAME terminal: one tab shows the other's session, and the window
+// nobody claimed is left parked wherever it started.
 async function findWindow(title, rec, tries = 50) {
+  // The title is built from our pid and a tab id, so there is nothing in it to
+  // escape — but it is worth knowing that this is why.
+  const pattern = `^${title}$`;
   for (let i = 0; i < tries && !rec.dead; i++) {
-    const out = await xdo(['search', '--name', title]);
+    const out = await xdo(['search', '--name', pattern]);
     if (out) {
       const id = out.split('\n')[0].trim();
       if (id) return id;
@@ -177,7 +190,7 @@ async function create(id, { cwd, startCmd }) {
 
   const rec = { id, proc: null, win: null, applied: null, pending: null, busy: false,
                 mapped: false, hidden: false, ready: false, dead: false, wchar: null,
-                settle: null, startedAt: Date.now() };
+                settle: null, wantFocus: false, startedAt: Date.now() };
   embeds.set(id, rec);
   startActivityPolling();
 
@@ -192,15 +205,26 @@ async function create(id, { cwd, startCmd }) {
   if (!win || rec.dead || !embeds.has(id)) return;
   rec.win = win;
 
-  // `-into` already made it a child of parentXid; just size/place it.
+  // xterm has already mapped this window itself: `-into` reparents AND maps at
+  // startup, and there is no flag to hold that back. Not asking for the map is
+  // therefore not enough — the map that has to be undone is xterm's.
   //
-  // Never map it here on its own: a window with no rect yet would land at
-  // xterm's default 80x24 in the corner of the Electron window and paint over
-  // the tab bar, the rail and the panel — a "terminal box" that pops up in the
-  // middle of the UI and stays there, because nothing ever moves a pane the
-  // renderer isn't showing. Mapping happens in apply(), which always has a
-  // rect; a shown panel is guaranteed to push one (layout, ResizeObserver and
-  // setActive all sync), and a hidden one must stay unmapped.
+  // For a pane the renderer is showing this costs nothing: our first placement
+  // lands a frame or two later and moves it into the panel. For a pane it is
+  // NOT showing, nothing ever overwrites it, and the terminal sits at its
+  // default 80x24 in the corner of the Electron window — over the tab bar, the
+  // rail and whatever pane is open — for the rest of the session. That is the
+  // box that "pops up in the middle": a pane whose xterm finished starting
+  // after the renderer had already put it away.
+  //
+  // From here on, mapping is something only apply() does, and it always has a
+  // rect to map to.
+  rec.mapped = true;                      // xterm's doing, not ours
+  if (rec.hidden || !rec.pending) {
+    rec.mapped = false;
+    rec.applied = null;
+    await xdo(['windowunmap', win]);
+  }
   await drain(rec);
 }
 
@@ -218,6 +242,25 @@ async function apply(rec, rect) {
   rec.applied = rect;
   // First time on screen — the renderer can drop its placeholder now.
   if (!rec.ready) { rec.ready = true; if (notifyReady) notifyReady(rec.id); }
+  // A focus asked for before the window existed (opening a tab starts xterm and
+  // selects it in the same breath) lands here, once there is something to focus.
+  if (rec.wantFocus) { rec.wantFocus = false; await xdo(['windowfocus', rec.win]); }
+}
+
+// Put the keyboard in this terminal.
+//
+// X11 keyboard focus sits on the Electron window, and nothing moves it to a
+// child window on its own: selecting a tab used to show you a terminal that
+// ignored everything you typed until you clicked inside it. The click did the
+// focusing, not the selection — so selection has to do it too.
+//
+// A tab opened for the first time asks for this while its xterm is still
+// starting, so an unready window records the wish and apply() honours it.
+async function focus(id) {
+  const rec = embeds.get(id);
+  if (!rec || rec.dead) return;
+  if (!rec.win || !rec.mapped || rec.hidden) { rec.wantFocus = true; return; }
+  await xdo(['windowfocus', rec.win]);
 }
 
 // Chromium's rendering surface is itself a child X window covering the whole
@@ -329,6 +372,6 @@ function killAll() {
 }
 
 module.exports = {
-  init, create, place, hide, kill, killAll,
+  init, create, place, hide, focus, kill, killAll,
   setTheme, setReadyNotifier, setActivityNotifier,
 };
