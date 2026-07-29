@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TabDesk — one tab per project, many terminals at once | Linux</title>
+<meta name="description" content="TabDesk is a Linux desktop app for running many terminals at once. Every project gets a tab with its own terminal — Claude Code, Codex, Gemini CLI, a plain shell — and tabs turn green when a terminal falls quiet.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<link rel="canonical" href="https://tabdesk.thern.io/">
+<meta name="theme-color" content="#131c30">
+<link rel="icon" href="assets/icon-128.png" type="image/png">
+<link rel="apple-touch-icon" href="assets/icon-128.png">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="TabDesk">
+<meta property="og:url" content="https://tabdesk.thern.io/">
+<meta property="og:title" content="TabDesk — one tab per project, many terminals at once">
+<meta property="og:description" content="A Linux desktop for the hours you have many terminals going at once. Pick the CLI per project — Claude Code, Codex, Gemini CLI or a plain shell — and let the rail tell you which one is waiting for you.">
+<meta property="og:image" content="https://tabdesk.thern.io/assets/og-cover.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The TabDesk window: tab rail on the left, terminal in the middle, live project preview on the right.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="TabDesk — one tab per project, many terminals at once">
+<meta name="twitter:description" content="A Linux desktop for running many terminals at once. Pick the CLI per project; the rail tells you which terminal is waiting for you.">
+<meta name="twitter:image" content="https://tabdesk.thern.io/assets/og-cover.png">
+
+<link rel="stylesheet" href="styles.css">
+
+<!-- Structured data: what the page is about, stated the way a machine reads it.
+     The facts here must not drift from the prose — they are the same claims. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://tabdesk.thern.io/#app",
+      "name": "TabDesk",
+      "applicationCategory": "DeveloperApplication",
+      "applicationSubCategory": "Terminal multiplexer",
+      "operatingSystem": "Linux (X11)",
+      "softwareVersion": "0.1.4",
+      "url": "https://tabdesk.thern.io/",
+      "image": "https://tabdesk.thern.io/assets/og-cover.png",
+      "license": "https://opensource.org/licenses/MIT",
+      "description": "A Linux desktop application for working with many terminals at once. Every project directory becomes a tab with its own embedded xterm; each project chooses which CLI it starts — Claude Code, Codex, Gemini CLI, opencode, Aider, Cursor Agent or a plain shell — and a tab turns green when its terminal has been quiet for a moment.",
+      "featureList": [
+        "One tab per project, each with its own embedded xterm terminal",
+        "Per-project choice of which CLI the terminal starts",
+        "Idle detection that flags a tab green when its terminal falls quiet",
+        "Grid view of up to six terminals at once",
+        "Live preview of the project next to the terminal",
+        "Colours and language derived from the running GTK desktop"
+      ],
+      "softwareRequirements": "Linux on X11, xterm, xdotool, python3-gi",
+      "author": { "@id": "https://tabdesk.thern.io/#author" },
+      "publisher": { "@id": "https://tabdesk.thern.io/#author" }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://tabdesk.thern.io/#author",
+      "name": "Jonaz Thern",
+      "url": "https://thern.io",
+      "email": "info@thern.io"
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://tabdesk.thern.io/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is TabDesk?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "TabDesk is a Linux desktop application for working with many terminals at once. Every directory under your projects folder becomes a tab with its own terminal, and a tab turns green when its terminal has been quiet for a moment, so you know which one is waiting for you."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Which AI CLIs does TabDesk support?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Each project picks what its terminal starts: Claude Code, OpenAI Codex, Gemini CLI, opencode, Aider, Cursor Agent, or a plain shell. TabDesk only offers the ones actually installed on the machine, found by looking them up on PATH, and remembers the choice per project."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does TabDesk work on Wayland?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. The terminals are real xterm windows reparented into the panels through X11, which Wayland does not allow. TabDesk requires a Linux desktop running X11."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How does the your-turn signal work?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "TabDesk watches how much each terminal writes. A background tab pulses while output is flowing and turns green once it has been quiet for a moment. Because it reads output rather than asking the program, it flags a finished agent, a finished build and a finished rsync the same way."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Where can I download TabDesk?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "TabDesk is not distributed publicly. The signed .deb package sits in an unlisted apt repository and is shared on request — write to info@thern.io for the address and credentials."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is TabDesk a terminal multiplexer like tmux?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "It solves a neighbouring problem. tmux multiplexes sessions inside one terminal; TabDesk is a desktop window that arranges several real terminals, one per project, and tells you which of them has stopped producing output. The panes are ordinary xterm windows, so tmux runs inside them as usual."
+          }
+        }
+      ]
+    }
+  ]
+}
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="wordmark" href="#">
+    <img src="assets/icon-128.png" alt="" width="26" height="26">
+    <span>TabDesk</span>
+  </a>
+  <nav class="topnav">
+    <a href="#features">Features</a>
+    <a href="#look">How it looks</a>
+    <a href="#requirements">Requirements</a>
+    <a href="#faq">Questions</a>
+    <a href="#access">Access</a>
+  </nav>
+</header>
+
+<main>
+
+  <!-- Hero: the thesis is the rail, so the rail is the hero. -->
+  <section class="hero">
+    <p class="eyebrow">Linux desktop · many terminals at once</p>
+    <h1>All your projects, one tab each<span class="caret" aria-hidden="true"></span></h1>
+
+    <div class="hero-row">
+    <div class="hero-copy">
+      <p class="lede">
+        TabDesk is a Linux desktop for working with many terminals at once. Every
+        directory under your projects folder becomes a tab with its own terminal,
+        already running in the right place. Each tab pulses while its terminal is
+        writing and turns green once it falls quiet.
+      </p>
+      <p class="sub">
+        For the hours you have eight terminals going at once — a coding agent here,
+        a build watching itself there, an ssh session on a switch in the corner.
+        Eight things running don't need eight windows to watch. They need a rail
+        that tells you which one wants you.
+      </p>
+    </div>
+
+    <!-- Signature element: a working replica of the rail, driven by rail.js -->
+    <figure class="demo" id="demo">
+      <div class="demo-chrome">
+        <span class="dot-win"></span><span class="dot-win"></span><span class="dot-win"></span>
+        <span class="demo-title">TabDesk</span>
+      </div>
+      <div class="demo-body">
+        <ul class="demo-rail" id="demo-rail" role="presentation">
+          <li class="dtab" data-tab="0"><span class="dot"></span><span class="name">api-gateway</span></li>
+          <li class="dtab" data-tab="1"><span class="dot"></span><span class="name">edge-router</span></li>
+          <li class="dtab" data-tab="2"><span class="dot"></span><span class="name">payments</span></li>
+          <li class="dtab" data-tab="3"><span class="dot"></span><span class="name">fleet-ops</span></li>
+        </ul>
+        <div class="demo-term">
+          <div class="demo-lines" id="demo-lines" aria-hidden="true"></div>
+        </div>
+      </div>
+      <figcaption class="demo-caption" id="demo-caption">Three terminals working.</figcaption>
+    </figure>
+    </div>
+  </section>
+
+  <section id="features" class="band">
+    <p class="eyebrow">Features</p>
+    <h2>What you get</h2>
+
+    <div class="grid">
+      <article class="card">
+        <h3>The rail</h3>
+        <p>Every project folder becomes a tab, most recently changed at the top.
+           Opening one starts a terminal already in that directory, running whatever
+           that project is set to start.</p>
+      </article>
+
+      <article class="card">
+        <h3>One CLI per project</h3>
+        <p>Each project picks what its terminal starts — Claude Code, Codex,
+           Gemini&nbsp;CLI, opencode, Aider, Cursor Agent or a plain shell. The menu
+           lists what is actually installed on the machine, and the choice is
+           remembered with the project.</p>
+      </article>
+
+      <article class="card card-signal">
+        <h3>The your-turn signal</h3>
+        <p>A background tab pulses while its terminal writes and turns green once
+           it has been quiet for a moment. It reads the output itself, so it flags
+           a finished agent, a finished build and a finished rsync alike.</p>
+      </article>
+
+      <article class="card">
+        <h3>Grid of 1–6</h3>
+        <p>Show up to six panels at once and follow several sessions side by side.
+           The panel you click takes the keyboard — as does the tab you select.</p>
+      </article>
+
+      <article class="card">
+        <h3>Real terminals</h3>
+        <p>Each panel is an actual <code>xterm</code> reparented into the window, not a
+           browser emulation. Curses apps, colour, mouse reporting, <code>ssh</code>,
+           <code>tcpdump</code> and full-screen TUIs behave exactly as they do anywhere else.</p>
+      </article>
+
+      <article class="card">
+        <h3>Live preview</h3>
+        <p>Run the project next to the terminal — static HTML, Node, Python, Rust, Go.
+           TabDesk finds the port it binds and renders it. Hover any element to see
+           where it comes from in the source.</p>
+      </article>
+
+      <article class="card">
+        <h3>Follows your desktop</h3>
+        <p>Colours are derived from your live GTK theme and the interface speaks your
+           system language. Change either in system settings and TabDesk changes with
+           it, without a restart.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="look" class="band">
+    <p class="eyebrow">How it looks</p>
+    <h2>The whole window</h2>
+    <p class="band-lede">
+      The rail on the left, terminals in the middle, the project itself in the dock
+      on the right. Along the bottom: token usage if you run an agent that reports
+      it, plus CPU, RAM and a clock.
+    </p>
+    <figure class="shot">
+      <img src="assets/tabdesk-app.png" alt="TabDesk with the tab rail on the left, a terminal in the middle and a live preview of the project on the right."
+           width="1760" height="1020" loading="lazy">
+      <figcaption>One project open, the preview running, the system bar along the bottom.</figcaption>
+    </figure>
+  </section>
+
+  <section id="requirements" class="band">
+    <p class="eyebrow">Requirements</p>
+    <h2>What it needs</h2>
+    <dl class="specs">
+      <div><dt>System</dt><dd>Linux on X11. The embedded terminals are X11 windows reparented into the panels, which Wayland does not allow.</dd></div>
+      <div><dt>Dependencies</dt><dd><code>xterm</code> and <code>xdotool</code> for the terminals, <code>python3-gi</code> for the GTK colours. All pulled in by the package.</dd></div>
+      <div><dt>Install</dt><dd>A signed <code>.deb</code> from an apt repository. Updates arrive with <code>apt upgrade</code> or through the chip in the system bar.</dd></div>
+      <div><dt>Version</dt><dd>0.1.4</dd></div>
+    </dl>
+  </section>
+
+  <!-- The questions people actually ask, answered in full sentences. The same
+       text is in the FAQPage block in the head; if one changes, so must the
+       other, or the page says one thing and its structured data another. -->
+  <section id="faq" class="band">
+    <p class="eyebrow">Questions</p>
+    <h2>Asked and answered</h2>
+    <div class="faq">
+      <article class="qa">
+        <h3>What is TabDesk?</h3>
+        <p>TabDesk is a Linux desktop application for working with many terminals at
+           once. Every directory under your projects folder becomes a tab with its
+           own terminal, and a tab turns green when its terminal has been quiet for
+           a moment, so you know which one is waiting for you.</p>
+      </article>
+
+      <article class="qa">
+        <h3>Which AI CLIs does TabDesk support?</h3>
+        <p>Each project picks what its terminal starts: Claude Code, OpenAI Codex,
+           Gemini CLI, opencode, Aider, Cursor Agent, or a plain shell. TabDesk only
+           offers the ones actually installed on the machine, found by looking them
+           up on <code>PATH</code>, and remembers the choice per project.</p>
+      </article>
+
+      <article class="qa">
+        <h3>Does TabDesk work on Wayland?</h3>
+        <p>No. The terminals are real <code>xterm</code> windows reparented into the
+           panels through X11, which Wayland does not allow. TabDesk requires a Linux
+           desktop running X11.</p>
+      </article>
+
+      <article class="qa">
+        <h3>How does the your-turn signal work?</h3>
+        <p>TabDesk watches how much each terminal writes. A background tab pulses
+           while output is flowing and turns green once it has been quiet for a
+           moment. Because it reads output rather than asking the program, it flags
+           a finished agent, a finished build and a finished rsync the same way.</p>
+      </article>
+
+      <article class="qa">
+        <h3>Where can I download TabDesk?</h3>
+        <p>TabDesk is not distributed publicly. The signed <code>.deb</code> package
+           sits in an unlisted apt repository and is shared on request — write to
+           <a href="mailto:info@thern.io?subject=TabDesk">info@thern.io</a> for the
+           address and credentials.</p>
+      </article>
+
+      <article class="qa">
+        <h3>Is TabDesk a terminal multiplexer like tmux?</h3>
+        <p>It solves a neighbouring problem. tmux multiplexes sessions inside one
+           terminal; TabDesk is a desktop window that arranges several real
+           terminals, one per project, and tells you which of them has stopped
+           producing output. The panes are ordinary <code>xterm</code> windows, so
+           tmux runs inside them as usual.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="access" class="band band-last">
+    <p class="eyebrow">Access</p>
+    <h2>No download here</h2>
+    <p class="band-lede">
+      TabDesk is not distributed publicly. The package sits in an unlisted apt
+      repository and is shared on request — get in touch and you'll have the
+      address and the credentials.
+    </p>
+    <p><a class="mailto" href="mailto:info@thern.io?subject=TabDesk">info@thern.io</a></p>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <span>TabDesk 0.1.4</span>
+  <span>MIT · Jonaz Thern</span>
+  <span><a href="https://thern.io">thern.io</a></span>
+</footer>
+
+<script src="rail.js"></script>
+</body>
+</html>
