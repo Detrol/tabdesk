@@ -18,6 +18,8 @@ const portable = require('./portable');
 const updater = require('./updater');
 const usageLimits = require('./usage-limits');
 const tray = require('./tray');
+const syncConfig = require('./sync/config');
+const syncTransport = require('./sync/transport-sftp');
 
 // Demo/testing hooks, unset in normal use. TABDESK_PROJECTS_DIR points the rail
 // at a scratch set of projects (screenshots, trying layout changes against a
@@ -708,6 +710,74 @@ app.whenReady().then(async () => {
   ipcMain.on('settings:close', (event) => {
     const owner = BrowserWindow.fromWebContents(event.sender);
     if (owner && !owner.isDestroyed()) owner.close();
+  });
+
+  // ---- Sync: the remote, and proving we can reach it ----
+  //
+  // Nothing here moves a file yet. It configures where the sync will point and
+  // establishes that the server on the other end is the one we think it is.
+  ipcMain.handle('sync:config', () => syncConfig.forRenderer());
+  ipcMain.handle('sync:save', (event, patch) => {
+    try {
+      return { ok: true, config: syncConfig.save(patch || {}) };
+    } catch (err) {
+      // The only failure that reaches here is a missing desktop keyring, which
+      // is worth naming: safeStorage would otherwise "work" while encrypting
+      // with a key anyone can derive.
+      return { ok: false, code: String(err.message || err) };
+    }
+  });
+
+  // Read the host key without sending a credential. The renderer shows the
+  // fingerprint; only an explicit sync:pin makes it trusted.
+  ipcMain.handle('sync:probe', async (event, patch) => {
+    const cfg = { ...syncConfig.forConnect(), ...(patch || {}) };
+    if (!cfg.host) return { ok: false, code: 'host' };
+    try {
+      const key = await syncTransport.probe(cfg);
+      const known = syncConfig.all().hostKey;
+      return {
+        ok: true,
+        hostKey: key,
+        // Distinguishing these three in main keeps the renderer from having to
+        // reason about trust at all: it renders what it is told.
+        state: !known ? 'new' : (known.sha256 === key.sha256 ? 'known' : 'changed'),
+        known: known || null,
+      };
+    } catch (err) {
+      return { ok: false, code: err.code || 'other', detail: String(err.message || err) };
+    }
+  });
+
+  ipcMain.handle('sync:pin', (event, hostKey) => syncConfig.pinHostKey(hostKey));
+
+  ipcMain.handle('sync:test', async () => {
+    const missing = syncConfig.missingFields();
+    if (missing.length) return { ok: false, code: 'incomplete', missing };
+    try {
+      return await syncTransport.test(syncConfig.forConnect());
+    } catch (err) {
+      return {
+        ok: false,
+        code: err.code || 'other',
+        detail: String(err.message || err),
+        expected: err.expected,
+        got: err.got,
+      };
+    }
+  });
+
+  // The key file is chosen through main's dialog rather than typed: the
+  // renderer never gets to name a path the main process will later read.
+  ipcMain.handle('sync:pick-key', async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(owner, {
+      title: 'Private key',
+      defaultPath: path.join(os.homedir(), '.ssh'),
+      properties: ['openFile', 'showHiddenFiles'],
+    });
+    if (res.canceled || !res.filePaths.length) return null;
+    return res.filePaths[0];
   });
 
   // ---- Updates ----

@@ -31,5 +31,15 @@ contextBridge.exposeInMainWorld('api', {
   listLanguages: () => ipcRenderer.invoke('i18n:list'),
   setLanguage: (code) => ipcRenderer.invoke('language:set', code),
 
+  // ---- sync ----
+  // getSyncConfig never returns the stored secret, only whether there is one;
+  // saveSync sends it one way. There is deliberately no getter for it.
+  getSyncConfig: () => ipcRenderer.invoke('sync:config'),
+  saveSync: (patch) => ipcRenderer.invoke('sync:save', patch),
+  probeSync: (patch) => ipcRenderer.invoke('sync:probe', patch),
+  pinHostKey: (hostKey) => ipcRenderer.invoke('sync:pin', hostKey),
+  testSync: () => ipcRenderer.invoke('sync:test'),
+  pickKeyFile: () => ipcRenderer.invoke('sync:pick-key'),
+
   close: () => ipcRenderer.send('settings:close'),
 });

@@ -105,6 +105,80 @@
    colours set explicitly or they fall back to white-on-white in a dark theme. */
 #st select option { color: var(--text); background: var(--bg); }
 
+/* ---- sync ---- */
+
+.st-note {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--tint);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+}
+
+.st-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+.st-grow { flex: 1; min-width: 0; }
+.st-narrow { width: 90px; flex: none; }
+
+#st input[type="text"],
+#st input[type="password"],
+#st input[type="number"] {
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  min-width: 0;
+}
+#st input:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+#st input[readonly] { color: var(--dim); }
+#st input::placeholder { color: var(--dim); opacity: .6; }
+
+/* The fingerprint is the one thing on this page a person is meant to compare
+   character by character, so it gets a monospace face and room to breathe. */
+.st-hostkey {
+  padding: 8px 10px;
+  font-family: ui-monospace, "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--tint);
+}
+.st-hostkey-none { color: var(--dim); }
+.st-hostkey-new { color: var(--text); border-color: var(--accent); }
+/* A stored pin nothing has re-checked this session: neutral, not green. Green
+   is reserved for a fingerprint a probe just confirmed. */
+.st-hostkey-pinned { color: var(--text); border-color: var(--line); }
+.st-hostkey-known { color: var(--text); border-color: var(--ok, var(--accent-2)); }
+/* A changed key is the one state that must not be quietly skimmed past. */
+.st-hostkey-changed {
+  color: var(--text);
+  border-color: var(--warn, #ff6b6b);
+  background: color-mix(in srgb, var(--warn, #ff6b6b) 12%, var(--tint));
+}
+
+#st .st-primary {
+  color: var(--on-accent);
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  font-weight: 600;
+}
+#st .st-primary:hover { box-shadow: var(--glow-accent-2); background: var(--accent-2); }
+#st button[disabled] { opacity: .5; cursor: default; }
+#st button[disabled]:hover { background: var(--tint); border-color: var(--line); box-shadow: none; }
+
+.st-ok { color: var(--accent-soft); }
+.st-bad { color: var(--warn, #ff6b6b); }
+
 /* ---- placeholder for a section with nothing in it yet ---- */
 
 .st-empty {

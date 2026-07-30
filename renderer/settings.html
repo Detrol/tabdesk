@@ -44,12 +44,75 @@
       </section>
 
       <section class="st-section hidden" data-section="sync">
-        <div class="st-empty">
-          <p class="st-empty-icon">⇄</p>
-          <p data-i18n="settings.sync.soon">Sync over a server is not built yet.</p>
-          <p class="st-hint" data-i18n="settings.sync.today">
-            Until then, ⇄ Sync in the rail moves your setup as a file you carry yourself.
-          </p>
+        <p class="st-note" data-i18n="settings.sync.stage">
+          Nothing is transferred yet — this sets up the server and proves it can be reached.
+        </p>
+
+        <div class="st-row">
+          <div class="st-field st-grow">
+            <label for="st-host" data-i18n="settings.sync.host">Server</label>
+            <input id="st-host" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="sync.example.com" />
+          </div>
+          <div class="st-field st-narrow">
+            <label for="st-port" data-i18n="settings.sync.port">Port</label>
+            <input id="st-port" type="number" min="1" max="65535" placeholder="22" />
+          </div>
+        </div>
+
+        <div class="st-row">
+          <div class="st-field st-grow">
+            <label for="st-user" data-i18n="settings.sync.user">User</label>
+            <input id="st-user" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="tabdesk" />
+          </div>
+          <div class="st-field st-grow">
+            <label for="st-path" data-i18n="settings.sync.path">Remote folder</label>
+            <input id="st-path" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="/srv/tabdesk-sync" />
+          </div>
+        </div>
+
+        <div class="st-field">
+          <label for="st-auth" data-i18n="settings.sync.auth">Authentication</label>
+          <select id="st-auth">
+            <option value="key" data-i18n="settings.sync.auth.key">Private key</option>
+            <option value="password" data-i18n="settings.sync.auth.password">Password</option>
+          </select>
+        </div>
+
+        <div class="st-field" id="st-keyrow">
+          <label for="st-key" data-i18n="settings.sync.keyfile">Key file</label>
+          <div class="st-row">
+            <input id="st-key" class="st-grow" type="text" spellcheck="false" readonly
+                   placeholder="~/.ssh/id_ed25519" />
+            <button id="st-key-pick" data-i18n="settings.sync.browse">Choose…</button>
+          </div>
+        </div>
+
+        <div class="st-field">
+          <label for="st-secret" id="st-secret-label" data-i18n="settings.sync.passphrase">Key passphrase</label>
+          <input id="st-secret" type="password" autocomplete="off" />
+          <p class="st-hint" id="st-secret-hint"></p>
+        </div>
+
+        <!-- Host key. Populated by a probe that authenticates with nothing. -->
+        <div class="st-field">
+          <label data-i18n="settings.sync.hostkey">Server identity</label>
+          <div id="st-hostkey" class="st-hostkey st-hostkey-none">
+            <span id="st-hostkey-text" data-i18n="settings.sync.hostkey.none">Not checked yet.</span>
+          </div>
+          <div class="st-row" id="st-hostkey-actions">
+            <button id="st-probe" data-i18n="settings.sync.check">Check server</button>
+            <button id="st-accept" class="st-primary hidden" data-i18n="settings.sync.accept">Accept and pin</button>
+          </div>
+        </div>
+
+        <div class="st-field">
+          <div class="st-row">
+            <button id="st-test" data-i18n="settings.sync.test">Test connection</button>
+          </div>
+          <p id="st-test-out" class="st-hint"></p>
         </div>
       </section>
     </div>
