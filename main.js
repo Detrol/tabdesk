@@ -89,7 +89,7 @@ function createWindow() {
   // Ctrl/Cmd+R and F5 are swallowed. The default menu is hidden, not gone, so
   // its Reload accelerator is still live — and a reload is not a refresh in this
   // app: the page comes back empty, every tab is gone, and the terminals behind
-  // them are orphaned (see did-start-loading below). preventDefault() here also
+  // them are orphaned (see did-start-navigation below). preventDefault() here also
   // cancels the menu shortcut, which is what makes it catchable at all.
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
@@ -110,7 +110,17 @@ function createWindow() {
   // already registered, spawns nothing, and the tab drives the previous page's
   // terminal, showing another project's session. Nothing can hand those windows
   // back to a page that has forgotten them, so they go with it.
-  win.webContents.on('did-start-loading', () => termEmbed.killAll());
+  //
+  // The signal has to be a MAIN-FRAME navigation. `did-start-loading` is the tab
+  // spinner, and Chromium counts the preview <webview>'s load as this window's
+  // loading too — hooking it killed every terminal the moment Preview was
+  // pressed, sessions and all, while the page went on believing its tabs were
+  // live, so selecting one showed a blank panel with nothing left to recreate.
+  // The guest's navigation arrives here with isMainFrame false; only the page
+  // itself being replaced is true.
+  win.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) termEmbed.killAll();
+  });
 
   return win;
 }
