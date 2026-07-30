@@ -33,6 +33,7 @@
       "picker-preload.js",
       "portable-preload.js",
       "portable.js",
+      "settings-preload.js",
       "update-preload.js",
       "updater.js",
       "preview-preload.js",

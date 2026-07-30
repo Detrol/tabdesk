@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>TabDesk</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body class="st-body">
+  <div id="st">
+    <header id="st-head">
+      <h1 data-i18n="settings.title">Settings</h1>
+      <p data-i18n="settings.lead">Appearance now; sync lands here next.</p>
+    </header>
+
+    <!-- Sections are a list rather than tabs: there is one of them today, and a
+         second one coming. Tabs would look empty until then. -->
+    <nav id="st-nav" role="tablist">
+      <button class="st-navbtn is-active" data-section="general" role="tab"
+              aria-selected="true" data-i18n="settings.nav.general">General</button>
+      <button class="st-navbtn" data-section="sync" role="tab"
+              aria-selected="false" data-i18n="settings.nav.sync">Sync</button>
+    </nav>
+
+    <div id="st-body">
+      <section class="st-section" data-section="general">
+        <div class="st-field">
+          <label for="st-theme" data-i18n="settings.theme">Theme</label>
+          <select id="st-theme"></select>
+          <p class="st-hint" data-i18n="settings.theme.hint">
+            “System” follows your desktop’s light/dark setting.
+          </p>
+        </div>
+
+        <div class="st-field">
+          <label for="st-lang" data-i18n="settings.language">Language</label>
+          <select id="st-lang"></select>
+          <p class="st-hint" data-i18n="settings.language.hint">
+            “System” follows your desktop’s locale.
+          </p>
+        </div>
+      </section>
+
+      <section class="st-section hidden" data-section="sync">
+        <div class="st-empty">
+          <p class="st-empty-icon">⇄</p>
+          <p data-i18n="settings.sync.soon">Sync over a server is not built yet.</p>
+          <p class="st-hint" data-i18n="settings.sync.today">
+            Until then, ⇄ Sync in the rail moves your setup as a file you carry yourself.
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <footer id="st-foot">
+      <span id="st-saved" class="st-saved" role="status" aria-live="polite"></span>
+      <span class="st-spacer"></span>
+      <button id="st-close" data-i18n="settings.close">Close</button>
+    </footer>
+  </div>
+
+  <script src="ui.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

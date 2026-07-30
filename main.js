@@ -273,6 +273,48 @@ function openPortableWindow(parent) {
   return win;
 }
 
+// ---- Settings --------------------------------------------------------------
+//
+// Theme and language have had handlers in main and methods on the preload since
+// the beginning, but nothing in the renderer ever called them — they could only
+// follow the desktop. This window is where they finally get a surface, and
+// where the sync configuration lands in the next phase.
+//
+// Not modal, unlike the picker: it should be possible to leave settings open and
+// watch a theme land on the tabs behind it.
+let settingsWin = null;
+
+function openSettingsWindow(parent) {
+  if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.focus(); return settingsWin; }
+
+  const win = new BrowserWindow({
+    parent,
+    modal: false,
+    width: 620,
+    height: 560,
+    minWidth: 520,
+    minHeight: 420,
+    show: false,
+    minimizable: false,
+    maximizable: false,
+    backgroundColor: (activeTheme && activeTheme.tokens.bg) || '#1e1e2e',
+    title: 'TabDesk',
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'settings-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  win.setMenuBarVisibility(false);
+  win.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
+  win.once('ready-to-show', () => win.show());
+  win.on('closed', () => { if (settingsWin === win) settingsWin = null; });
+
+  settingsWin = win;
+  return win;
+}
+
 // ---- Updates ---------------------------------------------------------------
 //
 // A background check asks the CDN's apt index what's published and tells the
@@ -331,19 +373,31 @@ async function checkForUpdate(win, options) {
 
 // Re-resolve the active theme and push it to the renderer. Called on startup,
 // when the user picks a theme, and whenever the desktop's theme changes.
+// Every window, not just the one that asked. The picker, the sync window and the
+// update window all subscribe to these in their preloads, but only the main
+// window was ever sent them, so they sat in whatever colours they opened in. It
+// shows worst in settings: you pick a theme *in that window* and everything
+// except the window you are looking at repaints.
+function broadcast(channel, payload) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (w.isDestroyed()) continue;
+    w.webContents.send(channel, payload);
+  }
+}
+
 async function applyTheme(win) {
   activeTheme = await theme.resolve(settings.get('theme'));
   termEmbed.setTheme(activeTheme.terminal);
-  if (win && !win.isDestroyed()) {
-    win.setBackgroundColor(activeTheme.tokens.bg);
-    win.webContents.send('theme:changed', activeTheme);
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.setBackgroundColor(activeTheme.tokens.bg);
   }
+  broadcast('theme:changed', activeTheme);
   return activeTheme;
 }
 
 function applyLanguage(win) {
   activeI18n = i18n.resolve(settings.get('language'));
-  if (win && !win.isDestroyed()) win.webContents.send('i18n:changed', activeI18n);
+  broadcast('i18n:changed', activeI18n);
   return activeI18n;
 }
 
@@ -647,6 +701,13 @@ app.whenReady().then(async () => {
       win.webContents.send('portable:imported', { models: model.allFor() });
     }
     return result;
+  });
+
+  // ---- Settings ----
+  ipcMain.handle('settings:open', () => { openSettingsWindow(win); return true; });
+  ipcMain.on('settings:close', (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (owner && !owner.isDestroyed()) owner.close();
   });
 
   // ---- Updates ----

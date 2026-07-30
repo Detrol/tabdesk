@@ -453,6 +453,7 @@ addBtn.addEventListener('click', async () => {
 
 document.getElementById('fullscreen-btn').addEventListener('click', () => window.api.toggleFullscreen());
 document.getElementById('portable-btn').addEventListener('click', () => window.api.openPortable());
+document.getElementById('settings-btn').addEventListener('click', () => window.api.openSettings());
 
 // ---- Update chip ----
 // Hidden until the background check finds something newer than the installed

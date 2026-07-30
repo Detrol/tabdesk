@@ -72,6 +72,9 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('portable:imported', listener);
   },
 
+  // Settings: theme and language today, sync configuration next.
+  openSettings: () => ipcRenderer.invoke('settings:open'),
+
   // Updates: a background check raises the chip in the system bar; the window
   // does the rest.
   openUpdate: () => ipcRenderer.invoke('update:open'),

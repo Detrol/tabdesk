@@ -1,0 +1,158 @@
+/* Settings window — its own window, borrowing only the theme tokens from
+   styles.css, the same way the picker and the update window do. */
+
+.st-body {
+  display: flex;
+  padding: 18px 20px;
+}
+
+#st {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  min-height: 0;
+}
+
+#st-head h1 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: .5px;
+  color: var(--accent-soft);
+  text-shadow: var(--glow-text);
+}
+#st-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* ---- section switcher ---- */
+
+#st-nav {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.st-navbtn {
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dim);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.st-navbtn:hover { color: var(--text); }
+.st-navbtn.is-active {
+  color: var(--accent-soft);
+  border-bottom-color: var(--accent);
+}
+
+/* ---- body ---- */
+
+#st-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.st-section {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.st-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.st-field > label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.st-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+#st select {
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  /* Without this the native widget keeps the desktop's colours and the window
+     ends up with one control that ignores the theme it is there to pick. */
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%),
+                    linear-gradient(135deg, var(--dim) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 30px;
+}
+#st select:hover { border-color: var(--accent); }
+#st select:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+/* The dropdown list itself is drawn by the platform, so its options need the
+   colours set explicitly or they fall back to white-on-white in a dark theme. */
+#st select option { color: var(--text); background: var(--bg); }
+
+/* ---- placeholder for a section with nothing in it yet ---- */
+
+.st-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 20px;
+  text-align: center;
+}
+.st-empty p { margin: 0; font-size: 12px; color: var(--dim); }
+.st-empty-icon {
+  font-size: 26px;
+  color: var(--accent-soft);
+  text-shadow: var(--glow-text);
+}
+
+/* ---- footer ---- */
+
+#st-foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.st-spacer { flex: 1; }
+.st-saved {
+  font-size: 11px;
+  color: var(--accent-soft);
+  opacity: 0;
+  transition: opacity .15s;
+}
+.st-saved.is-on { opacity: 1; }
+
+#st button:not(.st-navbtn) {
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+#st button:not(.st-navbtn):hover {
+  background: var(--tint-strong);
+  border-color: var(--accent);
+}
+
+.hidden { display: none !important; }
