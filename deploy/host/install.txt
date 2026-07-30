@@ -90,4 +90,5 @@ orsaken. Kontrollera nyckeln först, skriv den sedan.
 Ser en länk ovan ut att gå till www.google.com i stället för cdn.thern.io –
 skriv adressen för hand.
 
-Repot är olistat – dela inte länken vidare.
+Repot är öppet. Källkoden ligger på https://github.com/TheJonaz/tabdesk
+under MIT-licens.

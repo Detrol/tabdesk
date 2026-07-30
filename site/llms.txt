@@ -57,7 +57,17 @@ finished agent, a finished build and a finished rsync the same way.
 
 ## Availability
 
-TabDesk is not distributed publicly. The signed .deb package sits in an unlisted
-apt repository and is shared on request. There is no public download link on the
-site by design; write to info@thern.io for the repository address and
-credentials.
+TabDesk is publicly available under the MIT licence.
+
+- Source: https://github.com/TheJonaz/tabdesk
+- Apt repository: https://cdn.thern.io/tabdesk (signed; stable main)
+- Install instructions: https://cdn.thern.io/tabdesk/install.html
+- Tarball, for machines without apt: https://cdn.thern.io/tabdesk/
+
+The quickest install fetches the signing key, verifies its fingerprint before
+writing it, adds the source and installs:
+
+    curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash
+
+Updates then arrive with apt upgrade, or through the update chip in TabDesk's
+own system bar.

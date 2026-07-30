@@ -105,7 +105,7 @@
           "name": "Where can I download TabDesk?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "TabDesk is not distributed publicly. The signed .deb package sits in an unlisted apt repository and is shared on request — write to info@thern.io for the address and credentials."
+            "text": "Add the apt repository at https://cdn.thern.io/tabdesk and install the signed .deb: the one-liner at https://cdn.thern.io/tabdesk/install.sh fetches the signing key, checks its fingerprint before writing it, adds the source and installs. Machines without apt can take the tarball from the same place. The source is at https://github.com/TheJonaz/tabdesk under the MIT licence."
           }
         },
         {
@@ -305,10 +305,15 @@
 
       <article class="qa">
         <h3>Where can I download TabDesk?</h3>
-        <p>TabDesk is not distributed publicly. The signed <code>.deb</code> package
-           sits in an unlisted apt repository and is shared on request — write to
-           <a href="mailto:info@thern.io?subject=TabDesk">info@thern.io</a> for the
-           address and credentials.</p>
+        <p>From the apt repository at <code>cdn.thern.io/tabdesk</code>. The
+           one-liner below fetches the signing key, checks its fingerprint before
+           writing it, adds the source and installs:</p>
+        <pre><code>curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash</code></pre>
+        <p>The full step-by-step is at
+           <a href="https://cdn.thern.io/tabdesk/install.html">cdn.thern.io/tabdesk/install.html</a>,
+           and machines without apt can take the tarball from the same place. The
+           source is on <a href="https://github.com/TheJonaz/tabdesk">GitHub</a>
+           under the MIT licence.</p>
       </article>
 
       <article class="qa">
@@ -323,12 +328,19 @@
   </section>
 
   <section id="access" class="band band-last">
-    <p class="eyebrow">Access</p>
-    <h2>No download here</h2>
+    <p class="eyebrow">Install</p>
+    <h2>Get TabDesk</h2>
     <p class="band-lede">
-      TabDesk is not distributed publicly. The package sits in an unlisted apt
-      repository and is shared on request — get in touch and you'll have the
-      address and the credentials.
+      A signed <code>.deb</code> from the apt repository. The line below fetches
+      the signing key, checks its fingerprint before writing it, adds the source
+      and installs; updates then arrive with <code>apt upgrade</code>.
+    </p>
+    <pre><code>curl -fsSL https://cdn.thern.io/tabdesk/install.sh | sudo bash</code></pre>
+    <p>
+      Prefer to read it first, or not running apt? The step-by-step and a plain
+      tarball are at
+      <a href="https://cdn.thern.io/tabdesk/install.html">cdn.thern.io/tabdesk/install.html</a>.
+      Source on <a href="https://github.com/TheJonaz/tabdesk">GitHub</a>, MIT licence.
     </p>
     <p><a class="mailto" href="mailto:info@thern.io?subject=TabDesk">info@thern.io</a></p>
   </section>
