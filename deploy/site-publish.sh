@@ -41,11 +41,20 @@ done
 
 echo "→ $local_dir  ⇒  ftp://$FTP_USER@$FTP_HOST$FTP_DIR"
 
-# ftp:ssl-allow keeps the login off the wire in clear text where the server
-# offers FTPS; the certificate on shared hosting rarely matches the hostname,
-# hence verify-certificate off. Plain FTP is the fallback, not the intent.
+# ssl-force, not ssl-allow: `allow` is permissive, so a server that answers
+# without FTPS — or a middlebox that says it can't — silently drops the whole
+# session back to plaintext and hands FTP_PASS to whoever is on the wire. The
+# fallback was the vulnerability, not the safety net. `force` fails the upload
+# instead, which is the outcome you want when the alternative is leaking the
+# password for the host that serves the site.
+#
+# verify-certificate stays off because the shared-hosting certificate genuinely
+# does not match the hostname. That leaves this open to an active MITM who can
+# present any certificate; it does close passive capture, which is what the
+# plaintext fallback exposed. Turn it on if Inleed ever fixes the certificate,
+# and prefer sftp:// outright if the account grows SSH access.
 lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<LFTP
-set ftp:ssl-allow true
+set ftp:ssl-force true
 set ftp:ssl-protect-data true
 set ssl:verify-certificate no
 set net:max-retries 2

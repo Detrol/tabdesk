@@ -56,20 +56,32 @@ trap 'rm -f "$tmpkey" "$tmpcfg"' EXIT
 [ -n "$AUTH" ] && printf 'user = "%s"\n' "$AUTH" > "$tmpcfg"
 curl -fsSL --config "$tmpcfg" "$BASE/tabdesk-archive-keyring.gpg" -o "$tmpkey"
 
-echo "==> verifying signing key"
-if command -v gpg >/dev/null 2>&1; then
-    # `|| true` inside the substitution on purpose: gpg exits 2 on a file that
-    # isn't a key, and under `set -e` that would kill the script here — right
-    # before the one message that explains what went wrong.
-    got="$(gpg --show-keys --with-colons "$tmpkey" 2>/dev/null | awk -F: '/^fpr:/{print $10; exit}' || true)"
-else
-    # No gnupg on this machine — fall back to checking that the file at least
-    # starts with an OpenPGP public-key packet (0x98/0x99) rather than markup.
-    got=""
-    case "$(head -c1 "$tmpkey" | od -An -tx1 | tr -d ' ')" in
-        98|99) got="$KEY_FPR" ;;
-    esac
+# gpg is a hard requirement, not a nice-to-have. The previous fallback — accept
+# the file if its first byte is an OpenPGP packet header (0x98/0x99) and then
+# set `got` to the expected fingerprint — made the comparison below pass for ANY
+# valid key. The pin was inert on exactly the machines it was meant to protect:
+# a fresh container or minimal server, which is where gnupg is missing. There is
+# no partial check worth having here, so install it or stop.
+if ! command -v gpg >/dev/null 2>&1; then
+    echo "==> installing gnupg (needed to verify the signing key)"
+    apt-get update -qq >/dev/null 2>&1 || true
+    apt-get install -y --no-install-recommends gnupg >/dev/null 2>&1 || true
 fi
+if ! command -v gpg >/dev/null 2>&1; then
+    cat >&2 <<'MSG'
+error: gnupg is required to verify the TabDesk signing key, and installing it
+       failed. Nothing was written.
+
+       Install it and re-run:  apt-get install -y gnupg
+MSG
+    exit 1
+fi
+
+echo "==> verifying signing key"
+# `|| true` inside the substitution on purpose: gpg exits 2 on a file that
+# isn't a key, and under `set -e` that would kill the script here — right
+# before the one message that explains what went wrong.
+got="$(gpg --show-keys --with-colons "$tmpkey" 2>/dev/null | awk -F: '/^fpr:/{print $10; exit}' || true)"
 
 if [ "$got" != "$KEY_FPR" ]; then
     cat >&2 <<MSG
