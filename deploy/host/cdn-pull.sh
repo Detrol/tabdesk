@@ -3,6 +3,9 @@
 # the local reprepro apt repo. Runs ON the CDN host (cdn.thern.io), driven by a
 # systemd timer — the host reaches out to GitHub, so its firewall stays closed.
 #
+# Two assets: the .deb goes through reprepro into the apt repo, and the .tar.gz
+# is mirrored as a plain file in the repo root for machines without apt.
+#
 #   cdn-pull.sh [version] [--force] [--dry-run]
 #     (no version)  resolve and publish the latest GitHub release
 #     version       publish a specific version, e.g. 0.1.1
@@ -67,21 +70,32 @@ else
 fi
 log "target version: $VERSION"
 
-# Find the .deb asset's API url (works for private repos) and its filename.
+# Find the asset API urls (they work for private repos) and their filenames.
 # Parse JSON with python3 so url/name stay paired within each asset object. The
 # release JSON goes in via env (TABDESK_JSON), not stdin — a heredoc would eat
 # stdin and python would read its own script instead of the JSON.
-read -r deb_url deb_name < <(TABDESK_JSON="$json" python3 -c '
+assets="$(TABDESK_JSON="$json" python3 -c '
 import os, json
 data = json.loads(os.environ["TABDESK_JSON"])
 for a in data.get("assets", []):
-    if a.get("name", "").endswith("_amd64.deb"):
-        print(a["url"], a["name"]); break
-' 2>/dev/null || true)
-[ -n "$deb_url" ] || die "no *_amd64.deb asset on release v$VERSION"
+    name = a.get("name", "")
+    kind = "deb" if name.endswith("_amd64.deb") else "tar" if name.endswith(".tar.gz") else ""
+    if kind:
+        print(kind, a["url"], name)
+' 2>/dev/null || true)"
+
+# `read` returns non-zero on empty input, which under `set -e` would kill the
+# script — hence the `|| true`. The tarball is genuinely optional: releases up
+# to v0.1.4 carry only a .deb, and those must still publish.
+pick(){ printf '%s\n' "$assets" | awk -v k="$1" '$1==k{print $2, $3; exit}'; }
+read -r deb_url deb_name <<<"$(pick deb)" || true
+read -r tar_url tar_name <<<"$(pick tar)" || true
+[ -n "${deb_url:-}" ] || die "no *_amd64.deb asset on release v$VERSION"
+[ -n "${tar_url:-}" ] || log "no .tar.gz asset on v$VERSION — publishing the .deb only"
 
 if [ "$DRY" = 1 ]; then
     log "dry run — would publish $deb_name from $deb_url"
+    [ -n "${tar_url:-}" ] && log "dry run — would mirror $tar_name to $DEB_BASE"
     exit 0
 fi
 
@@ -103,6 +117,21 @@ log "reprepro includedeb $CODENAME $deb_name"
 # latest-only; the previous .deb is purged from the pool).
 reprepro -b "$DEB_BASE" remove "$CODENAME" tabdesk >/dev/null 2>&1 || true
 reprepro -b "$DEB_BASE" includedeb "$CODENAME" "$STAGE/$deb_name"
+
+# The tarball is not a package, so reprepro has no say in it — it is served
+# straight out of the repo root as a plain file, next to install.sh. Latest-only,
+# matching the pool: the previous tarball goes when the new one lands. Written
+# via a temp name + mv so a client fetching mid-publish never sees a short file.
+if [ -n "${tar_url:-}" ]; then
+    log "download $tar_name"
+    curl -fL --retry 3 --max-time 600 \
+        -H "Accept: application/octet-stream" -H "User-Agent: tabdesk-cdn-pull" "${auth[@]}" \
+        -o "$STAGE/$tar_name" "$tar_url"
+    find "$DEB_BASE" -maxdepth 1 -name 'tabdesk-*.tar.gz' ! -name "$tar_name" -delete 2>/dev/null || true
+    install -m644 "$STAGE/$tar_name" "$DEB_BASE/.$tar_name.part"
+    mv -f "$DEB_BASE/.$tar_name.part" "$DEB_BASE/$tar_name"
+    log "mirrored $tar_name to $DEB_BASE"
+fi
 
 mkdir -p "$(dirname "$STATE")" 2>/dev/null || true
 printf '%s\n' "$VERSION" > "$STATE" 2>/dev/null || log "warning: could not write state file $STATE"

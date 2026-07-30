@@ -25,7 +25,7 @@
 </style>
 </head>
 <body>
-  <h1>TabDesk – installation <span class="pill">v0.1.4</span></h1>
+  <h1>TabDesk – installation <span class="pill">v0.1.5</span></h1>
   <p class="muted">Debian / Kali / Ubuntu. Repot är olistat – dela inte länken vidare.</p>
 
   <h2>Enklast – allt i ett</h2>
@@ -84,6 +84,17 @@ sudo apt remove tabdesk                        # avinstallera</pre>
      www.google.com i stället för cdn.thern.io – skriv adressen för hand.</p>
 
   <h2>Direkt .deb</h2>
-  <p><a href="https://cdn.thern.io/tabdesk/pool/main/t/tabdesk/tabdesk_0.1.4_amd64.deb">tabdesk_0.1.4_amd64.deb</a></p>
+  <p><a href="https://cdn.thern.io/tabdesk/pool/main/t/tabdesk/tabdesk_0.1.5_amd64.deb">tabdesk_0.1.5_amd64.deb</a></p>
+
+  <h2>Tarball – utan apt</h2>
+  <p><a href="https://cdn.thern.io/tabdesk/tabdesk-0.1.5.tar.gz">tabdesk-0.1.5.tar.gz</a></p>
+  <pre>tar xzf tabdesk-0.1.5.tar.gz
+./tabdesk-0.1.5/tabdesk</pre>
+  <p class="muted">Tarbollen packar bara upp och kör – ingen apt-källa, alltså inga
+     uppdateringar och inga beroenden installerade åt dig. Det här måste finnas
+     sedan tidigare: <code>xterm</code>, <code>xdotool</code>, <code>python3-gi</code>,
+     <code>libgtk-3-0</code>, <code>libnss3</code>, <code>libxss1</code>,
+     <code>libxtst6</code>, <code>libsecret-1-0</code>, <code>libnotify4</code>.
+     Startar appen inte, kör den från en terminal – ett saknat bibliotek syns i felraden.</p>
 </body>
 </html>

@@ -5,6 +5,13 @@ the `.deb`, and the CDN host (cdn.thern.io) pulls it and republishes it into a
 signed **reprepro** apt repo. Nothing pushes into the CDN — its firewall stays
 closed and it reaches out to GitHub on a timer.
 
+The release also carries a `.tar.gz`. It is *not* a package — reprepro never
+sees it; `cdn-pull.sh` drops it in the repo root next to `install.sh`, so
+`https://cdn.thern.io/tabdesk/tabdesk-<ver>.tar.gz` is a plain download for
+machines without apt. Latest-only, like the pool: publishing a new one deletes
+the previous. It carries no dependency metadata, so xterm, xdotool and
+python3-gi have to be on the machine already, and it gets no apt updates.
+
     tag v0.1.1 ──▶ GitHub Actions builds .deb ──▶ GitHub Release
                                                       │  (host pulls)
                                                       ▼

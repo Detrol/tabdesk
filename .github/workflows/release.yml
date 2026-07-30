@@ -37,12 +37,16 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           npm version "$ver" --no-git-tag-version --allow-same-version
 
-      - name: Build .deb
-        run: npx electron-builder --linux deb --publish never
+      - name: Build .deb and tarball
+        run: npx electron-builder --linux deb tar.gz --publish never
 
+      # Both assets go on the Release: the .deb is what reprepro republishes,
+      # the tarball is the apt-less download the CDN mirrors as a plain file.
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.deb
+          files: |
+            dist/*.deb
+            dist/*.tar.gz
           fail_on_unmatched_files: true
           generate_release_notes: true

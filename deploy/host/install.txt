@@ -1,6 +1,6 @@
 TabDesk – installation (Debian / Kali / Ubuntu)
 ================================================
-Aktuell version: 0.1.4
+Aktuell version: 0.1.5
 
 Enklast – allt i ett (hämtar nyckeln, kontrollerar den, installerar):
 
@@ -47,7 +47,20 @@ Uppdatera:     sudo apt update && sudo apt upgrade tabdesk
 Avinstallera:  sudo apt remove tabdesk
 
 Direkt .deb:
-https://cdn.thern.io/tabdesk/pool/main/t/tabdesk/tabdesk_0.1.4_amd64.deb
+https://cdn.thern.io/tabdesk/pool/main/t/tabdesk/tabdesk_0.1.5_amd64.deb
+
+Tarball (utan apt, för icke-Debian):
+https://cdn.thern.io/tabdesk/tabdesk-0.1.5.tar.gz
+
+  tar xzf tabdesk-0.1.5.tar.gz
+  ./tabdesk-0.1.5/tabdesk
+
+Tarbollen packar bara upp och kör – ingen apt-källa, alltså inga
+uppdateringar och inga beroenden installerade åt dig. Följande måste
+finnas på maskinen sedan tidigare: xterm, xdotool, python3-gi,
+libgtk-3-0, libnss3, libxss1, libxtst6, libsecret-1-0, libnotify4.
+Går appen inte igång, kör ./tabdesk-0.1.5/tabdesk från en terminal och
+läs felraden – ett saknat bibliotek syns där.
 
 Om något gick fel
 -----------------
