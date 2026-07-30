@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "icons": "./build/render-icons.sh",
-    "dist": "electron-builder --linux deb",
+    "dist": "electron-builder --linux deb tar.gz",
     "postinstall": "electron-rebuild -f -w node-pty"
   },
   "author": {
@@ -43,6 +43,7 @@
       "i18n.js",
       "settings.js",
       "model.js",
+      "agents.js",
       "app-runner.js",
       "usage-worker.js",
       "usage-limits.js",
@@ -59,7 +60,8 @@
     ],
     "linux": {
       "target": [
-        "deb"
+        "deb",
+        "tar.gz"
       ],
       "category": "Development;TerminalEmulator",
       "icon": "build/icons",
