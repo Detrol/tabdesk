@@ -11,6 +11,8 @@
 // starts presenting a different key is refused rather than trusted afresh.
 
 const { safeStorage } = require('electron');
+const crypto = require('crypto');
+const os = require('os');
 const settings = require('../settings');
 
 const KEY = 'sync';
@@ -27,11 +29,27 @@ const DEFAULTS = {
   keyPath: '',              // absolute path to a private key, never its content
   secret: null,             // safeStorage blob: key passphrase or password
   hostKey: null,            // { algo, sha256 } once accepted
-  deviceName: '',
+  deviceId: '',             // stable per install, minted on first use
+  deviceName: '',           // what the other machine calls this one
 };
 
 function all() {
   return { ...DEFAULTS, ...(settings.get(KEY) || {}) };
+}
+
+// A random id rather than the hostname: two machines can share a hostname, and
+// renaming one must not orphan the bundle it already pushed. The name is what
+// humans read; the id is what the remote layout is keyed on.
+function identity() {
+  const c = all();
+  if (c.deviceId && c.deviceName) return { deviceId: c.deviceId, deviceName: c.deviceName };
+  const next = {
+    ...c,
+    deviceId: c.deviceId || crypto.randomUUID(),
+    deviceName: c.deviceName || os.hostname() || 'tabdesk',
+  };
+  settings.set(KEY, next);
+  return { deviceId: next.deviceId, deviceName: next.deviceName };
 }
 
 // What the renderer is allowed to see. The secret never crosses the bridge in
@@ -48,6 +66,7 @@ function forRenderer() {
     keyPath: c.keyPath,
     hasSecret: Boolean(c.secret),
     hostKey: c.hostKey,
+    deviceId: c.deviceId,
     deviceName: c.deviceName,
     secretAvailable: isSecretAvailable(),
   };
@@ -67,8 +86,17 @@ function encryptSecret(plain) {
 
 function decryptSecret(blob) {
   if (!blob) return '';
-  if (!isSecretAvailable()) throw new Error('no-keyring');
-  try { return safeStorage.decryptString(Buffer.from(blob, 'base64')); } catch (_) { return ''; }
+  if (!isSecretAvailable()) throw Object.assign(new Error('no-keyring'), { code: 'no-keyring' });
+  try {
+    return safeStorage.decryptString(Buffer.from(blob, 'base64'));
+  } catch (_) {
+    // The keyring changed under us — a reinstall, a different desktop session,
+    // a profile copied between machines. Returning '' here would hand ssh2 an
+    // empty passphrase and surface as "Encrypted private OpenSSH key detected,
+    // but no passphrase given", which sends the user looking at their key file
+    // instead of at the one thing that is actually wrong.
+    throw Object.assign(new Error('stored secret could not be decrypted'), { code: 'secret-lost' });
+  }
 }
 
 // Save the parts the user edited. `secret` is three-state on purpose:
@@ -129,5 +157,5 @@ function missingFields() {
 
 module.exports = {
   all, forRenderer, forConnect, save, pinHostKey, missingFields,
-  isSecretAvailable, DEFAULTS,
+  isSecretAvailable, identity, DEFAULTS,
 };

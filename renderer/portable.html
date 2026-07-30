@@ -42,6 +42,14 @@
         <p>⇄</p>
         <p data-i18n="portable.importEmpty">Open a .tabdesk bundle to see what it would change.</p>
         <button id="pt-im-open" class="pt-primary" data-i18n="portable.chooseFile">Choose file…</button>
+
+        <!-- Only rendered once a server is configured and its key accepted. -->
+        <div id="pt-peers" class="pt-peers hidden">
+          <p class="pt-peers-head" data-i18n="portable.fromServer">Or from the server:</p>
+          <ul id="pt-peers-list"></ul>
+          <p id="pt-peers-note" class="pt-hint"></p>
+        </div>
+
         <p id="pt-im-error" class="pt-result bad hidden"></p>
       </div>
 
@@ -65,6 +73,7 @@
 
     <footer id="pt-foot">
       <button id="pt-export-btn" class="pt-primary" data-i18n="portable.exportBtn">Export…</button>
+      <button id="pt-push-btn" class="hidden" data-i18n="portable.toServer">Send to server</button>
       <button id="pt-import-btn" class="pt-primary hidden" data-i18n="portable.importBtn">Import</button>
       <button id="pt-im-other" class="hidden" data-i18n="portable.otherFile">Other file…</button>
       <span class="pt-spacer"></span>

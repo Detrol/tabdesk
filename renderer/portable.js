@@ -14,6 +14,7 @@
 
   let scan = null;      // what this machine has
   let currentPlan = null;   // the diff of the bundle currently open
+  let syncReady = false;    // a server is configured and its host key accepted
   let mode = 'export';
 
   const fmtBytes = (n) => (n < 1024 ? `${n} B`
@@ -36,6 +37,9 @@
       tabs[key].classList.toggle('active', key === next);
     }
     $('pt-export-btn').classList.toggle('hidden', next !== 'export');
+    // Only offered once a server is configured; loadPeers() unhides it.
+    if (next !== 'export') $('pt-push-btn').classList.add('hidden');
+    else if (syncReady) $('pt-push-btn').classList.remove('hidden');
     // The import buttons only make sense once a bundle is open.
     const hasPlan = Boolean(currentPlan);
     $('pt-import-btn').classList.toggle('hidden', next !== 'import' || !hasPlan);
@@ -91,9 +95,13 @@
   $('pt-ex-all').addEventListener('click', () => checkAll(true));
   $('pt-ex-none').addEventListener('click', () => checkAll(false));
 
+  // Which projects the export tab has ticked. Shared by "Export…" and
+  // "Send to server" so the two never disagree about what is being sent.
+  const selectedSlugs = () => [...exList.querySelectorAll('input[type=checkbox]')]
+    .filter((box) => box.checked).map((box) => box.dataset.slug);
+
   $('pt-export-btn').addEventListener('click', async () => {
-    const slugs = [...exList.querySelectorAll('input[type=checkbox]')]
-      .filter((box) => box.checked).map((box) => box.dataset.slug);
+    const slugs = selectedSlugs();
     const out = $('pt-ex-result');
     if (!slugs.length) {
       out.className = 'pt-result bad';
@@ -193,8 +201,10 @@
     $('pt-im-result').classList.add('hidden');
   }
 
-  async function openBundle() {
-    const res = await window.api.openBundle();
+  // Both sources — a file the user picked and a bundle pulled off the server —
+  // land here with the same {ok, plan} shape, so there is exactly one path to
+  // the review screen and no way for a remote bundle to skip it.
+  function showBundleResult(res, errKey) {
     if (!res || res.canceled) return;
     if (!res.ok) {
       // An unreadable bundle leaves nothing to diff: back to the empty state,
@@ -204,7 +214,9 @@
       $('pt-im-pick').classList.remove('hidden');
       const err = $('pt-im-error');
       err.classList.remove('hidden');
-      err.textContent = window.t('portable.err.open', { error: res.error || '' });
+      err.textContent = res.code
+        ? syncError(errKey, res)
+        : window.t(errKey, { error: res.error || '' });
       setMode('import');
       return;
     }
@@ -214,8 +226,95 @@
     setMode('import');
   }
 
+  async function openBundle() {
+    showBundleResult(await window.api.openBundle(), 'portable.err.open');
+  }
+
   $('pt-im-open').addEventListener('click', openBundle);
   $('pt-im-other').addEventListener('click', openBundle);
+
+  // ---- the same bundle, over the network ----
+
+  // Prefer a message written for this exact failure, fall back to the generic
+  // one. Without this a coded error like secret-lost reads as raw ssh2 text.
+  function syncError(base, res) {
+    const code = res && res.code;
+    const specific = code && `${base}.${code}`;
+    if (specific && window.t(specific) !== specific) return window.t(specific);
+    return window.t(base, { error: (res && (res.detail || res.code)) || '' });
+  }
+
+  function fmtWhen(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso || '');
+    return d.toLocaleString(window.ui.locale);
+  }
+
+  async function loadPeers() {
+    const ready = await window.api.syncReady();
+    const wrap = $('pt-peers');
+    // Nothing configured is the common case for everyone who is not syncing.
+    // Say nothing rather than advertise a feature that would only error.
+    if (!ready || !ready.ok) { wrap.classList.add('hidden'); return; }
+
+    syncReady = true;
+    if (mode === 'export') $('pt-push-btn').classList.remove('hidden');
+    wrap.classList.remove('hidden');
+    const list = $('pt-peers-list');
+    const note = $('pt-peers-note');
+    list.textContent = '';
+    note.textContent = window.t('portable.peers.loading');
+
+    const res = await window.api.syncPeers();
+    if (!res || !res.ok) {
+      note.textContent = syncError('portable.peers.err', res);
+      return;
+    }
+    if (!res.peers.length) {
+      note.textContent = window.t('portable.peers.none');
+      return;
+    }
+    note.textContent = '';
+    for (const p of res.peers) {
+      const li = document.createElement('li');
+      const meta = el('span', 'pt-peer-meta',
+        window.t('portable.peers.meta', {
+          projects: p.projects, memory: p.memoryFiles, when: fmtWhen(p.updatedAt),
+        }));
+      const btn = el('button', 'pt-link', window.t('portable.peers.fetch'));
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        note.textContent = window.t('portable.peers.fetching', { name: p.deviceName });
+        showBundleResult(await window.api.pullBundle(p.deviceId), 'portable.peers.err');
+        btn.disabled = false;
+        note.textContent = '';
+      });
+      li.appendChild(el('span', 'pt-peer-name', p.deviceName || p.deviceId));
+      li.appendChild(meta);
+      li.appendChild(btn);
+      list.appendChild(li);
+    }
+  }
+
+  $('pt-push-btn').addEventListener('click', async () => {
+    const btn = $('pt-push-btn');
+    btn.disabled = true;
+    const out = $('pt-ex-result');
+    out.classList.remove('hidden');
+    out.className = 'pt-result';
+    out.textContent = window.t('portable.push.sending');
+    const res = await window.api.pushBundle(selectedSlugs());
+    btn.disabled = false;
+    if (!res || !res.ok) {
+      out.className = 'pt-result bad';
+      out.textContent = syncError('portable.push.err', res);
+      return;
+    }
+    out.className = 'pt-result';
+    out.textContent = window.t('portable.push.ok', {
+      projects: res.projects, memory: res.memoryFiles, size: fmtBytes(res.bytes),
+    });
+  });
 
   $('pt-import-btn').addEventListener('click', async () => {
     const btn = $('pt-import-btn');
@@ -280,8 +379,10 @@
     if (kind !== 'language') return;
     renderExport();
     if (currentPlan) renderPlan(currentPlan);
+    loadPeers();
   });
 
   setMode('export');
   load();
+  loadPeers();
 })();

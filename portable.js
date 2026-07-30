@@ -234,8 +234,17 @@ function writeBundle(file, bundle) {
   return { ok: true, path: file, bytes: fs.statSync(file).size, plain: json.length };
 }
 
-function readBundle(file) {
-  const raw = fs.readFileSync(file);
+// The same bytes writeBundle() would put on disk. Sync sends these straight
+// over the wire rather than staging a temp file, but the format stays one
+// thing: what lands on the server is byte-for-byte an exportable .tabdesk.
+function packBundle(bundle) {
+  return zlib.gzipSync(Buffer.from(JSON.stringify(bundle, null, 2), 'utf8'));
+}
+
+// Validation lives here, on the buffer, so every path into the app goes
+// through it — a bundle pulled off a server is no more trusted than one
+// picked from disk.
+function parseBundle(raw) {
   // Accept a plain-JSON bundle too, so a hand-edited one still imports.
   const isGzip = raw.length > 2 && raw[0] === 0x1f && raw[1] === 0x8b;
   const text = (isGzip ? zlib.gunzipSync(raw) : raw).toString('utf8');
@@ -244,6 +253,10 @@ function readBundle(file) {
   if (!(bundle.version <= VERSION)) throw new Error(`bundle version ${bundle.version} is newer than this TabDesk`);
   if (!Array.isArray(bundle.projects)) throw new Error('bundle has no projects');
   return bundle;
+}
+
+function readBundle(file) {
+  return parseBundle(fs.readFileSync(file));
 }
 
 // ---- re-anchoring ----------------------------------------------------------
@@ -550,6 +563,7 @@ function suggestedName() {
 
 module.exports = {
   FORMAT, VERSION,
-  slugify, scan, buildBundle, writeBundle, readBundle, plan, apply, suggestedName,
+  slugify, scan, buildBundle, writeBundle, readBundle, packBundle, parseBundle,
+  plan, apply, suggestedName,
   memoryDirFor,
 };

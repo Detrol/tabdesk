@@ -243,5 +243,19 @@
   "settings.sync.err.not-writable": "Mappen går inte att skriva till.",
   "settings.sync.err.nokeyring": "Ingen nyckelring — kan inte spara hemligheten.",
   "settings.sync.err.other": "Misslyckades: {detail}",
-  "settings.sync.hostkey.pinned": "Pinnad. Inte kontrollerad denna session:"
+  "settings.sync.hostkey.pinned": "Pinnad. Inte kontrollerad denna session:",
+  "portable.toServer": "Skicka till servern",
+  "portable.push.sending": "Skickar…",
+  "portable.push.ok": "✓ Skickat till servern — {projects} projekt, {memory} minnesfiler ({size}).",
+  "portable.push.err": "Kunde inte skicka: {error}",
+  "portable.fromServer": "Eller från servern:",
+  "portable.peers.loading": "Letar efter andra datorer…",
+  "portable.peers.none": "Ingen annan dator har skickat något än.",
+  "portable.peers.meta": "{projects} projekt · {memory} minnesfiler · {when}",
+  "portable.peers.fetch": "Hämta",
+  "portable.peers.fetching": "Hämtar från {name}…",
+  "portable.peers.err": "Kunde inte nå servern: {error}",
+  "portable.peers.err.no-bundle": "Den datorn har ingen bundle på servern.",
+  "settings.sync.err.secret-lost": "Den sparade hemligheten gick inte att dekryptera — skrivbordets nyckelring har ändrats. Ange den igen.",
+  "portable.peers.err.secret-lost": "Den sparade hemligheten gick inte att dekryptera — ange den på nytt under Inställningar."
 }

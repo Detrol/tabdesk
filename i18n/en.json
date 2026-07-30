@@ -243,5 +243,19 @@
   "settings.sync.err.not-writable": "That folder is not writable.",
   "settings.sync.err.nokeyring": "No desktop keyring — cannot store the secret.",
   "settings.sync.err.other": "Failed: {detail}",
-  "settings.sync.hostkey.pinned": "Pinned. Not checked this session:"
+  "settings.sync.hostkey.pinned": "Pinned. Not checked this session:",
+  "portable.toServer": "Send to server",
+  "portable.push.sending": "Sending…",
+  "portable.push.ok": "✓ Sent to the server — {projects} projects, {memory} memory files ({size}).",
+  "portable.push.err": "Could not send: {error}",
+  "portable.fromServer": "Or from the server:",
+  "portable.peers.loading": "Looking for other machines…",
+  "portable.peers.none": "No other machine has sent anything yet.",
+  "portable.peers.meta": "{projects} projects · {memory} memory files · {when}",
+  "portable.peers.fetch": "Fetch",
+  "portable.peers.fetching": "Fetching from {name}…",
+  "portable.peers.err": "Could not reach the server: {error}",
+  "portable.peers.err.no-bundle": "That machine has no bundle on the server.",
+  "settings.sync.err.secret-lost": "The stored secret could not be decrypted — the desktop keyring changed. Enter it again.",
+  "portable.peers.err.secret-lost": "The stored secret could not be decrypted — re-enter it in Settings."
 }

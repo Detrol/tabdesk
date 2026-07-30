@@ -35,5 +35,13 @@ contextBridge.exposeInMainWorld('api', {
   replanBundle: () => ipcRenderer.invoke('portable:replan'),
   applyBundle: (options) => ipcRenderer.invoke('portable:apply', options),
 
+  // ---- the same bundle, over the network ----
+  // pullBundle returns a plan in exactly the shape openBundle does, so the
+  // review UI does not need to know where the bundle came from.
+  syncReady: () => ipcRenderer.invoke('sync:ready'),
+  pushBundle: (slugs) => ipcRenderer.invoke('sync:push-bundle', slugs),
+  syncPeers: () => ipcRenderer.invoke('sync:peers'),
+  pullBundle: (deviceId) => ipcRenderer.invoke('sync:pull-bundle', deviceId),
+
   close: () => ipcRenderer.send('portable:close'),
 });

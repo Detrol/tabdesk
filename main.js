@@ -20,6 +20,7 @@ const usageLimits = require('./usage-limits');
 const tray = require('./tray');
 const syncConfig = require('./sync/config');
 const syncTransport = require('./sync/transport-sftp');
+const syncBundle = require('./sync/bundle');
 
 // Demo/testing hooks, unset in normal use. TABDESK_PROJECTS_DIR points the rail
 // at a scratch set of projects (screenshots, trying layout changes against a
@@ -676,6 +677,47 @@ app.whenReady().then(async () => {
       pendingBundles.delete(event.sender.id);
       return { ok: false, error: String(err.message || err) };
     }
+  });
+
+  // ---- The same bundle, over the network ----
+  //
+  // These deliberately land in the same place a file-picked bundle does:
+  // pendingBundles + portable.plan(). The review step and everything after it
+  // is shared, so a bundle off a server can never take a shortcut past the
+  // screen that shows what it would overwrite.
+  const syncFail = (err) => ({
+    ok: false,
+    code: err.code || 'other',
+    detail: String(err.message || err),
+    missing: err.missing,
+  });
+
+  ipcMain.handle('sync:push-bundle', async (event, slugs) => {
+    try { return await syncBundle.push(slugs); }
+    catch (err) { return syncFail(err); }
+  });
+
+  ipcMain.handle('sync:peers', async () => {
+    try { return await syncBundle.peers(); }
+    catch (err) { return syncFail(err); }
+  });
+
+  ipcMain.handle('sync:pull-bundle', async (event, deviceId) => {
+    try {
+      const bundle = await syncBundle.pull(deviceId);
+      pendingBundles.set(event.sender.id, bundle);
+      return { ok: true, plan: portable.plan(bundle), source: 'remote' };
+    } catch (err) {
+      pendingBundles.delete(event.sender.id);
+      return syncFail(err);
+    }
+  });
+
+  // Whether the sync tab should offer itself at all.
+  ipcMain.handle('sync:ready', () => {
+    const missing = syncConfig.missingFields();
+    const cfg = syncConfig.all();
+    return { ok: missing.length === 0 && Boolean(cfg.hostKey), missing, pinned: Boolean(cfg.hostKey) };
   });
 
   // Re-diff the bundle that's already open — the plan goes stale the moment an

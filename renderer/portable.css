@@ -206,7 +206,10 @@
   font-size: 12px;
   text-align: center;
 }
-.pt-empty p:first-child { font-size: 30px; margin: 0; opacity: .6; }
+/* Direct child only: this sizes the ⇄ glyph at the top. As a descendant
+   selector it also caught the first paragraph of any block nested inside the
+   empty state, which is how the peer list's heading came out at 30px. */
+.pt-empty > p:first-child { font-size: 30px; margin: 0; opacity: .6; }
 .pt-empty p { margin: 0; }
 
 /* ---- buttons / footer ---- */
@@ -250,3 +253,38 @@
   border-top: 1px solid var(--line-soft);
 }
 .pt-spacer { flex: 1; }
+
+/* ---- peers on the sync server ---- */
+
+.pt-peers {
+  width: 100%;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  text-align: left;
+}
+.pt-peers-head {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--dim);
+}
+#pt-peers-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#pt-peers-list li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 7px 10px;
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.pt-peer-name { font-weight: 600; font-size: 12px; color: var(--text); }
+.pt-peer-meta { flex: 1; font-size: 11px; color: var(--dim); }
+#pt-peers-note { margin: 8px 0 0; font-size: 11px; color: var(--dim); }
