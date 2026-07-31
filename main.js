@@ -26,6 +26,7 @@ const syncWatch = require('./sync/watch');
 const syncTrust = require('./sync/trust');
 const syncPull = require('./sync/pullwatch');
 const syncKeys = require('./sync/keys');
+const syncInvite = require('./sync/invite');
 
 // Demo/testing hooks, unset in normal use. TABDESK_PROJECTS_DIR points the rail
 // at a scratch set of projects (screenshots, trying layout changes against a
@@ -823,6 +824,24 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('sync:key-adopt', (event, recoveryString) => {
     try { return syncKeys.adopt(syncKeys.fromRecovery(recoveryString)); }
+    catch (err) { return { ok: false, code: err.code || 'other' }; }
+  });
+
+  // ---- Pairing ----
+  //
+  // The invite is a bearer secret with a short life. It is generated on
+  // request and never stored: there is nothing to leak later because nothing
+  // is kept.
+  ipcMain.handle('sync:invite-create', (event, options) => {
+    try { return syncInvite.create(options || {}); }
+    catch (err) { return { ok: false, code: err.code || 'other', missing: err.missing }; }
+  });
+  ipcMain.handle('sync:invite-preview', (event, str) => {
+    try { return syncInvite.preview(str); }
+    catch (err) { return { ok: false, code: err.code || 'other', expiredAt: err.expiredAt }; }
+  });
+  ipcMain.handle('sync:invite-accept', (event, str) => {
+    try { return syncInvite.accept(str, app.getPath('userData')); }
     catch (err) { return { ok: false, code: err.code || 'other' }; }
   });
 

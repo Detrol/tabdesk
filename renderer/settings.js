@@ -242,7 +242,7 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.api
 
 loadThemes();
 loadLanguages();
-loadSync().then(loadFiles);
+loadKeyState().then(() => loadSync()).then(loadFiles);
 
 // ---- project files ----
 //
@@ -310,7 +310,10 @@ async function toggleProject(project, on) {
 
 async function loadFiles() {
   // Only offered once there is somewhere to send to — see the markup comment.
-  const ready = syncCfg && syncCfg.host && syncCfg.hostKey && syncCfg.remotePath;
+  // A group key is as much a precondition as the server is: without one every
+  // operation below refuses with no-key.
+  const keyState = await window.api.keyState();
+  const ready = keyState.has && syncCfg && syncCfg.host && syncCfg.hostKey && syncCfg.remotePath;
   filesWrap.classList.toggle('hidden', !ready);
   if (!ready) return;
 
@@ -482,3 +485,164 @@ async function refreshPullState() {
 }
 
 el('st-pull-refresh').addEventListener('click', loadPull);
+
+// ---- your TabDesk ----
+//
+// The group key comes before the server, because without one nothing below it
+// can work. Two ways in: create a TabDesk, or paste an invite from a machine
+// that already has one.
+
+const tdNone = el('st-td-none');
+const tdHave = el('st-td-have');
+const tdRecovery = el('st-td-recovery');
+const tdInvite = el('st-td-invite');
+const tdJoinBox = el('st-td-joinbox');
+const tdFp = el('st-td-fp');
+
+let inviteTimer = null;
+
+function tdShow(which) {
+  for (const [node, name] of [[tdNone, 'none'], [tdHave, 'have'],
+    [tdRecovery, 'recovery'], [tdInvite, 'invite'], [tdJoinBox, 'join']]) {
+    node.classList.toggle('hidden', name !== which);
+  }
+  if (which !== 'invite') { clearInterval(inviteTimer); inviteTimer = null; }
+}
+
+async function loadKeyState() {
+  const st = await window.api.keyState();
+  if (!st.available) {
+    // Without a keyring the group key would have to sit on disk in a form
+    // anyone could read, which is worse than not syncing.
+    tdShow('none');
+    el('st-td-create').disabled = true;
+    el('st-td-join').disabled = true;
+    tdNone.querySelector('.st-hint').textContent = window.t('settings.td.nokeyring');
+    return st;
+  }
+  if (st.has) {
+    tdFp.textContent = st.fingerprint || '';
+    tdShow('have');
+  } else {
+    tdShow('none');
+  }
+  return st;
+}
+
+el('st-td-create').addEventListener('click', async () => {
+  const res = await window.api.keyCreate();
+  if (!res.ok) {
+    tdNone.querySelector('.st-hint').textContent = window.t(`settings.td.err.${res.code}`);
+    return;
+  }
+  el('st-td-recovery-text').textContent = res.recovery;
+  tdShow('recovery');
+  flashSaved();
+});
+
+el('st-td-show-recovery').addEventListener('click', async () => {
+  const res = await window.api.keyRecovery();
+  if (!res.ok) return;
+  el('st-td-recovery-text').textContent = res.recovery;
+  tdShow('recovery');
+});
+
+el('st-td-recovery-done').addEventListener('click', async () => {
+  el('st-td-recovery-text').textContent = '';
+  await loadKeyState();
+  await loadSync();
+  await loadFiles();
+});
+
+// ---- invites ----
+
+function renderInviteCountdown(expiresAt) {
+  const left = el('st-td-invite-left');
+  const tick = () => {
+    const ms = Date.parse(expiresAt) - Date.now();
+    if (ms <= 0) {
+      // An expired invite is not shown as a still-valid string with a note
+      // beside it — it is taken off the screen.
+      el('st-td-invite-text').textContent = '';
+      left.textContent = window.t('settings.td.invite.expired');
+      clearInterval(inviteTimer);
+      inviteTimer = null;
+      return;
+    }
+    const m = Math.floor(ms / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    left.textContent = window.t('settings.td.invite.left', { time: `${m}:${String(s).padStart(2, '0')}` });
+  };
+  clearInterval(inviteTimer);
+  tick();
+  inviteTimer = setInterval(tick, 1000);
+}
+
+async function makeInvite() {
+  const out = el('st-td-out');
+  const res = await window.api.inviteCreate({ includeAuth: el('st-td-invite-auth').checked });
+  if (!res.ok) {
+    tdShow('have');
+    out.className = 'st-hint st-bad';
+    // `incomplete` is the common one on a device that has a key but no server
+    // yet, and it should name the fields rather than say "that did not work".
+    out.textContent = res.code === 'incomplete'
+      ? window.t('settings.td.err.incomplete', { fields: (res.missing || []).join(', ') })
+      : window.t(`settings.td.err.${res.code}`);
+    return;
+  }
+  out.textContent = '';
+  el('st-td-invite-text').textContent = res.invite;
+  tdShow('invite');
+  renderInviteCountdown(res.expiresAt);
+}
+
+el('st-td-add').addEventListener('click', makeInvite);
+el('st-td-invite-auth').addEventListener('change', makeInvite);
+el('st-td-invite-done').addEventListener('click', () => {
+  el('st-td-invite-text').textContent = '';
+  tdShow('have');
+});
+
+// ---- joining ----
+
+el('st-td-join').addEventListener('click', () => {
+  el('st-td-join-text').value = '';
+  el('st-td-join-out').textContent = '';
+  tdShow('join');
+});
+el('st-td-join-cancel').addEventListener('click', () => loadKeyState());
+
+el('st-td-join-text').addEventListener('input', async () => {
+  const out = el('st-td-join-out');
+  const text = el('st-td-join-text').value.trim();
+  if (!text) { out.textContent = ''; return; }
+  const p = await window.api.invitePreview(text);
+  if (!p.ok) {
+    out.className = 'st-hint st-bad';
+    out.textContent = window.t(`settings.td.err.${p.code}`);
+    return;
+  }
+  // Say what accepting would do before it is done — in particular that it
+  // replaces a key this device may already have, which is not undoable.
+  out.className = 'st-hint';
+  out.textContent = window.t('settings.td.join.preview', {
+    user: p.user, host: p.host, path: p.path,
+  }) + (p.replacesExistingKey ? ` ${window.t('settings.td.join.replaces')}` : '');
+  if (p.replacesExistingKey) out.className = 'st-hint st-bad';
+});
+
+el('st-td-join-go').addEventListener('click', async () => {
+  const out = el('st-td-join-out');
+  const res = await window.api.inviteAccept(el('st-td-join-text').value.trim());
+  if (!res.ok) {
+    out.className = 'st-hint st-bad';
+    out.textContent = window.t(`settings.td.err.${res.code}`);
+    return;
+  }
+  el('st-td-join-text').value = '';
+  await loadKeyState();
+  await loadSync();
+  await loadFiles();
+  flashSaved();
+});

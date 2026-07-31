@@ -44,9 +44,86 @@
       </section>
 
       <section class="st-section hidden" data-section="sync">
+        <!-- Your TabDesk: the group of devices that share a key. Everything
+             below is meaningless without it, so it comes first. -->
+        <div id="st-tabdesk" class="st-field">
+          <label data-i18n="settings.td.title">Your TabDesk</label>
+
+          <div id="st-td-none" class="st-td-box hidden">
+            <p class="st-hint" data-i18n="settings.td.none">
+              This device does not belong to a TabDesk yet. Create one, or join the one your other machine already has.
+            </p>
+            <div class="st-row">
+              <button id="st-td-create" class="st-primary" data-i18n="settings.td.create">Create a TabDesk</button>
+              <button id="st-td-join" data-i18n="settings.td.join">Join an existing one</button>
+            </div>
+          </div>
+
+          <div id="st-td-have" class="st-td-box hidden">
+            <p class="st-hint">
+              <span data-i18n="settings.td.member">This device belongs to a TabDesk.</span>
+              <code id="st-td-fp"></code>
+            </p>
+            <div class="st-row">
+              <button id="st-td-add" data-i18n="settings.td.add">Add a device</button>
+              <button id="st-td-show-recovery" data-i18n="settings.td.showRecovery">Show recovery string</button>
+            </div>
+            <!-- Errors from making an invite belong here, not in the test-connection
+                 line: that one lives inside the collapsed Server details, so a
+                 failure there reads as the button having done nothing at all. -->
+            <p id="st-td-out" class="st-hint"></p>
+          </div>
+
+          <!-- Recovery string: shown on creation and on request, and stored
+               nowhere a person can reach without already holding the key. -->
+          <div id="st-td-recovery" class="st-td-danger hidden">
+            <p data-i18n="settings.td.recovery.lead">Write this down and keep it somewhere safe.</p>
+            <code id="st-td-recovery-text" class="st-code"></code>
+            <p class="st-hint" data-i18n="settings.td.recovery.warn">
+              It is the only way back to your data if you lose every device. Nobody — not the server, not us — can recover it for you.
+            </p>
+            <div class="st-row">
+              <button id="st-td-recovery-done" data-i18n="settings.td.recovery.done">I have saved it</button>
+            </div>
+          </div>
+
+          <div id="st-td-invite" class="st-td-danger hidden">
+            <p data-i18n="settings.td.invite.lead">Paste this into TabDesk on the other machine.</p>
+            <code id="st-td-invite-text" class="st-code st-code-wrap"></code>
+            <p class="st-hint">
+              <span data-i18n="settings.td.invite.warn">Treat it like a password — it gives full access until it expires.</span>
+              <span id="st-td-invite-left" class="st-bad"></span>
+            </p>
+            <div class="st-row">
+              <label class="st-check">
+                <input type="checkbox" id="st-td-invite-auth" checked />
+                <span data-i18n="settings.td.invite.withAuth">Include the server login</span>
+              </label>
+              <span class="st-spacer"></span>
+              <button id="st-td-invite-done" data-i18n="settings.td.invite.done">Done</button>
+            </div>
+          </div>
+
+          <div id="st-td-joinbox" class="st-td-box hidden">
+            <p class="st-hint" data-i18n="settings.td.join.lead">
+              Paste the invite from the machine that already has your TabDesk.
+            </p>
+            <textarea id="st-td-join-text" rows="3" spellcheck="false" placeholder="TABDESK1-…"></textarea>
+            <p id="st-td-join-out" class="st-hint"></p>
+            <div class="st-row">
+              <button id="st-td-join-go" class="st-primary" data-i18n="settings.td.join.go">Join</button>
+              <button id="st-td-join-cancel" data-i18n="settings.td.join.cancel">Cancel</button>
+            </div>
+          </div>
+        </div>
+
         <p class="st-note" data-i18n="settings.sync.stage">
-          Nothing is transferred yet — this sets up the server and proves it can be reached.
+          Files move as soon as this is set up — start with the server, then pick what travels.
         </p>
+
+        <!-- Somebody who pasted an invite never needs to see these, so they fold away. -->
+        <details id="st-advanced">
+          <summary data-i18n="settings.sync.advanced">Server details</summary>
 
         <div class="st-row">
           <div class="st-field st-grow">
@@ -114,7 +191,7 @@
           </div>
           <p id="st-test-out" class="st-hint"></p>
         </div>
-
+        </details>
         <!-- Project files. Hidden until the connection is set up and pinned:
              picking folders to send before there is anywhere to send them is
              just a list that errors later. -->

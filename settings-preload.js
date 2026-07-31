@@ -61,6 +61,11 @@ contextBridge.exposeInMainWorld('api', {
   remoteState: () => ipcRenderer.invoke('sync:remote-state'),
   migrateRemote: () => ipcRenderer.invoke('sync:migrate'),
   dropLegacy: () => ipcRenderer.invoke('sync:drop-legacy'),
+
+  // ---- pairing ----
+  inviteCreate: (options) => ipcRenderer.invoke('sync:invite-create', options),
+  invitePreview: (str) => ipcRenderer.invoke('sync:invite-preview', str),
+  inviteAccept: (str) => ipcRenderer.invoke('sync:invite-accept', str),
   onSyncEvent: (cb) => {
     const listener = (_event, data) => cb(data);
     ipcRenderer.on('sync:event', listener);

@@ -265,3 +265,67 @@
 .st-file-state.busy { color: var(--accent-soft); }
 .st-file-state.bad { color: var(--warn, #ff6b6b); }
 .st-check { display: flex; gap: 8px; align-items: center; font-weight: 400; cursor: pointer; }
+
+/* ---- your TabDesk ---- */
+
+.st-td-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--tint);
+}
+/* The recovery string and the invite are both secrets on screen. They get a
+   border that says so rather than looking like another form field. */
+.st-td-danger {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--warn, #ff6b6b);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn, #ff6b6b) 8%, var(--tint));
+}
+.st-td-danger > p { margin: 0; font-size: 12px; color: var(--text); }
+
+.st-code {
+  display: block;
+  padding: 8px 10px;
+  font-family: ui-monospace, "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  user-select: all;
+}
+/* An invite is long. Wrapping anywhere keeps it inside the window instead of
+   pushing a horizontal scrollbar across the whole page. */
+.st-code-wrap { overflow-wrap: anywhere; max-height: 120px; overflow-y: auto; font-size: 11px; }
+
+#st-td-fp { font-family: ui-monospace, monospace; color: var(--dim); }
+
+#st-td-join-text {
+  padding: 8px 10px;
+  font-family: ui-monospace, "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  resize: vertical;
+}
+#st-td-join-text:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+#st-advanced { border: 1px solid var(--line-soft); border-radius: 6px; padding: 8px 10px; }
+#st-advanced > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+}
+#st-advanced[open] > summary { margin-bottom: 14px; color: var(--text); }
+#st-advanced > .st-row, #st-advanced > .st-field { margin-bottom: 14px; }
