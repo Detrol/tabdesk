@@ -41,5 +41,18 @@ contextBridge.exposeInMainWorld('api', {
   testSync: () => ipcRenderer.invoke('sync:test'),
   pickKeyFile: () => ipcRenderer.invoke('sync:pick-key'),
 
+  // ---- project files ----
+  listProjects: () => ipcRenderer.invoke('projects:list'),
+  filesList: () => ipcRenderer.invoke('sync:files-list'),
+  filesPush: (slug, root) => ipcRenderer.invoke('sync:files-push', { slug, root }),
+  watchStart: (slug, root) => ipcRenderer.invoke('sync:watch-start', { slug, root }),
+  watchStop: (slug) => ipcRenderer.invoke('sync:watch-stop', slug),
+  watching: () => ipcRenderer.invoke('sync:watching'),
+  onSyncEvent: (cb) => {
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on('sync:event', listener);
+    return () => ipcRenderer.removeListener('sync:event', listener);
+  },
+
   close: () => ipcRenderer.send('settings:close'),
 });

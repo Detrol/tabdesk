@@ -21,6 +21,9 @@ const tray = require('./tray');
 const syncConfig = require('./sync/config');
 const syncTransport = require('./sync/transport-sftp');
 const syncBundle = require('./sync/bundle');
+const syncFiles = require('./sync/files');
+const syncWatch = require('./sync/watch');
+const syncTrust = require('./sync/trust');
 
 // Demo/testing hooks, unset in normal use. TABDESK_PROJECTS_DIR points the rail
 // at a scratch set of projects (screenshots, trying layout changes against a
@@ -713,6 +716,59 @@ app.whenReady().then(async () => {
     }
   });
 
+  // ---- Project files ----
+  //
+  // Push is the laptop's side; plan/pull is what the machine you come home to
+  // does. Nothing deletes: a remote manifest missing a file is reported, never
+  // acted on, because "bring me what is new" and "mirror this exactly" are
+  // different requests and only one of them was made.
+  ipcMain.handle('sync:files-list', async () => {
+    try { return await syncFiles.list(); }
+    catch (err) { return syncFail(err); }
+  });
+
+  ipcMain.handle('sync:files-push', async (event, { slug, root }) => {
+    try { return await syncFiles.push(slug, root, syncConfig.fileOptions()); }
+    catch (err) { return syncFail(err); }
+  });
+
+  ipcMain.handle('sync:files-plan', async (event, { slug, root }) => {
+    try { return await syncFiles.plan(slug, root, syncConfig.fileOptions()); }
+    catch (err) { return syncFail(err); }
+  });
+
+  ipcMain.handle('sync:files-pull', async (event, { slug, root }) => {
+    try {
+      const res = await syncFiles.pull(slug, root, syncConfig.fileOptions());
+      // Anything written means this directory now holds code from elsewhere.
+      // Mark it before returning, so a Run that follows is gated even if the
+      // renderer never gets the reply.
+      if (res.written > 0) res.trust = syncTrust.markReceived(root);
+      return res;
+    } catch (err) { return syncFail(err); }
+  });
+
+  // ---- Watching ----
+  syncWatch.setNotifier((payload) => {
+    if (!win.isDestroyed()) win.webContents.send('sync:event', payload);
+  });
+  app.on('will-quit', () => syncWatch.stopAll());
+
+  ipcMain.handle('sync:watch-start', (event, { slug, root }) => {
+    syncWatch.start(slug, root, syncConfig.fileOptions());
+    return { ok: true, watching: syncWatch.watching() };
+  });
+  ipcMain.handle('sync:watch-stop', (event, slug) => {
+    syncWatch.stop(slug);
+    return { ok: true, watching: syncWatch.watching() };
+  });
+  ipcMain.handle('sync:watching', () => ({ ok: true, watching: syncWatch.watching() }));
+
+  // ---- Trust ----
+  ipcMain.handle('sync:trust-state', (event, projectPath) => syncTrust.stateOf(projectPath));
+  ipcMain.handle('sync:trust-grant', (event, projectPath) => syncTrust.grant(projectPath));
+  ipcMain.handle('sync:trust-revoke', (event, projectPath) => syncTrust.revoke(projectPath));
+
   // Whether the sync tab should offer itself at all.
   ipcMain.handle('sync:ready', () => {
     const missing = syncConfig.missingFields();
@@ -923,7 +979,40 @@ app.whenReady().then(async () => {
 
   // Launch a live preview for a project (static HTML or a running app) and
   // stream its lifecycle events back to the renderer.
-  ipcMain.handle('preview:start', (event, projectPath) => {
+  // The gate for both runners, in main rather than the renderer: a renderer
+  // that forgets to ask is a renderer that bypasses it, and the check and the
+  // question belong in the same process as the spawn they guard.
+  //
+  // Returns true to proceed. Approving is recorded, so the question is asked
+  // once per delivery rather than once per press.
+  async function allowRun(owner, projectPath) {
+    if (syncTrust.mayRun(projectPath)) return true;
+    const strings = (activeI18n && activeI18n.strings) || {};
+    const t = (k, fallback) => strings[k] || fallback;
+    const { response } = await dialog.showMessageBox(owner, {
+      type: 'warning',
+      buttons: [t('trust.run', 'Run it'), t('trust.cancel', 'Cancel')],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'TabDesk',
+      message: t('trust.title', 'This project received files over sync'),
+      detail: (t('trust.detail',
+        'Running it executes commands this folder defines — npm scripts, run.sh, or a Python interpreter inside it. Those arrived from the sync server, not from you.\n\n{path}')
+      ).replace('{path}', projectPath),
+      noLink: true,
+    });
+    if (response !== 0) return false;
+    syncTrust.grant(projectPath);
+    return true;
+  }
+
+  ipcMain.handle('preview:start', async (event, projectPath) => {
+    // Both runners execute what the directory defines — npm scripts, run.sh,
+    // and pythonBin()'s <project>/.venv/bin/python. That is fine for a folder
+    // you wrote. For one that arrived over sync it is the server's code.
+    if (!(await allowRun(BrowserWindow.fromWebContents(event.sender), projectPath))) {
+      return { ok: false, code: 'declined' };
+    }
     previewRunner.start(projectPath, (type, payload) => {
       if (!win.isDestroyed()) win.webContents.send('preview:event', { type, ...payload });
     });
@@ -934,7 +1023,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('preview:stop', () => { previewRunner.stop(); return true; });
 
   // ---- Run the project natively (its own window / dev server) ----
-  ipcMain.handle('app:run', (event, projectPath) => {
+  ipcMain.handle('app:run', async (event, projectPath) => {
+    if (!(await allowRun(BrowserWindow.fromWebContents(event.sender), projectPath))) {
+      return { ok: false, code: 'declined' };
+    }
     const plan = appRunner.start(projectPath, (type, payload) => {
       if (!win.isDestroyed()) win.webContents.send('app:event', { type, ...payload });
     });

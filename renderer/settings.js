@@ -242,4 +242,138 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.api
 
 loadThemes();
 loadLanguages();
-loadSync();
+loadSync().then(loadFiles);
+
+// ---- project files ----
+//
+// A ticked project is watched and pushed when its files stop changing. The
+// tick is the only control: there is no separate "sync now", because a manual
+// push that disagrees with the watcher is two sources of truth for the same
+// question.
+
+const filesWrap = el('st-files');
+const filesList = el('st-files-list');
+const filesOut = el('st-files-out');
+const ignoresEl = el('st-ignores');
+const maxMbEl = el('st-maxmb');
+const gitignoreEl = el('st-usegitignore');
+
+let projects = [];
+const stateEls = new Map();   // project path -> the span showing its status
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} kB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// The slug the remote layout is keyed on. Kept simple and stable: it is a
+// directory name on the server, not something to reconstruct a path from.
+const slugOf = (p) => String(p).replace(/^.*\//, '') || 'project';
+
+function renderProjects(pushing) {
+  filesList.textContent = '';
+  stateEls.clear();
+  const on = new Set(pushing);
+  for (const p of projects) {
+    const li = document.createElement('li');
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = on.has(p.path);
+    box.dataset.path = p.path;
+
+    const name = document.createElement('span');
+    name.className = 'st-file-name';
+    name.textContent = p.name;
+    name.title = p.path;
+
+    const state = document.createElement('span');
+    state.className = 'st-file-state';
+    stateEls.set(p.path, state);
+
+    box.addEventListener('change', () => toggleProject(p, box.checked));
+    label.append(box, name);
+    li.append(label, state);
+    filesList.append(li);
+  }
+}
+
+async function toggleProject(project, on) {
+  const chosen = [...filesList.querySelectorAll('input[type=checkbox]')]
+    .filter((b) => b.checked).map((b) => b.dataset.path);
+  await window.api.saveSync({ pushProjects: chosen });
+  if (on) await window.api.watchStart(slugOf(project.path), project.path);
+  else await window.api.watchStop(slugOf(project.path));
+  flashSaved();
+}
+
+async function loadFiles() {
+  // Only offered once there is somewhere to send to — see the markup comment.
+  const ready = syncCfg && syncCfg.host && syncCfg.hostKey && syncCfg.remotePath;
+  filesWrap.classList.toggle('hidden', !ready);
+  if (!ready) return;
+
+  ignoresEl.value = (syncCfg.extraIgnores || []).join(', ');
+  maxMbEl.value = syncCfg.maxBytes ? Math.round(syncCfg.maxBytes / (1024 * 1024)) : '';
+  gitignoreEl.checked = syncCfg.useGitignore !== false;
+
+  const res = await window.api.listProjects();
+  projects = (res && res.projects) || res || [];
+  renderProjects(syncCfg.pushProjects || []);
+
+  // Re-arm watchers for what was ticked in a previous session: the setting
+  // persists, the chokidar instances do not.
+  const running = await window.api.watching();
+  const live = new Set((running && running.watching) || []);
+  for (const p of syncCfg.pushProjects || []) {
+    if (!live.has(slugOf(p))) window.api.watchStart(slugOf(p), p);
+  }
+}
+
+ignoresEl.addEventListener('change', async () => {
+  await window.api.saveSync({ extraIgnores: ignoresEl.value.split(',') });
+  syncCfg = await window.api.getSyncConfig();
+  flashSaved();
+});
+maxMbEl.addEventListener('change', async () => {
+  const mb = Number.parseInt(maxMbEl.value, 10);
+  await window.api.saveSync({ maxBytes: Number.isFinite(mb) && mb > 0 ? mb * 1024 * 1024 : 0 });
+  syncCfg = await window.api.getSyncConfig();
+  flashSaved();
+});
+gitignoreEl.addEventListener('change', async () => {
+  await window.api.saveSync({ useGitignore: gitignoreEl.checked });
+  syncCfg = await window.api.getSyncConfig();
+  flashSaved();
+});
+
+// Push progress, straight from the watcher in main.
+window.api.onSyncEvent((ev) => {
+  const path = (projects.find((p) => slugOf(p.path) === ev.slug) || {}).path;
+  const span = path && stateEls.get(path);
+  if (!span) return;
+  if (ev.type === 'push-start') {
+    span.className = 'st-file-state busy';
+    span.textContent = window.t('settings.files.sending');
+  } else if (ev.type === 'push-done') {
+    span.className = 'st-file-state';
+    span.textContent = window.t('settings.files.sent', {
+      n: ev.count, size: fmtBytes(ev.uploadedBytes || 0),
+    });
+    // Anything the manifest refused has to be visible: "synced" must not mean
+    // "synced except the parts you would have wanted to know about".
+    if (ev.skipped && ev.skipped.length) {
+      filesOut.className = 'st-hint st-bad';
+      filesOut.textContent = window.t('settings.files.skipped', {
+        n: ev.skipped.length,
+        list: ev.skipped.slice(0, 3).map((s) => s.path).join(', '),
+      });
+    }
+  } else if (ev.type === 'push-error') {
+    span.className = 'st-file-state bad';
+    span.textContent = window.t('settings.files.failed');
+    filesOut.className = 'st-hint st-bad';
+    filesOut.textContent = ev.detail || ev.code;
+  }
+});

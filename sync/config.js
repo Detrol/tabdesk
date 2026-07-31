@@ -31,6 +31,12 @@ const DEFAULTS = {
   hostKey: null,            // { algo, sha256 } once accepted
   deviceId: '',             // stable per install, minted on first use
   deviceName: '',           // what the other machine calls this one
+  // Project file sync. `pushProjects` is a list of absolute project paths this
+  // machine sends; everything else is only ever pulled on request.
+  pushProjects: [],
+  extraIgnores: [],
+  maxBytes: 0,              // 0 = the manifest module's default
+  useGitignore: true,
 };
 
 function all() {
@@ -68,6 +74,10 @@ function forRenderer() {
     hostKey: c.hostKey,
     deviceId: c.deviceId,
     deviceName: c.deviceName,
+    pushProjects: c.pushProjects || [],
+    extraIgnores: c.extraIgnores || [],
+    maxBytes: c.maxBytes || 0,
+    useGitignore: c.useGitignore !== false,
     secretAvailable: isSecretAvailable(),
   };
 }
@@ -112,6 +122,15 @@ function save(patch) {
   for (const k of ['host', 'user', 'remotePath', 'keyPath', 'deviceName']) {
     if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
   }
+  if (Array.isArray(patch.pushProjects)) next.pushProjects = patch.pushProjects.map(String);
+  if (Array.isArray(patch.extraIgnores)) {
+    next.extraIgnores = patch.extraIgnores.map((s2) => String(s2).trim()).filter(Boolean);
+  }
+  if (patch.maxBytes !== undefined) {
+    const n = Number.parseInt(patch.maxBytes, 10);
+    next.maxBytes = Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  if (patch.useGitignore !== undefined) next.useGitignore = Boolean(patch.useGitignore);
   if (patch.port !== undefined) {
     const p = Number.parseInt(patch.port, 10);
     next.port = Number.isFinite(p) && p > 0 && p < 65536 ? p : 22;
@@ -155,7 +174,17 @@ function missingFields() {
   return missing;
 }
 
+// What manifest.build() needs, from what the user configured.
+function fileOptions() {
+  const c = all();
+  return {
+    ignores: c.extraIgnores || [],
+    maxBytes: c.maxBytes || 0,
+    useGitignore: c.useGitignore !== false,
+  };
+}
+
 module.exports = {
   all, forRenderer, forConnect, save, pinHostKey, missingFields,
-  isSecretAvailable, identity, DEFAULTS,
+  isSecretAvailable, identity, fileOptions, DEFAULTS,
 };

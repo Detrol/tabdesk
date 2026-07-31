@@ -114,6 +114,44 @@
           </div>
           <p id="st-test-out" class="st-hint"></p>
         </div>
+
+        <!-- Project files. Hidden until the connection is set up and pinned:
+             picking folders to send before there is anywhere to send them is
+             just a list that errors later. -->
+        <div id="st-files" class="st-files hidden">
+          <hr class="st-sep" />
+          <div class="st-field">
+            <label data-i18n="settings.files.title">Projects to send</label>
+            <p class="st-hint" data-i18n="settings.files.hint">
+              Ticked projects upload when their files stop changing. Nothing is ever deleted on the other side.
+            </p>
+            <div class="st-listwrap"><ul id="st-files-list"></ul></div>
+          </div>
+
+          <div class="st-field">
+            <label for="st-ignores" data-i18n="settings.files.ignores">Also ignore</label>
+            <input id="st-ignores" type="text" spellcheck="false"
+                   placeholder="tmp, secrets, *.log" />
+            <p class="st-hint" data-i18n="settings.files.ignores.hint">
+              Comma separated, in addition to .git, node_modules, .venv, dist, build and the project’s .gitignore.
+            </p>
+          </div>
+
+          <div class="st-row">
+            <div class="st-field st-narrowish">
+              <label for="st-maxmb" data-i18n="settings.files.max">Max file size (MB)</label>
+              <input id="st-maxmb" type="number" min="1" max="4096" placeholder="50" />
+            </div>
+            <div class="st-field st-grow">
+              <label class="st-check">
+                <input type="checkbox" id="st-usegitignore" checked />
+                <span data-i18n="settings.files.gitignore">Honour .gitignore</span>
+              </label>
+            </div>
+          </div>
+
+          <p id="st-files-out" class="st-hint"></p>
+        </div>
       </section>
     </div>
 

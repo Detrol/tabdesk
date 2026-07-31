@@ -230,3 +230,34 @@
 }
 
 .hidden { display: none !important; }
+
+/* ---- project files ---- */
+
+.st-sep { border: none; border-top: 1px solid var(--line-soft); margin: 4px 0; }
+.st-files { display: flex; flex-direction: column; gap: 18px; }
+.st-narrowish { width: 150px; flex: none; }
+
+.st-listwrap {
+  max-height: 190px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--tint);
+}
+#st-files-list { list-style: none; margin: 0; padding: 4px; }
+#st-files-list li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+#st-files-list li:hover { background: var(--tint-strong); }
+#st-files-list label { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; cursor: pointer; }
+.st-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Status per project: what the last push did, or that a push is running. */
+.st-file-state { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.st-file-state.busy { color: var(--accent-soft); }
+.st-file-state.bad { color: var(--warn, #ff6b6b); }
+.st-check { display: flex; gap: 8px; align-items: center; font-weight: 400; cursor: pointer; }

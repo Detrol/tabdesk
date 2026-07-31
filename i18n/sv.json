@@ -257,5 +257,19 @@
   "portable.peers.err": "Kunde inte nå servern: {error}",
   "portable.peers.err.no-bundle": "Den datorn har ingen bundle på servern.",
   "settings.sync.err.secret-lost": "Den sparade hemligheten gick inte att dekryptera — skrivbordets nyckelring har ändrats. Ange den igen.",
-  "portable.peers.err.secret-lost": "Den sparade hemligheten gick inte att dekryptera — ange den på nytt under Inställningar."
+  "portable.peers.err.secret-lost": "Den sparade hemligheten gick inte att dekryptera — ange den på nytt under Inställningar.",
+  "settings.files.title": "Projekt att skicka",
+  "settings.files.hint": "Ikryssade projekt laddas upp när deras filer slutat ändras. Ingenting raderas någonsin på andra sidan.",
+  "settings.files.ignores": "Ignorera även",
+  "settings.files.ignores.hint": "Kommaseparerat, utöver .git, node_modules, .venv, dist, build och projektets .gitignore.",
+  "settings.files.max": "Största filstorlek (MB)",
+  "settings.files.gitignore": "Följ .gitignore",
+  "settings.files.sending": "skickar…",
+  "settings.files.sent": "{n} filer · {size} upp",
+  "settings.files.failed": "misslyckades",
+  "settings.files.skipped": "{n} filer utelämnades (för stora, symlänkar eller olästbara): {list}…",
+  "trust.title": "Det här projektet har tagit emot filer via synk",
+  "trust.detail": "Att köra det exekverar kommandon som mappen själv definierar — npm-skript, run.sh, eller en Python-tolk inuti den. De kom från synkservern, inte från dig.\n\n{path}",
+  "trust.run": "Kör det",
+  "trust.cancel": "Avbryt"
 }
