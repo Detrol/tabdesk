@@ -52,6 +52,15 @@ contextBridge.exposeInMainWorld('api', {
   pullStop: () => ipcRenderer.invoke('sync:pull-stop'),
   pullState: () => ipcRenderer.invoke('sync:pull-state'),
   pullNow: () => ipcRenderer.invoke('sync:pull-now'),
+
+  // ---- the group key ----
+  keyState: () => ipcRenderer.invoke('sync:key-state'),
+  keyCreate: () => ipcRenderer.invoke('sync:key-create'),
+  keyRecovery: () => ipcRenderer.invoke('sync:key-recovery'),
+  keyAdopt: (recovery) => ipcRenderer.invoke('sync:key-adopt', recovery),
+  remoteState: () => ipcRenderer.invoke('sync:remote-state'),
+  migrateRemote: () => ipcRenderer.invoke('sync:migrate'),
+  dropLegacy: () => ipcRenderer.invoke('sync:drop-legacy'),
   onSyncEvent: (cb) => {
     const listener = (_event, data) => cb(data);
     ipcRenderer.on('sync:event', listener);

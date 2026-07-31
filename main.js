@@ -25,6 +25,7 @@ const syncFiles = require('./sync/files');
 const syncWatch = require('./sync/watch');
 const syncTrust = require('./sync/trust');
 const syncPull = require('./sync/pullwatch');
+const syncKeys = require('./sync/keys');
 
 // Demo/testing hooks, unset in normal use. TABDESK_PROJECTS_DIR points the rail
 // at a scratch set of projects (screenshots, trying layout changes against a
@@ -801,6 +802,47 @@ app.whenReady().then(async () => {
   // Pick up where the last session left off: the setting persists, the loop
   // and the live channel do not.
   if ((syncConfig.all().pullProjects || []).length) startPulling();
+
+  // ---- The group key ----
+  //
+  // create() returns the recovery string, which is the only moment it exists
+  // in a form a person can keep. It is passed straight to the renderer to show
+  // and is not stored anywhere else.
+  ipcMain.handle('sync:key-state', () => ({
+    has: syncKeys.has(),
+    available: syncKeys.available(),
+    fingerprint: syncKeys.has() ? (() => { try { return syncKeys.fingerprint(); } catch (_) { return null; } })() : null,
+  }));
+  ipcMain.handle('sync:key-create', () => {
+    try { return syncKeys.create(); }
+    catch (err) { return { ok: false, code: err.code || 'other' }; }
+  });
+  ipcMain.handle('sync:key-recovery', () => {
+    try { return { ok: true, recovery: syncKeys.recovery() }; }
+    catch (err) { return { ok: false, code: err.code || 'other' }; }
+  });
+  ipcMain.handle('sync:key-adopt', (event, recoveryString) => {
+    try { return syncKeys.adopt(syncKeys.fromRecovery(recoveryString)); }
+    catch (err) { return { ok: false, code: err.code || 'other' }; }
+  });
+
+  // ---- Remote format ----
+  ipcMain.handle('sync:remote-state', async () => {
+    try { return await syncFiles.remoteState(); }
+    catch (err) { return syncFail(err); }
+  });
+  ipcMain.handle('sync:migrate', async () => {
+    // The caller does not name paths: main knows where projects live, and the
+    // set to re-upload is exactly the set this machine is configured to push.
+    const roots = (syncConfig.all().pushProjects || [])
+      .map((root) => ({ root, slug: path.basename(root) }));
+    try { return await syncFiles.migrate(roots); }
+    catch (err) { return syncFail(err); }
+  });
+  ipcMain.handle('sync:drop-legacy', async () => {
+    try { return await syncFiles.dropLegacy(); }
+    catch (err) { return syncFail(err); }
+  });
 
   // ---- Trust ----
   ipcMain.handle('sync:trust-state', (event, projectPath) => syncTrust.stateOf(projectPath));

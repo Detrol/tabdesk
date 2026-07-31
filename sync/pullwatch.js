@@ -93,10 +93,12 @@ function start(slugs, resolveRoot, onEvent) {
   if (!wanted.size) return { ok: true, watching: [] };
 
   live.start({
-    onChange: (slug) => {
-      // The channel says a manifest moved. It does not say what is in it, so
-      // this is a nudge to sweep, not a reason to trust the line's contents.
-      if (wanted.has(slug) && !inFlight.has(slug)) sweep();
+    onChange: () => {
+      // The channel says *some* manifest moved. Since phase 6b that name is an
+      // alias, which this side cannot match against a slug without deriving it
+      // — and there is no reason to. The line was never data, only a nudge:
+      // sweep and let list() say what actually changed.
+      sweep();
     },
     onState: (s) => notify({ type: 'live-state', ...s }),
   });

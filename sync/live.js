@@ -14,7 +14,8 @@
 const transport = require('./transport-sftp');
 const config = require('./config');
 
-// One line per changed manifest: "<slug> <mtime>". The first pass reports
+// One line per changed manifest: "<slugalias> <mtime>". The directory name is
+// an alias, so the channel never learns a project name either. The first pass reports
 // everything it can see, which the caller treats as current state rather than
 // as news — it has its own record of what it last pulled.
 //
@@ -26,8 +27,8 @@ declare -A seen
 while :; do
   for d in */; do
     s="\${d%/}"
-    [ -f "$s/manifest.json" ] || continue
-    m=$(stat -c %Y "$s/manifest.json" 2>/dev/null) || continue
+    [ -f "$s/manifest" ] || continue
+    m=$(stat -c %Y "$s/manifest" 2>/dev/null) || continue
     if [ "\${seen[$s]}" != "$m" ]; then seen[$s]="$m"; echo "$s $m"; fi
   done
   sleep ${interval}

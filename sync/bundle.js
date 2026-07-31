@@ -7,10 +7,14 @@
 // safety property, and duplicating the format here would be a second place for
 // it to drift.
 //
-// Remote layout, all under the configured folder:
+// Remote layout, all under the configured folder, everything sealed:
 //
-//   devices/<id>.json      who pushed, what they call themselves, when
-//   bundle/<id>.tabdesk    that device's most recent export
+//   devices/<id>    who pushed, what they call themselves, when
+//   bundle/<id>     that device's most recent export
+//
+// The id stays in the clear because it is a random UUID and says nothing; the
+// name and the contents do not. Extensions are gone with the plaintext — a
+// filename should not describe something the server cannot read.
 //
 // One bundle per device, overwritten each push. This is not a backup system —
 // it is the newest state of each machine, and the receiving side diffs it.
@@ -19,6 +23,9 @@ const path = require('path');
 const portable = require('../portable');
 const config = require('./config');
 const transport = require('./transport-sftp');
+const tcrypto = require('./crypto');
+const keys = require('./keys');
+const remoteFormat = require('./format');
 
 const DEVICES = 'devices';
 const BUNDLES = 'bundle';
@@ -95,10 +102,13 @@ async function withConnection(fn) {
   const cfg = config.forConnect();
   const missing = config.missingFields();
   if (missing.length) throw Object.assign(new Error('incomplete'), { code: 'incomplete', missing });
+  if (!keys.has()) throw Object.assign(new Error('no group key'), { code: 'no-key' });
+  const k = keys.derived();
   const conn = await transport.connect(cfg);
   try {
     const sftp = await sftpOf(conn);
-    return await fn(sftp, cfg);
+    await remoteFormat.require2(sftp, cfg);
+    return await fn(sftp, cfg, k);
   } finally {
     try { conn.end(); } catch (_) { /* already gone */ }
   }
@@ -110,20 +120,23 @@ async function push(slugs) {
   const bundle = portable.buildBundle({ slugs: Array.isArray(slugs) ? slugs : null });
   const blob = portable.packBundle(bundle);
 
-  return withConnection(async (sftp, cfg) => {
+  return withConnection(async (sftp, cfg, k) => {
     await ensureDir(sftp, remote(cfg, BUNDLES));
     await ensureDir(sftp, remote(cfg, DEVICES));
-    await putFile(sftp, remote(cfg, BUNDLES, `${deviceId}.tabdesk`), blob);
+    const bundleAt = remote(cfg, BUNDLES, deviceId);
+    await putFile(sftp, bundleAt, tcrypto.seal(k.meta, blob, `bundle|${deviceId}`));
     // The device record is written after the bundle, so a listing never
     // advertises a bundle that is not there yet.
-    await putFile(sftp, remote(cfg, DEVICES, `${deviceId}.json`), Buffer.from(JSON.stringify({
+    // The device id stays in the clear: it is a random UUID and says nothing.
+    // The name, and what the device holds, do not.
+    await putFile(sftp, remote(cfg, DEVICES, deviceId), tcrypto.seal(k.meta, Buffer.from(JSON.stringify({
       deviceId,
       deviceName,
       updatedAt: new Date().toISOString(),
       projects: bundle.projects.length,
       memoryFiles: bundle.projects.reduce((n, p) => n + p.memory.length, 0),
       bytes: blob.length,
-    }, null, 2), 'utf8'));
+    }), 'utf8'), `device|${deviceId}`));
 
     return {
       ok: true,
@@ -139,19 +152,20 @@ async function push(slugs) {
 // Everything on the server that is not us.
 async function peers() {
   const { deviceId } = config.identity();
-  return withConnection(async (sftp, cfg) => {
+  return withConnection(async (sftp, cfg, k) => {
     const list = await readdir(sftp, remote(cfg, DEVICES));
     const out = [];
     for (const entry of list) {
-      if (!entry.filename.endsWith('.json')) continue;
       try {
         // eslint-disable-next-line no-await-in-loop
         const raw = await getFile(sftp, remote(cfg, DEVICES, entry.filename));
-        const rec = JSON.parse(raw.toString('utf8'));
+        const rec = JSON.parse(
+          tcrypto.open(k.meta, raw, `device|${entry.filename}`).toString('utf8'));
         if (!rec.deviceId || rec.deviceId === deviceId) continue;
         out.push(rec);
       } catch (_) {
-        // A device record we cannot read says nothing about the others.
+        // Unreadable, or sealed under a different key — another TabDesk sharing
+        // the folder. Either way it says nothing about the others.
       }
     }
     out.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -165,8 +179,10 @@ async function pull(deviceId) {
   if (!deviceId || /[/\\]/.test(deviceId)) {
     throw Object.assign(new Error('bad device id'), { code: 'bad-device' });
   }
-  return withConnection(async (sftp, cfg) => {
-    const raw = await getFile(sftp, remote(cfg, BUNDLES, `${deviceId}.tabdesk`));
+  return withConnection(async (sftp, cfg, k) => {
+    const src = remote(cfg, BUNDLES, deviceId);
+    const sealed = await getFile(sftp, src);
+    const raw = tcrypto.open(k.meta, sealed, `bundle|${deviceId}`);
     // Same validation as a bundle picked off disk — a server is not a reason
     // to trust the bytes it served.
     return portable.parseBundle(raw);
