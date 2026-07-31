@@ -271,5 +271,8 @@
   "trust.title": "This project received files over sync",
   "trust.detail": "Running it executes commands this folder defines — npm scripts, run.sh, or a Python interpreter inside it. Those arrived from the sync server, not from you.\n\n{path}",
   "trust.run": "Run it",
-  "trust.cancel": "Cancel"
+  "trust.cancel": "Cancel",
+  "trust.open": "Open it",
+  "trust.detail.terminal": "Opening it starts your agent with this folder as its working directory, and the agent reads and acts on what it finds there. These files arrived from the sync server, not from you.\n\n{path}",
+  "trust.declined": "Not opened — the project is still waiting to be approved."
 }

@@ -21,6 +21,21 @@ const DEFAULT_IGNORES = [
   '.git', 'node_modules', '.venv', 'venv', 'env', '__pycache__',
   'dist', 'build', 'out', 'target', '.cache', '.next', '.nuxt',
   '.DS_Store', '.idea', '.vscode', 'coverage', '.pytest_cache',
+
+  // Not size, not noise — these two are read as instructions rather than data.
+  //
+  // A tab starts `claude --permission-mode auto` (agents.js) with the project
+  // as its working directory. CLAUDE.md is loaded into that agent's context
+  // automatically, and .claude/settings.json can define hooks, which are
+  // commands the agent runs on its own. Either arriving over file sync would
+  // reach the agent without passing the trust dialog, because the dialog
+  // guards Run and Preview — not opening a tab.
+  //
+  // CLAUDE.md is not lost by this: it already travels in the portable bundle,
+  // which shows every file as new/changed/unchanged before writing anything.
+  // The split is deliberate — code moves by file sync, instructions move by
+  // the reviewed path.
+  'CLAUDE.md', '.claude',
 ];
 
 // 50 MB. Past this it is not a source file, and the sync is not a backup tool.

@@ -271,5 +271,8 @@
   "trust.title": "Det här projektet har tagit emot filer via synk",
   "trust.detail": "Att köra det exekverar kommandon som mappen själv definierar — npm-skript, run.sh, eller en Python-tolk inuti den. De kom från synkservern, inte från dig.\n\n{path}",
   "trust.run": "Kör det",
-  "trust.cancel": "Avbryt"
+  "trust.cancel": "Avbryt",
+  "trust.open": "Öppna det",
+  "trust.detail.terminal": "Att öppna det startar din agent med den här mappen som arbetskatalog, och agenten läser och agerar på det den hittar där. Filerna kom från synkservern, inte från dig.\n\n{path}",
+  "trust.declined": "Inte öppnat — projektet väntar fortfarande på godkännande."
 }

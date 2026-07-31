@@ -573,7 +573,20 @@ app.whenReady().then(async () => {
   });
 
   // ---- Embedded native terminal lifecycle ----
-  ipcMain.on('embed:create', (event, { id, cwd, startCmd }) => termEmbed.create(id, { cwd, startCmd }));
+  // Opening a tab is not a passive act here: it starts the configured agent —
+  // by default `claude --permission-mode auto` — with the project as its
+  // working directory. For a directory that arrived over sync, that points an
+  // auto-approving agent at somebody else's files. CLAUDE.md and .claude/ are
+  // kept out of file sync for exactly this reason (sync/manifest.js), but the
+  // rest of the tree is still material the agent will read and act on, so the
+  // same question is asked here as before Run and Preview.
+  ipcMain.on('embed:create', async (event, { id, cwd, startCmd }) => {
+    if (cwd && !(await allowRun(BrowserWindow.fromWebContents(event.sender), cwd, 'terminal'))) {
+      if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+      return;
+    }
+    termEmbed.create(id, { cwd, startCmd });
+  });
   ipcMain.on('embed:place', (event, { id, rect }) => termEmbed.place(id, rect));
   ipcMain.on('embed:hide', (event, { id }) => termEmbed.hide(id));
   ipcMain.on('embed:focus', (event, { id }) => termEmbed.focus(id));
@@ -985,19 +998,26 @@ app.whenReady().then(async () => {
   //
   // Returns true to proceed. Approving is recorded, so the question is asked
   // once per delivery rather than once per press.
-  async function allowRun(owner, projectPath) {
+  async function allowRun(owner, projectPath, kind) {
     if (syncTrust.mayRun(projectPath)) return true;
     const strings = (activeI18n && activeI18n.strings) || {};
     const t = (k, fallback) => strings[k] || fallback;
+    const isTerminal = kind === 'terminal';
     const { response } = await dialog.showMessageBox(owner, {
       type: 'warning',
-      buttons: [t('trust.run', 'Run it'), t('trust.cancel', 'Cancel')],
+      buttons: [
+        isTerminal ? t('trust.open', 'Open it') : t('trust.run', 'Run it'),
+        t('trust.cancel', 'Cancel'),
+      ],
       defaultId: 1,
       cancelId: 1,
       title: 'TabDesk',
       message: t('trust.title', 'This project received files over sync'),
-      detail: (t('trust.detail',
-        'Running it executes commands this folder defines — npm scripts, run.sh, or a Python interpreter inside it. Those arrived from the sync server, not from you.\n\n{path}')
+      detail: (isTerminal
+        ? t('trust.detail.terminal',
+          'Opening it starts your agent with this folder as its working directory, and the agent reads and acts on what it finds there. These files arrived from the sync server, not from you.\n\n{path}')
+        : t('trust.detail',
+          'Running it executes commands this folder defines — npm scripts, run.sh, or a Python interpreter inside it. Those arrived from the sync server, not from you.\n\n{path}')
       ).replace('{path}', projectPath),
       noLink: true,
     });
@@ -1043,8 +1063,14 @@ app.whenReady().then(async () => {
     return true;
   });
 
-  ipcMain.on('term:create', (event, { id, cols, rows, cwd, startCmd }) => {
+  ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd }) => {
     if (terminals.has(id)) return;
+    // Same gate as the embedded backend — this path is only taken when native
+    // embedding is off, and it starts the same agent in the same directory.
+    if (cwd && !(await allowRun(BrowserWindow.fromWebContents(event.sender), cwd, 'terminal'))) {
+      if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+      return;
+    }
     const shell = os.platform() === 'win32'
       ? 'powershell.exe'
       : (process.env.SHELL || '/bin/bash');

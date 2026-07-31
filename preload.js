@@ -106,6 +106,14 @@ contextBridge.exposeInMainWorld('api', {
 
   // Embedded native terminal (xterm as a real X11 window reparented into a panel).
   createEmbedTerminal: (id, cwd, startCmd) => ipcRenderer.send('embed:create', { id, cwd, startCmd }),
+  // Main refused to start a terminal for an untrusted synced project. The tab
+  // has to be put back to unmaterialized, or its panel stays empty and the
+  // only way to retry is closing and reopening it.
+  onTerminalDeclined: (cb) => {
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on('term:declined', listener);
+    return () => ipcRenderer.removeListener('term:declined', listener);
+  },
   placeEmbedTerminal: (id, rect) => ipcRenderer.send('embed:place', { id, rect }),
   hideEmbedTerminal: (id) => ipcRenderer.send('embed:hide', { id }),
   // Hands the keyboard to the terminal window itself — see term-embed focus().

@@ -164,6 +164,21 @@ function syncEmbeds() {
 // Once the native window is up it covers the panel, so the "▶ terminal…"
 // placeholder underneath is only ever visible again while the X window lags a
 // resize — which reads as flicker. Drop it as soon as the terminal is placed.
+// Main declined to start a terminal for an untrusted synced project. Undo the
+// materialization so the panel is not left blank and pressing the tab again
+// asks once more, rather than the tab looking permanently broken.
+window.api.onTerminalDeclined(({ id }) => {
+  const t = tabs.get(id);
+  if (!t) return;
+  if (t.cleanup) { try { t.cleanup(); } catch (_) { /* already gone */ } }
+  if (t.panelEl) t.panelEl.remove();
+  Object.assign(t, { materialized: false, embed: false, panelEl: null, term: null, cleanup: null });
+  const i = visible.indexOf(id);
+  if (i !== -1) visible.splice(i, 1);
+  applyLayout();
+  toast(window.t('trust.declined'));
+});
+
 if (EMBED_NATIVE) {
   window.api.onEmbedReady((id) => {
     const t = tabs.get(id);
