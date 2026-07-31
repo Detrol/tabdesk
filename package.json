@@ -7,7 +7,8 @@
     "start": "electron .",
     "icons": "./build/render-icons.sh",
     "dist": "electron-builder --linux deb tar.gz",
-    "postinstall": "electron-rebuild -f -w node-pty"
+    "postinstall": "electron-rebuild -f -w node-pty",
+    "test": "electron test/main.js"
   },
   "author": {
     "name": "Jonaz Thern",
