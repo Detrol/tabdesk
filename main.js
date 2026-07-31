@@ -24,6 +24,7 @@ const syncBundle = require('./sync/bundle');
 const syncFiles = require('./sync/files');
 const syncWatch = require('./sync/watch');
 const syncTrust = require('./sync/trust');
+const syncPull = require('./sync/pullwatch');
 
 // Demo/testing hooks, unset in normal use. TABDESK_PROJECTS_DIR points the rail
 // at a scratch set of projects (screenshots, trying layout changes against a
@@ -776,6 +777,30 @@ app.whenReady().then(async () => {
     return { ok: true, watching: syncWatch.watching() };
   });
   ipcMain.handle('sync:watching', () => ({ ok: true, watching: syncWatch.watching() }));
+
+  // ---- Receiving, on its own ----
+  //
+  // A pulled project lands in PROJECTS_DIR under its slug, which is where the
+  // rail looks — so a project that appears on the server shows up as a tab
+  // without anyone naming a path for it.
+  const pullRoot = (slug) => path.join(PROJECTS_DIR, slug);
+
+  function startPulling() {
+    const slugs = syncConfig.all().pullProjects || [];
+    return syncPull.start(slugs, pullRoot, (payload) => {
+      if (!win.isDestroyed()) win.webContents.send('sync:event', payload);
+    });
+  }
+
+  ipcMain.handle('sync:pull-start', () => startPulling());
+  ipcMain.handle('sync:pull-stop', () => syncPull.stop());
+  ipcMain.handle('sync:pull-state', () => syncPull.state());
+  ipcMain.handle('sync:pull-now', async () => { await syncPull.sweep(); return syncPull.state(); });
+  app.on('will-quit', () => syncPull.stop());
+
+  // Pick up where the last session left off: the setting persists, the loop
+  // and the live channel do not.
+  if ((syncConfig.all().pullProjects || []).length) startPulling();
 
   // ---- Trust ----
   ipcMain.handle('sync:trust-state', (event, projectPath) => syncTrust.stateOf(projectPath));

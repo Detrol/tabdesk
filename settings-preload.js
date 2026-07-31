@@ -48,6 +48,10 @@ contextBridge.exposeInMainWorld('api', {
   watchStart: (slug, root) => ipcRenderer.invoke('sync:watch-start', { slug, root }),
   watchStop: (slug) => ipcRenderer.invoke('sync:watch-stop', slug),
   watching: () => ipcRenderer.invoke('sync:watching'),
+  pullStart: () => ipcRenderer.invoke('sync:pull-start'),
+  pullStop: () => ipcRenderer.invoke('sync:pull-stop'),
+  pullState: () => ipcRenderer.invoke('sync:pull-state'),
+  pullNow: () => ipcRenderer.invoke('sync:pull-now'),
   onSyncEvent: (cb) => {
     const listener = (_event, data) => cb(data);
     ipcRenderer.on('sync:event', listener);

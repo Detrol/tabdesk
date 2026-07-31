@@ -244,8 +244,10 @@
   border-radius: 6px;
   background: var(--tint);
 }
-#st-files-list { list-style: none; margin: 0; padding: 4px; }
-#st-files-list li {
+#st-files-list,
+#st-pull-list { list-style: none; margin: 0; padding: 4px; }
+#st-files-list li,
+#st-pull-list li {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -253,8 +255,10 @@
   border-radius: 4px;
   font-size: 12px;
 }
-#st-files-list li:hover { background: var(--tint-strong); }
-#st-files-list label { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; cursor: pointer; }
+#st-files-list li:hover,
+#st-pull-list li:hover { background: var(--tint-strong); }
+#st-files-list label,
+#st-pull-list label { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; cursor: pointer; }
 .st-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Status per project: what the last push did, or that a push is running. */
 .st-file-state { font-size: 11px; color: var(--dim); white-space: nowrap; }

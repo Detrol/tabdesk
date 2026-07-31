@@ -34,6 +34,11 @@ const DEFAULTS = {
   // Project file sync. `pushProjects` is a list of absolute project paths this
   // machine sends; everything else is only ever pulled on request.
   pushProjects: [],
+  // Slugs this machine receives automatically. Kept separate from
+  // pushProjects on purpose: the laptop pushes and the desktop pulls, and a
+  // single "sync this" list would make a project both at once — which is the
+  // two-way case, and that is phase six.
+  pullProjects: [],
   extraIgnores: [],
   maxBytes: 0,              // 0 = the manifest module's default
   useGitignore: true,
@@ -75,6 +80,7 @@ function forRenderer() {
     deviceId: c.deviceId,
     deviceName: c.deviceName,
     pushProjects: c.pushProjects || [],
+    pullProjects: c.pullProjects || [],
     extraIgnores: c.extraIgnores || [],
     maxBytes: c.maxBytes || 0,
     useGitignore: c.useGitignore !== false,
@@ -123,6 +129,7 @@ function save(patch) {
     if (patch[k] !== undefined) next[k] = String(patch[k]).trim();
   }
   if (Array.isArray(patch.pushProjects)) next.pushProjects = patch.pushProjects.map(String);
+  if (Array.isArray(patch.pullProjects)) next.pullProjects = patch.pullProjects.map(String);
   if (Array.isArray(patch.extraIgnores)) {
     next.extraIgnores = patch.extraIgnores.map((s2) => String(s2).trim()).filter(Boolean);
   }

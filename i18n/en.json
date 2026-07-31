@@ -199,7 +199,7 @@
   "tray.show": "Show TabDesk",
   "tray.hide": "Hide TabDesk",
   "tray.quit": "Quit TabDesk",
-  "settings.sync.stage": "Nothing is transferred yet — this sets up the server and proves it can be reached.",
+  "settings.sync.stage": "Files move as soon as this is set up — start with the server, then pick what travels.",
   "settings.sync.host": "Server",
   "settings.sync.port": "Port",
   "settings.sync.user": "User",
@@ -274,5 +274,15 @@
   "trust.cancel": "Cancel",
   "trust.open": "Open it",
   "trust.detail.terminal": "Opening it starts your agent with this folder as its working directory, and the agent reads and acts on what it finds there. These files arrived from the sync server, not from you.\n\n{path}",
-  "trust.declined": "Not opened — the project is still waiting to be approved."
+  "trust.declined": "Not opened — the project is still waiting to be approved.",
+  "settings.pull.title": "Projects to receive",
+  "settings.pull.hint": "These arrive on their own when the other machine sends them. They land in your projects folder and appear in the rail.",
+  "settings.pull.refresh": "Refresh",
+  "settings.pull.loading": "looking…",
+  "settings.pull.none": "Nothing offered by another machine yet.",
+  "settings.pull.err": "Could not reach the server.",
+  "settings.pull.meta": "{n} files · from {from}",
+  "settings.pull.live": "live",
+  "settings.pull.polling": "checking every {s}s",
+  "settings.pull.received": "Received {slug} — {n} files written. It needs approving before it runs."
 }

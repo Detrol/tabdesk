@@ -199,7 +199,7 @@
   "tray.show": "Visa TabDesk",
   "tray.hide": "Dölj TabDesk",
   "tray.quit": "Avsluta TabDesk",
-  "settings.sync.stage": "Inget överförs än — det här ställer in servern och visar att den går att nå.",
+  "settings.sync.stage": "Filer flyttas så fort det här är uppsatt — börja med servern, välj sedan vad som ska resa.",
   "settings.sync.host": "Server",
   "settings.sync.port": "Port",
   "settings.sync.user": "Användare",
@@ -274,5 +274,15 @@
   "trust.cancel": "Avbryt",
   "trust.open": "Öppna det",
   "trust.detail.terminal": "Att öppna det startar din agent med den här mappen som arbetskatalog, och agenten läser och agerar på det den hittar där. Filerna kom från synkservern, inte från dig.\n\n{path}",
-  "trust.declined": "Inte öppnat — projektet väntar fortfarande på godkännande."
+  "trust.declined": "Inte öppnat — projektet väntar fortfarande på godkännande.",
+  "settings.pull.title": "Projekt att ta emot",
+  "settings.pull.hint": "De kommer av sig själva när den andra datorn skickar dem. De hamnar i din projektmapp och dyker upp i railen.",
+  "settings.pull.refresh": "Uppdatera",
+  "settings.pull.loading": "letar…",
+  "settings.pull.none": "Ingen annan dator erbjuder något än.",
+  "settings.pull.err": "Kunde inte nå servern.",
+  "settings.pull.meta": "{n} filer · från {from}",
+  "settings.pull.live": "live",
+  "settings.pull.polling": "kontrollerar var {s}:e sekund",
+  "settings.pull.received": "Tog emot {slug} — {n} filer skrivna. Det behöver godkännas innan det körs."
 }

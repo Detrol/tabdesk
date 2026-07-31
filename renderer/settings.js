@@ -324,6 +324,8 @@ async function loadFiles() {
 
   // Re-arm watchers for what was ticked in a previous session: the setting
   // persists, the chokidar instances do not.
+  loadPull();
+
   const running = await window.api.watching();
   const live = new Set((running && running.watching) || []);
   for (const p of syncCfg.pushProjects || []) {
@@ -348,8 +350,25 @@ gitignoreEl.addEventListener('change', async () => {
   flashSaved();
 });
 
-// Push progress, straight from the watcher in main.
+// Progress from both loops in main. Receiving events are handled FIRST: they
+// have no local push row to attach to, and looking one up before dispatching
+// meant the lookup's early return swallowed every one of them — the receive
+// status never moved off whatever it said at load.
 window.api.onSyncEvent((ev) => {
+  if (ev.type === 'live-state' || ev.type === 'poll-ok') { refreshPullState(); return; }
+  if (ev.type === 'pull-done') {
+    filesOut.className = 'st-hint st-ok';
+    filesOut.textContent = window.t('settings.pull.received', { slug: ev.slug, n: ev.written });
+    refreshPullState();
+    return;
+  }
+  if (ev.type === 'pull-error') {
+    filesOut.className = 'st-hint st-bad';
+    filesOut.textContent = ev.detail || ev.code;
+    return;
+  }
+
+  // From here on it is push progress, which does have a row.
   const path = (projects.find((p) => slugOf(p.path) === ev.slug) || {}).path;
   const span = path && stateEls.get(path);
   if (!span) return;
@@ -377,3 +396,89 @@ window.api.onSyncEvent((ev) => {
     filesOut.textContent = ev.detail || ev.code;
   }
 });
+
+// ---- projects to receive ----
+//
+// The list is what the server has, not what this machine has: receiving is
+// how a project first appears here, so offering only local ones would make it
+// impossible to opt into anything new.
+
+const pullList = el('st-pull-list');
+const pullStateEl = el('st-pull-state');
+
+async function loadPull() {
+  pullList.textContent = '';
+  pullStateEl.textContent = window.t('settings.pull.loading');
+
+  const res = await window.api.filesList();
+  if (!res || !res.ok) {
+    pullStateEl.className = 'st-file-state bad';
+    pullStateEl.textContent = (res && res.detail) || window.t('settings.pull.err');
+    return;
+  }
+  pullStateEl.className = 'st-file-state';
+  pullStateEl.textContent = '';
+
+  // Our own pushes are not something to receive back.
+  const offered = res.projects.filter((p) => !p.mine);
+  if (!offered.length) {
+    pullStateEl.textContent = window.t('settings.pull.none');
+    return;
+  }
+
+  const on = new Set(syncCfg.pullProjects || []);
+  for (const p of offered) {
+    const li = document.createElement('li');
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = on.has(p.slug);
+    box.dataset.slug = p.slug;
+
+    const name = document.createElement('span');
+    name.className = 'st-file-name';
+    name.textContent = p.slug;
+
+    const meta = document.createElement('span');
+    meta.className = 'st-file-state';
+    meta.textContent = window.t('settings.pull.meta', {
+      n: p.count, from: p.deviceName || '?',
+    });
+
+    box.addEventListener('change', togglePull);
+    label.append(box, name);
+    li.append(label, meta);
+    pullList.append(li);
+  }
+  refreshPullState();
+}
+
+async function togglePull() {
+  const chosen = [...pullList.querySelectorAll('input[type=checkbox]')]
+    .filter((b) => b.checked).map((b) => b.dataset.slug);
+  await window.api.saveSync({ pullProjects: chosen });
+  syncCfg = await window.api.getSyncConfig();
+  // Restarting rather than adding: the loop holds the live channel and the
+  // per-project record of what it last pulled, and rebuilding both from the
+  // saved list is simpler than reconciling two sets that can disagree.
+  if (chosen.length) await window.api.pullStart();
+  else await window.api.pullStop();
+  refreshPullState();
+  flashSaved();
+}
+
+async function refreshPullState() {
+  const st = await window.api.pullState();
+  if (!st || !st.watching || !st.watching.length) {
+    pullStateEl.textContent = '';
+    return;
+  }
+  // Say which one is actually carrying the updates. "Live" and "checking every
+  // 15s" are both working states, and they behave differently enough that a
+  // single "on" would hide the difference.
+  pullStateEl.textContent = st.live
+    ? window.t('settings.pull.live')
+    : window.t('settings.pull.polling', { s: Math.round(st.pollMs / 1000) });
+}
+
+el('st-pull-refresh').addEventListener('click', loadPull);
