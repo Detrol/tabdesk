@@ -465,6 +465,16 @@ async function hide(id) {
   // at all — for a pane the renderer had already put away.
   rec.pending = null;
   rec.hidden = true;
+  // Drop the byte baseline. The counter is the xterm's total writes, and a
+  // visible terminal spends tens of kilobytes on ordinary repainting — while
+  // a hidden one, being unmapped, spends none. Keeping the baseline across the
+  // transition means the next poll reports everything drawn during the visible
+  // period as activity on a tab that is no longer being watched, which is the
+  // exact condition for "busy, then done": the tab turns green and hoists
+  // itself the moment you look away from it. Re-baselining makes the first
+  // poll after a hide establish a new zero and report nothing, which is what
+  // the `prev === null` branch in pollActivity is already there for.
+  rec.wchar = null;
   // drain() does the unmap, and only when the window is actually mapped: the
   // renderer re-hides every hidden panel on each sync, so a resize drag would
   // otherwise spawn an xdotool unmap per frame per hidden tab.
