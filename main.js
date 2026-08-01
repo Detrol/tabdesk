@@ -593,6 +593,11 @@ app.whenReady().then(async () => {
   ipcMain.on('embed:place', (event, { id, rect }) => termEmbed.place(id, rect));
   ipcMain.on('embed:hide', (event, { id }) => termEmbed.hide(id));
   ipcMain.on('embed:focus', (event, { id }) => termEmbed.focus(id));
+  // Dropped file paths, already quoted by the renderer. invoke rather than send:
+  // the drop is silent when the terminal can't take it (focus went elsewhere,
+  // window still starting), and the renderer says so rather than looking broken.
+  ipcMain.handle('embed:insert', (event, { id, text }) =>
+    termEmbed.insert(id, String(text || '')));
   ipcMain.on('embed:kill', (event, { id }) => termEmbed.kill(id));
 
   // ---- Terminal lifecycle over IPC ----

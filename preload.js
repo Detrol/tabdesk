@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 // NOTE: this preload runs sandboxed — only 'electron' is requireable here.
 // Anything needing Node core modules (path, fs, …) must live in the main process.
 
@@ -118,6 +118,15 @@ contextBridge.exposeInMainWorld('api', {
   hideEmbedTerminal: (id) => ipcRenderer.send('embed:hide', { id }),
   // Hands the keyboard to the terminal window itself — see term-embed focus().
   focusEmbedTerminal: (id) => ipcRenderer.send('embed:focus', { id }),
+  // The on-disk path behind a dropped File. `File.path` still answers on
+  // Electron 31, but it is gone in 32 and webUtils is the replacement, so ask
+  // webUtils first and keep the old property only as a fallback.
+  pathForFile: (file) => {
+    try { return webUtils.getPathForFile(file) || ''; } catch (_) { return file.path || ''; }
+  },
+  // Types text into the native terminal window. Resolves false when it could
+  // not be delivered, so a drop that goes nowhere can say so.
+  insertIntoEmbed: (id, text) => ipcRenderer.invoke('embed:insert', { id, text }),
   killEmbedTerminal: (id) => ipcRenderer.send('embed:kill', { id }),
   onEmbedReady: (cb) => {
     const listener = (_event, { id }) => cb(id);

@@ -138,6 +138,64 @@ function setActive(id) {
   syncTray();
 }
 
+// ---- Dropping files onto a pane ----
+//
+// The path lands at the prompt, quoted, with NO newline. A drop hands you an
+// argument to look at; it must never run anything. Filenames are attacker-
+// controlled in a way people forget — a repo can ship one called `; rm -rf ~`
+// — so the quoting matters even though you are the one pressing Enter.
+//
+// On the native backend this looks like it cannot work at all, since the
+// terminal is an X window stacked above the page. It works because xterm sets
+// no XdndAware property: a drag source that finds no drop target under the
+// pointer walks up to the nearest ancestor that has one, which is the Electron
+// window. Chromium then hit-tests the DOM at those coordinates and finds this
+// panel. What we genuinely cannot do is highlight the drop target — anything
+// the page paints there is behind the terminal.
+function shellQuote(p) {
+  return `'${String(p).replace(/'/g, "'\\''")}'`;
+}
+
+const dragHasFiles = (dt) => !!dt && Array.from(dt.types || []).includes('Files');
+
+function wireDrop(panelEl, id, deliver) {
+  // Without a dragover that preventDefaults, no drop event fires at all — and
+  // Chromium's default action takes over instead: it navigates the window to
+  // the dropped file. The app is then gone, replaced by a file listing, with
+  // no way back short of a restart.
+  panelEl.addEventListener('dragover', (e) => {
+    if (!dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  panelEl.addEventListener('drop', async (e) => {
+    if (!dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => window.api.pathForFile(f))
+      .filter(Boolean);
+    if (!paths.length) return;
+
+    // Drop on a pane you weren't in: that pane is what you meant.
+    if (activeId !== id) { activeId = id; applyLayout(); }
+
+    // Trailing space, so a second drop appends another argument rather than
+    // gluing itself to the first.
+    const ok = await deliver(paths.map(shellQuote).join(' ') + ' ');
+    if (!ok) toast(window.t('toast.dropFailed'));
+  });
+}
+
+// Everywhere that is not a pane, a dropped file would navigate the window and
+// take the app down with it. Nothing outside a pane accepts drops, so the whole
+// document refuses them.
+for (const type of ['dragover', 'drop']) {
+  window.addEventListener(type, (e) => {
+    if (dragHasFiles(e.dataTransfer)) e.preventDefault();
+  });
+}
+
 // ---- Embedded native terminal placement ----
 // Native terminal windows don't flow with the DOM, so we push each visible
 // panel's on-screen rectangle to main and let it move/size the X window to
@@ -352,6 +410,7 @@ function materialize(t) {
     panelEl.addEventListener('mousedown', () => {
       if (activeId !== id) { activeId = id; applyLayout(); }
     });
+    wireDrop(panelEl, id, (text) => window.api.insertIntoEmbed(id, text));
     window.api.createEmbedTerminal(id, t.cwd, startCmdFor(t));
     Object.assign(t, {
       materialized: true, embed: true, panelEl,
@@ -378,6 +437,9 @@ function materialize(t) {
   panelEl.addEventListener('mousedown', () => {
     if (activeId !== id) { activeId = id; applyLayout(); }
   });
+
+  // In-app backend: the pty is ours, so the path goes straight down it.
+  wireDrop(panelEl, id, (text) => { window.api.sendInput(id, text); return true; });
 
   window.api.createTerminal(id, term.cols, term.rows, t.cwd, startCmdFor(t));
   term.onData((data) => window.api.sendInput(id, data));

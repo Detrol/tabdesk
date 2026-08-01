@@ -148,6 +148,7 @@
   "toast.runUseSite": "{name} är en ren hemsida — använd 🌐 Öppna hemsidan",
   "toast.siteStarting": "Startar {name} för webbläsaren…",
   "toast.siteOpened": "🌐 Öppnade {url}",
+  "toast.dropFailed": "Kunde inte skriva sökvägen i terminalen",
   "bar.daily": "Dagligen",
   "bar.weekly": "Veckovis",
   "bar.session": "Session",

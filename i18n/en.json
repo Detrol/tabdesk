@@ -148,6 +148,7 @@
   "toast.runUseSite": "{name} is a plain website — use 🌐 Open the website",
   "toast.siteStarting": "Starting {name} for the browser…",
   "toast.siteOpened": "🌐 Opened {url}",
+  "toast.dropFailed": "Could not type the path into the terminal",
   "bar.daily": "Daily",
   "bar.weekly": "Weekly",
   "bar.session": "Session",

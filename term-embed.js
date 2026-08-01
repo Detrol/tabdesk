@@ -379,6 +379,42 @@ async function focus(id) {
   }
 }
 
+// Type text into a terminal — what a file drop turns into.
+//
+// It has to go in as keystrokes, because the pty belongs to xterm, not to us:
+// nothing here holds the write end. Two ways to send them, and only one is
+// usable. `xdotool type --window` sends XSendEvent, which xterm ignores unless
+// it was launched with allowSendEvents — and turning that on would let any X
+// client on the display type into your terminals, for a feature that does not
+// need it. So this uses XTEST instead: focus the window, then type into
+// whatever holds the focus.
+//
+// That makes the focus load-bearing rather than cosmetic. XTEST goes to the
+// focused window whatever it is, so typing without checking would mean pasting
+// a path into the wrong terminal — or into the page. focus() already retries
+// until it sticks; this re-reads the focus afterwards and gives up rather than
+// typing blind.
+async function insert(id, text) {
+  const rec = embeds.get(id);
+  if (!rec || rec.dead || !rec.win || !rec.mapped || rec.hidden) return false;
+  if (!text) return false;
+
+  await focus(id);
+  if (rec.dead || rec.hidden || !(await focusStuck(rec))) return false;
+
+  // --clearmodifiers: a drop ends with the mouse button up but can leave a
+  // modifier held (dragging with Ctrl to copy), which would otherwise turn the
+  // typed path into control characters.
+  //
+  // The delay is not politeness, it is correctness. At `--delay 0` a dropped
+  // path arrives scrambled — xdotool has to remap keysyms it cannot find on the
+  // current layout, and firing the whole string at once races that remapping,
+  // so characters land transposed. 12ms is xdotool's own default and types a
+  // long path in well under a second.
+  const out = await xdo(['type', '--clearmodifiers', '--delay', '12', '--', text]);
+  return out !== null;
+}
+
 // Chromium's rendering surface is itself a child X window covering the whole
 // client area, and dragging the main window's edge restacks it ABOVE our
 // terminals. They stay mapped, correctly sized and correctly placed — they just
@@ -498,6 +534,6 @@ function killAll() {
 }
 
 module.exports = {
-  init, create, place, hide, focus, kill, killAll,
+  init, create, place, hide, focus, insert, kill, killAll,
   setTheme, setReadyNotifier, setActivityNotifier,
 };
