@@ -617,6 +617,17 @@ html, body {
   text-shadow: var(--glow-text);
   cursor: pointer;
 }
+/* Without a caret the bar reads as a readout, not a control — the model name
+   alone gives no hint it opens a menu. Same affordance as the rail's Agent
+   button. It lives in CSS because renderModelBtn() rewrites textContent, which
+   would drop an inline element. */
+#model-btn::after {
+  content: "▾";
+  margin-left: 6px;
+  opacity: .75;
+}
+#model-btn[aria-expanded="true"]::after { content: "▴"; }
+#model-btn:disabled::after { opacity: .45; }
 #model-btn:hover:not(:disabled) { background: var(--tint-2-strong); }
 #model-btn[aria-expanded="true"] { background: var(--tint-2-strong); }
 /* Inherited from Claude Code's own default rather than picked for the project. */
