@@ -301,7 +301,11 @@ function fitSoon(id) {
 // further down has been reached.
 const bootAgents = (window.api.boot && window.api.boot.agents) || {};
 let agentList = bootAgents.list || [];            // installed only
-let agentByProject = bootAgents.byProject || {};  // cwd -> agent id
+// Copied, not aliased: contextBridge hands the boot payload over deep-frozen,
+// and this map is written to whenever an agent is picked. Assigning to the
+// frozen original fails silently (this is a classic script, so no strict mode
+// to throw), leaving every later reader on the boot-time answer.
+let agentByProject = { ...(bootAgents.byProject || {}) };  // cwd -> agent id
 const agentFallback = bootAgents.fallback || 'claude';
 // The button lives in the rail's footer and its wiring is further down, but
 // applyLayout() repaints it and can run before that point is reached.
@@ -518,9 +522,29 @@ addBtn.addEventListener('click', async () => {
     return;
   }
 
+  // "Starts with" from the picker: an explicit override, stored against the
+  // project exactly like the rail's agent menu stores it. Left untouched there,
+  // it comes back undefined and the project keeps what it had.
+  if (choice.agent) {
+    const res = await window.api.setAgent(choice.path, choice.agent);
+    if (res && res.ok) agentByProject[choice.path] = res.agent;
+  }
+
   // A project already in the rail gets focused rather than opened twice.
   const existing = [...tabs.values()].find((x) => x.cwd === choice.path);
-  if (existing) { setActive(existing.id); return; }
+  if (existing) {
+    // Its terminal is already running the old CLI; the new one starts with the
+    // next tab, the same caveat the agent menu reports.
+    if (choice.agent) {
+      existing.agent = agentByProject[choice.path];
+      if (existing.materialized) {
+        toast(window.t('toast.agentLater',
+          { project: existing.name, agent: agentLabel(existing.agent) }));
+      }
+    }
+    setActive(existing.id);
+    return;
+  }
 
   // Opening it is the undo for having closed it: it belongs in the rail again
   // at the next start.
@@ -851,12 +875,6 @@ agentMenu.addEventListener('click', async (e) => {
   // A running terminal was started by the old CLI and can't be swapped under it.
   toast(window.t(t.materialized ? 'toast.agentLater' : 'toast.agentSet',
     { project: t.name, agent: agentLabel(res.agent) }));
-});
-
-// A plain terminal, no project and no agent — the same thing the picker's
-// "Terminal" row opens, one click closer.
-document.getElementById('term-btn').addEventListener('click', () => {
-  setActive(buildTab({ name: `Terminal ${++adHoc}`, cwd: null, atTop: true }));
 });
 
 renderAgentBtn();

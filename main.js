@@ -151,7 +151,7 @@ function openProjectPicker(parent) {
       parent,
       modal: true,
       width: 620,
-      height: 620,
+      height: 700,
       minWidth: 460,
       minHeight: 420,
       show: false,

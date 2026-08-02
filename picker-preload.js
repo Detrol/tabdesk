@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   listProjects: () => ipcRenderer.invoke('projects:list'),
+  // Read-only: the picker offers the installed agents, but storing the choice
+  // stays with the main renderer, which already owns that state.
+  listAgents: () => ipcRenderer.invoke('agents:list'),
   createProject: (name) => ipcRenderer.invoke('projects:create', name),
   browseFolder: () => ipcRenderer.invoke('projects:browse'),
 

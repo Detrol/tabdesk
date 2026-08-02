@@ -34,7 +34,7 @@
   min-height: 0;
 }
 /* Only the project list absorbs the leftover height. */
-.pk-section:first-of-type { flex: 1; }
+#pk-list-sec { flex: 1; }
 
 .pk-section h2 {
   margin: 0;
@@ -100,6 +100,24 @@
   font-size: 10px;
   letter-spacing: .4px;
   color: var(--faint);
+}
+
+/* "Starts with" chips: one per installed agent, plus the plain shell. Wraps
+   rather than scrolls — a machine with six agent CLIs on it is rare, and a
+   hidden row of them would be worse than a second line. */
+#pk-starts { display: flex; flex-wrap: wrap; gap: 6px; }
+#picker #pk-starts button {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--dim);
+  border-radius: 999px;
+}
+#picker #pk-starts button:hover { color: var(--text); }
+#picker #pk-starts button.on {
+  color: var(--bg);
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  font-weight: 600;
 }
 
 .pk-hint { margin: 0; font-size: 11px; color: var(--faint); }

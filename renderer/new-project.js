@@ -4,16 +4,32 @@
 // ~/claude-projects, a new folder created here, or a folder browsed for
 // elsewhere. A plain shell is still reachable, but it is now a deliberate
 // choice rather than what "+" happens to do.
+//
+// Two questions, one window: which project the tab belongs to, and what it
+// starts in it — a plain terminal or one of the agent CLIs installed on this
+// machine. The second one has an answer already (the project remembers what it
+// ran last), so it is optional; picking a project is what closes the window.
 
 const listEl = document.getElementById('pk-list');
 const searchEl = document.getElementById('pk-search');
 const noneEl = document.getElementById('pk-none');
 const nameEl = document.getElementById('pk-name');
 const errorEl = document.getElementById('pk-error');
+const startsEl = document.getElementById('pk-starts');
 
 let projects = [];
+// null means "whatever this project already starts with" — an untouched row
+// must not overwrite a per-project choice made from the rail's agent menu.
+let startAgent = null;
 
-function choose(choice) { window.api.done(choice); }
+// The agent rides along with the project so main's renderer can store it the
+// same way the agent menu does. A plain shell tab has no project to store it
+// against, so it carries none.
+function choose(choice) {
+  window.api.done(choice && choice.kind === 'project' && startAgent
+    ? { ...choice, agent: startAgent }
+    : choice);
+}
 
 function showError(msg) {
   errorEl.textContent = msg;
@@ -47,6 +63,24 @@ function renderList() {
     listEl.appendChild(item);
   }
   noneEl.classList.toggle('hidden', matches.length > 0);
+}
+
+// Clicking the chip that is already on turns it back off: that is how you get
+// out of an override and back to the project's own choice.
+function renderStarts(agents) {
+  startsEl.innerHTML = '';
+  for (const a of agents) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'pk-start' + (a.id === startAgent ? ' on' : '');
+    chip.textContent = `${a.id === 'shell' ? '⌨' : '🤖'} ${a.label}`;
+    chip.title = a.hint ? window.t(a.hint) : (a.command || '');
+    chip.addEventListener('click', () => {
+      startAgent = startAgent === a.id ? null : a.id;
+      renderStarts(agents);
+    });
+    startsEl.appendChild(chip);
+  }
 }
 
 async function create() {
@@ -89,4 +123,15 @@ window.api.listProjects().then((list) => {
   projects = list || [];
   renderList();
   searchEl.focus();
+});
+
+// Nothing installed but the shell still gives one chip, so the row never turns
+// up empty — but there is no choice to make, so it doesn't earn the space.
+window.api.listAgents().then((agents) => {
+  const list = agents || [];
+  if (list.length < 2) {
+    document.getElementById('pk-starts-sec').classList.add('hidden');
+    return;
+  }
+  renderStarts(list);
 });

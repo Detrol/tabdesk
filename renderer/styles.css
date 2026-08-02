@@ -402,6 +402,7 @@ html, body {
 }
 #preview.collapsed #preview-body,
 #preview.collapsed #preview-title,
+#preview.collapsed #preview-btn,
 #preview.collapsed #preview-reload { display: none; }
 #preview.collapsed #preview-collapse { transform: rotate(180deg); }
 
@@ -437,6 +438,9 @@ html, body {
   cursor: pointer;
 }
 .preview-actions button:hover { color: var(--text); border-color: var(--accent-2); }
+/* Start is the one thing you come to this header to do; the rest are upkeep. */
+#preview-btn { color: var(--accent-2); border-color: var(--accent-2); background: var(--tint-2); }
+#preview-btn:hover { background: var(--tint-2-strong); }
 
 #preview-body {
   flex: 1 1 auto;

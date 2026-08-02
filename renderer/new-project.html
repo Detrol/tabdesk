@@ -12,11 +12,20 @@
   <div id="picker">
     <header id="picker-head">
       <h1 data-i18n="picker.title">New tab</h1>
-      <p data-i18n="picker.lead">Pick the project this terminal belongs to.</p>
+      <p data-i18n="picker.lead">Pick the project this terminal belongs to, and what it starts.</p>
     </header>
 
+    <!-- What the tab starts, out of the agent CLIs actually installed. The
+         choice is remembered per project, so this row only needs touching when
+         you want something other than what that project ran last. -->
+    <section class="pk-section" id="pk-starts-sec">
+      <h2 data-i18n="picker.starts">Starts with</h2>
+      <div id="pk-starts"></div>
+      <p class="pk-hint" data-i18n="picker.startsHint">Untouched, the project keeps the choice it already had.</p>
+    </section>
+
     <!-- Existing projects under ~/claude-projects, most recently used first. -->
-    <section class="pk-section">
+    <section class="pk-section" id="pk-list-sec">
       <h2 data-i18n="picker.existing">Existing project</h2>
       <input id="pk-search" type="search" autocomplete="off" data-i18n-placeholder="picker.search" />
       <ul id="pk-list"></ul>
