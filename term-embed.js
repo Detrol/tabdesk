@@ -97,6 +97,24 @@ function pollActivity() {
     if (w === null) continue;
     const prev = rec.wchar;
     rec.wchar = w;
+    // Only a hidden terminal can raise a flag worth raising, and only a hidden
+    // terminal has a counter worth trusting. A mapped xterm spends tens of
+    // kilobytes on ordinary repainting — far above the threshold below — so
+    // bytes measured while it was visible say nothing about whether the command
+    // running in it did anything.
+    //
+    // hide() re-baselines for exactly that reason, but it lands a frame or more
+    // after the renderer has already stopped counting the tab as watched:
+    // setActive() updates `visible` synchronously and defers the sync through
+    // requestAnimationFrame, which Chromium throttles hard whenever the window
+    // is occluded. Anything polled inside that gap gets charged to a tab the
+    // renderer will now flag instead of clear — the tab going green on the way
+    // out, which d0ef237 narrowed but could not close from the hide() side.
+    //
+    // The assignment above still runs, so the baseline keeps tracking while the
+    // terminal is visible; only the reporting is suppressed. That leaves the
+    // first hidden poll comparing against a fresh number either way.
+    if (!rec.hidden) continue;
     if (prev === null) continue;                              // baseline, not activity
     if (at - rec.startedAt < ACTIVITY_GRACE_MS) continue;     // still starting up
     if (w - prev < ACTIVITY_MIN_BYTES) continue;              // idle repaint trickle
