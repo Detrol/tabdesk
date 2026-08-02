@@ -88,6 +88,35 @@ function createWindow() {
     },
   });
 
+  // webviewTag is on for the preview dock, and a <webview> brings its own
+  // webPreferences with it. That makes "can attach a webview" the same thing as
+  // "can choose whether node is available", so the choice is made here instead
+  // of trusting whatever asked for the attach. The only preload that may ride
+  // along is the inspector we ship; anything else is dropped rather than
+  // refused, so a legitimate attach still succeeds without one.
+  const PREVIEW_PRELOAD = path.join(__dirname, 'preview-preload.js');
+  // Compared as a resolved path, not as the string that arrived: Electron has
+  // handed this over as both `preloadURL` and `preload`, and as both a file://
+  // URL and a plain path, depending on version. An exact string match would
+  // silently drop our own inspector on the version that spells it differently,
+  // turning a hardening into a broken feature.
+  const isOurPreload = (v) => {
+    const s = String(v || '');
+    if (!s) return false;
+    try { return path.resolve(s.startsWith('file://') ? new URL(s).pathname : s) === PREVIEW_PRELOAD; }
+    catch (_) { return false; }
+  };
+  win.webContents.on('will-attach-webview', (event, webPreferences) => {
+    webPreferences.nodeIntegration = false;
+    webPreferences.nodeIntegrationInSubFrames = false;
+    webPreferences.contextIsolation = true;
+    const asked = webPreferences.preloadURL || webPreferences.preload;
+    if (asked && !isOurPreload(asked)) {
+      delete webPreferences.preloadURL;
+      delete webPreferences.preload;
+    }
+  });
+
   // Hide the default menu bar for a cleaner look; F11 still toggles fullscreen below.
   win.setMenuBarVisibility(false);
 
@@ -1170,9 +1199,23 @@ app.whenReady().then(async () => {
   // Hand a URL to the desktop's default browser. Only http(s)/file, so a
   // crafted preview URL can't reach a `mailto:`-style handler.
   ipcMain.handle('site:open-external', (event, url) => {
-    if (!/^(https?|file):\/\//i.test(String(url || ''))) return false;
-    shell.openExternal(url);
-    return true;
+    const raw = String(url || '');
+    if (/^https?:\/\//i.test(raw)) { shell.openExternal(raw); return true; }
+
+    // file:// is here for one reason: a static preview has no server, so
+    // handing it to the browser means handing it a path. Left as a bare scheme
+    // check it is an execution primitive instead — xdg-open on a .desktop file
+    // runs it, and the URL reaches this handler from the renderer. So the only
+    // file:// that goes anywhere is an HTML file that actually exists.
+    if (/^file:\/\//i.test(raw)) {
+      let p;
+      try { p = decodeURIComponent(new URL(raw).pathname); } catch (_) { return false; }
+      if (!/\.html?$/i.test(p)) return false;
+      try { if (!fs.statSync(p).isFile()) return false; } catch (_) { return false; }
+      shell.openExternal(raw);
+      return true;
+    }
+    return false;
   });
 
   ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd }) => {

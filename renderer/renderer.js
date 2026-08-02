@@ -673,10 +673,52 @@ async function ensureWebview() {
   return view;
 }
 
-function setEmptyMessage(html) {
-  previewEmpty.innerHTML = html;
+// Nodes, never HTML.
+//
+// Everything the dock shows carries something we do not author: a project name
+// is a directory basename, and a directory can be called anything at all —
+// including markup — while a failing command writes its own text into the error.
+// Both used to reach innerHTML here, and this window has `window.api` on it,
+// including sendInput(), which types straight into a terminal. An `onerror=`
+// in a folder name was a command prompt.
+//
+// The same reasoning the drag-drop path already spells out for shellQuote():
+// filenames are attacker-controlled in a way people forget.
+function setEmptyNodes(...nodes) {
+  previewEmpty.replaceChildren(...nodes);
   previewEmpty.classList.remove('hidden');
   if (previewView) previewView.classList.add('dim');
+}
+
+// A plain line. `text` is always inserted as text, never parsed.
+function line(text, cls) {
+  const p = document.createElement('p');
+  if (cls) p.className = cls;
+  p.textContent = String(text == null ? '' : text);
+  return p;
+}
+
+// A line built from an i18n string carrying a single {name}. The emphasis is
+// part of the message and belongs in the markup; the name is data and goes in
+// as a text node, which is why the source strings no longer carry <strong>
+// around the placeholder themselves.
+function namedLine(key, name, cls) {
+  const p = document.createElement('p');
+  if (cls) p.className = cls;
+  const [before, after = ''] = String(window.t(key)).split('{name}');
+  const em = document.createElement('strong');
+  em.textContent = String(name == null ? '' : name);
+  p.append(before, em, after);
+  return p;
+}
+
+// What "starting <project>" looks like, from the two places that show it.
+function startingNodes(name) {
+  return [
+    line('◐', 'spin'),
+    namedLine('preview.startingName', name),
+    line(window.t('preview.seeLog'), 'hint'),
+  ];
 }
 function showWebview() {
   previewEmpty.classList.add('hidden');
@@ -702,19 +744,13 @@ function showWebview() {
 // the big icon, the way the ⚠ and ◐ messages use it, and a wrapper would move
 // :first-child onto the first line of text instead.
 function staleNotice(activeT, info) {
-  const nodes = [];
-  const p = (text, cls) => {
-    const el = document.createElement('p');
-    if (cls) el.className = cls;
-    el.textContent = text;
-    nodes.push(el);
-  };
-
-  p('👁');
-  p(window.t('preview.stale', { running: previewName || previewCwd }));
-  p(info
-    ? window.t('preview.staleActive', { active: activeT.name })
-    : window.t('preview.staleNothing', { active: activeT.name }), 'hint');
+  const nodes = [
+    line('👁'),
+    line(window.t('preview.stale', { running: previewName || previewCwd })),
+    line(info
+      ? window.t('preview.staleActive', { active: activeT.name })
+      : window.t('preview.staleNothing', { active: activeT.name }), 'hint'),
+  ];
 
   if (info) {
     const btn = document.createElement('button');
@@ -729,9 +765,7 @@ function staleNotice(activeT, info) {
 
 function showPreviewStale(activeT, info) {
   previewStale = true;
-  previewEmpty.replaceChildren(...staleNotice(activeT, info));
-  previewEmpty.classList.remove('hidden');
-  if (previewView) previewView.classList.add('dim');
+  setEmptyNodes(...staleNotice(activeT, info));
 }
 
 // Back on the tab the dock belongs to: put back whatever the current mode was
@@ -743,8 +777,7 @@ function clearPreviewStale() {
   if (previewMode === 'live') {
     showWebview();
   } else if (previewMode === 'starting') {
-    setEmptyMessage(`<p class="spin">◐</p><p>${window.t('preview.startingName', { name: previewName })}</p>`
-      + `<p class="hint">${window.t('preview.seeLog')}</p>`);
+    setEmptyNodes(...startingNodes(previewName));
   }
 }
 
@@ -802,8 +835,7 @@ async function openPreview({ external = false } = {}) {
   previewCrumb.textContent = window.t('preview.starting');
   previewHtml.textContent = '';
   view.src = 'about:blank';
-  setEmptyMessage(`<p class="spin">◐</p><p>${window.t('preview.startingName', { name: t.name })}</p>`
-    + `<p class="hint">${window.t('preview.seeLog')}</p>`);
+  setEmptyNodes(...startingNodes(t.name));
   await window.api.startPreview(t.cwd);
 }
 
@@ -848,7 +880,9 @@ window.api.onPreviewEvent((d) => {
     // next showWebview().
     previewStale = false;
     previewCrumb.textContent = '⚠ ' + d.message;
-    setEmptyMessage(`<p>⚠</p><p>${d.message}</p><p class="hint">${t('preview.details')}</p>`);
+    // d.message carries the project's directory name and whatever a failing
+    // command printed — neither is ours to trust.
+    setEmptyNodes(line('⚠'), line(d.message), line(t('preview.details'), 'hint'));
     if (previewLog) previewHtml.textContent = previewLog;
     toast(d.message);
   }

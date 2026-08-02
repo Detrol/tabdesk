@@ -127,7 +127,7 @@
   "preview.empty": "Välj ett projekt och tryck <strong>▶</strong> här uppe.",
   "preview.hint": "HTML, Python, Rust, Node, Go … körs live här.",
   "preview.starting": "Startar…",
-  "preview.startingName": "Startar <strong>{name}</strong>…",
+  "preview.startingName": "Startar {name}…",
   "preview.seeLog": "Se loggen nedan.",
   "preview.hover": "Håll muspekaren över förhandsvisningen för att se koden…",
   "preview.details": "Detaljer finns i loggen nedan.",

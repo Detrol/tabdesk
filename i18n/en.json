@@ -127,7 +127,7 @@
   "preview.empty": "Select a project and press <strong>▶</strong> up here.",
   "preview.hint": "HTML, Python, Rust, Node, Go … run live here.",
   "preview.starting": "Starting…",
-  "preview.startingName": "Starting <strong>{name}</strong>…",
+  "preview.startingName": "Starting {name}…",
   "preview.seeLog": "See the log below.",
   "preview.hover": "Hover over the preview to see its code…",
   "preview.details": "Details in the log below.",
