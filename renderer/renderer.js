@@ -127,6 +127,9 @@ function setActive(id) {
   applyLayout();
   for (const vid of visible) fitSoon(vid);
   scheduleSync();
+  // The dock is fixed and does not belong to any one tab, so switching projects
+  // is the moment it can start lying about which one it holds.
+  syncPreviewToActive();
   // Selecting a tab puts the cursor in that terminal, so you can start typing
   // without clicking the panel first. The in-app terminal takes focus in the
   // DOM; a native one is its own X11 window and has to be told (see
@@ -633,6 +636,9 @@ let previewMode = 'idle';   // idle | starting | live
 let previewLog = '';        // accumulated process output while starting
 let previewUrl = '';        // URL of the live preview, for "open in browser"
 let previewCwd = '';        // project the preview belongs to
+let previewName = '';       // that project's display name, for the stale notice
+let previewStale = false;   // dock holds a project other than the active tab's
+let previewIsStatic = false; // current preview is a file:// page, so no process to lose
 let openInBrowserOnReady = false; // the run menu asked for the browser, not the dock
 
 // The <webview> is created on demand rather than declared in index.html.
@@ -677,6 +683,101 @@ function showWebview() {
   if (previewView) previewView.classList.remove('dim');
 }
 
+// ---- Keeping the dock honest across a tab switch ----
+//
+// The dock is fixed: it outlives the tab that opened it. Switch projects and it
+// goes on showing the old one under a title that still names it, which reads as
+// "this is your project" rather than "this is the last one you asked for".
+//
+// What it costs to fix decides how it is fixed. A static project is a file://
+// URL and no process at all, so it is swapped in silently — that is the case
+// where "it just follows the tab" is free. Anything else is a dev server worth
+// seconds of startup and holding state nobody asked us to throw away, so it is
+// never restarted behind your back: the dock says what it is showing and offers
+// the swap.
+//
+// Names go in through textContent, never innerHTML. They are directory names,
+// and a directory can be called anything at all.
+// Nodes rather than a wrapper element: #preview-empty styles its first <p> as
+// the big icon, the way the ⚠ and ◐ messages use it, and a wrapper would move
+// :first-child onto the first line of text instead.
+function staleNotice(activeT, info) {
+  const nodes = [];
+  const p = (text, cls) => {
+    const el = document.createElement('p');
+    if (cls) el.className = cls;
+    el.textContent = text;
+    nodes.push(el);
+  };
+
+  p('👁');
+  p(window.t('preview.stale', { running: previewName || previewCwd }));
+  p(info
+    ? window.t('preview.staleActive', { active: activeT.name })
+    : window.t('preview.staleNothing', { active: activeT.name }), 'hint');
+
+  if (info) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'preview-swap';
+    btn.dataset.previewSwap = '1';
+    btn.textContent = window.t('preview.staleSwap', { active: activeT.name });
+    nodes.push(btn);
+  }
+  return nodes;
+}
+
+function showPreviewStale(activeT, info) {
+  previewStale = true;
+  previewEmpty.replaceChildren(...staleNotice(activeT, info));
+  previewEmpty.classList.remove('hidden');
+  if (previewView) previewView.classList.add('dim');
+}
+
+// Back on the tab the dock belongs to: put back whatever the current mode was
+// already showing. 'starting' owns the overlay, so it has to be redrawn rather
+// than merely uncovered.
+function clearPreviewStale() {
+  if (!previewStale) return;
+  previewStale = false;
+  if (previewMode === 'live') {
+    showWebview();
+  } else if (previewMode === 'starting') {
+    setEmptyMessage(`<p class="spin">◐</p><p>${window.t('preview.startingName', { name: previewName })}</p>`
+      + `<p class="hint">${window.t('preview.seeLog')}</p>`);
+  }
+}
+
+// Rapid switching means several of these can be in flight at once — the kind
+// lookup is IPC. Only the newest may touch the DOM, or a slow answer for a tab
+// you already left lands on top of the right one.
+let previewSyncSeq = 0;
+async function syncPreviewToActive() {
+  const seq = ++previewSyncSeq;
+  if (previewMode === 'idle') return;      // nothing running, nothing to be stale about
+  const t = tabs.get(activeId);
+  if (!t || !t.cwd || t.cwd === previewCwd) { clearPreviewStale(); return; }
+
+  const info = await window.api.previewKind(t.cwd);
+  if (seq !== previewSyncSeq) return;      // a later switch already decided
+
+  // Silent only when the swap genuinely costs nothing: the project we are
+  // moving to needs no process, AND the one we are leaving has none to lose.
+  // start() stops whatever is running before it does anything else, so without
+  // that second half, stepping onto a tab with an index.html would quietly kill
+  // the dev server you left running two tabs ago — the expensive, invisible
+  // thing this whole branch exists to avoid.
+  if (info && info.kind === 'static' && previewMode === 'live' && previewIsStatic) {
+    openPreview();
+    return;
+  }
+  showPreviewStale(t, info);
+}
+
+previewEmpty.addEventListener('click', (e) => {
+  if (e.target.closest('[data-preview-swap]')) openPreview();
+});
+
 // `external: true` means the caller only wants the URL (to hand to the desktop
 // browser), so we start the process without unfolding the dock over the panels.
 async function openPreview({ external = false } = {}) {
@@ -690,6 +791,13 @@ async function openPreview({ external = false } = {}) {
   previewLog = '';
   previewUrl = '';
   previewCwd = t.cwd;
+  previewName = t.name;
+  // Whatever the dock was showing, it is now this project's — by definition not
+  // stale, and the notice must not survive into the new run's overlay.
+  previewStale = false;
+  // Unknown until 'ready' says which it is; assume a process, so a switch made
+  // while this is still starting asks rather than kills.
+  previewIsStatic = false;
   previewTitle.textContent = `👁 ${t.name}`;
   previewCrumb.textContent = window.t('preview.starting');
   previewHtml.textContent = '';
@@ -702,7 +810,7 @@ async function openPreview({ external = false } = {}) {
 // Lifecycle events from the preview runner in main.
 window.api.onPreviewEvent((d) => {
   if (d.type === 'log') {
-    if (d.name) previewTitle.textContent = `👁 ${d.name}`;
+    if (d.name) { previewTitle.textContent = `👁 ${d.name}`; previewName = d.name; }
     if (d.label) previewCrumb.textContent = `▶ ${d.label}…`;
     previewLog += d.line;
     if (previewLog.length > 24000) previewLog = previewLog.slice(-24000);
@@ -713,7 +821,12 @@ window.api.onPreviewEvent((d) => {
   } else if (d.type === 'ready') {
     previewMode = 'live';
     previewUrl = d.url;
-    showWebview();
+    // Whether a swap away from this costs anything. A static preview is a
+    // file:// page with nothing behind it; everything else holds a process.
+    previewIsStatic = d.kind === 'static';
+    // Becoming ready while you are on another tab must not uncover the dock:
+    // the "showing another project" notice is still the truth until you go back.
+    if (!previewStale) showWebview();
     previewHtml.textContent = '';
     previewCrumb.textContent = d.kind === 'static'
       ? t('preview.hover')
@@ -730,6 +843,10 @@ window.api.onPreviewEvent((d) => {
   } else if (d.type === 'error') {
     previewMode = 'idle';
     openInBrowserOnReady = false;
+    // The dock now holds a failure, not a project — there is nothing left for
+    // the stale notice to be about, and leaving the flag set would suppress the
+    // next showWebview().
+    previewStale = false;
     previewCrumb.textContent = '⚠ ' + d.message;
     setEmptyMessage(`<p>⚠</p><p>${d.message}</p><p class="hint">${t('preview.details')}</p>`);
     if (previewLog) previewHtml.textContent = previewLog;

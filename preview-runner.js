@@ -217,4 +217,18 @@ async function start(projectPath, send) {
   }, 45000);
 }
 
-module.exports = { start, stop };
+// What previewing `dir` would cost, without paying it. detect() only stats and
+// reads files — nothing is spawned — so this is cheap enough to ask on every
+// tab switch, which is exactly what the renderer needs: a static project is a
+// file:// URL and can be swapped to silently, while anything else is a dev
+// server the user should be asked about before it replaces a running one.
+//
+// The port is a placeholder. It only ever reaches a command line we are not
+// going to run, and every caller here ignores the parts that embed it.
+function kindOf(dir) {
+  let plan = null;
+  try { plan = detect(dir, 0); } catch (_) { return null; }   // unreadable dir
+  return plan ? { kind: plan.kind, label: plan.label } : null;
+}
+
+module.exports = { start, stop, kindOf };

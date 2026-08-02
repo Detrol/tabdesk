@@ -490,6 +490,22 @@ html, body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Offered when the dock holds a project other than the one you switched to.
+   Same shell as the toast: this is an offer, not a control you reach for. */
+.preview-swap {
+  margin-top: 8px;
+  padding: 7px 13px;
+  border: 1px solid var(--accent-2);
+  border-radius: 9px;
+  background: var(--overlay);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: box-shadow .2s ease;
+}
+.preview-swap:hover { box-shadow: var(--glow-accent-2); }
+
 #preview-code {
   flex: 0 0 38%;
   display: flex;

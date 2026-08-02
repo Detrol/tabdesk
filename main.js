@@ -1146,6 +1146,11 @@ app.whenReady().then(async () => {
     return true;
   });
 
+  // Classify a project without running it. Deliberately not behind allowRun():
+  // this executes nothing, and the renderer asks on every tab switch — a trust
+  // prompt here would fire for merely looking at a tab.
+  ipcMain.handle('preview:kind', (event, projectPath) => previewRunner.kindOf(projectPath));
+
   // Tear down the currently running preview process (if any).
   ipcMain.handle('preview:stop', () => { previewRunner.stop(); return true; });
 

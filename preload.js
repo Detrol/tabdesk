@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('api', {
   getPreviewPreloadUrl: () => ipcRenderer.invoke('preview:preload-url'),
   startPreview: (cwd) => ipcRenderer.invoke('preview:start', cwd),
   stopPreview: () => ipcRenderer.invoke('preview:stop'),
+  previewKind: (cwd) => ipcRenderer.invoke('preview:kind', cwd),
   onPreviewEvent: (cb) => {
     const listener = (_event, data) => cb(data);
     ipcRenderer.on('preview:event', listener);
