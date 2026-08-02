@@ -44,6 +44,33 @@ function flashSaved() {
   savedTimer = setTimeout(() => savedEl.classList.remove('is-on'), 1400);
 }
 
+// ---- copy to clipboard ----
+//
+// The invite and the recovery string are long, wrapped and meant to be moved
+// somewhere else, so selecting them by hand is the wrong ask. The button says
+// what it did for a moment and then goes back to itself; a language change in
+// between would otherwise leave "Copied" as the permanent label, so the reset
+// re-reads the string rather than restoring a captured one.
+function wireCopy(btnId, srcId) {
+  const btn = document.getElementById(btnId);
+  let timer = null;
+  btn.addEventListener('click', async () => {
+    const text = document.getElementById(srcId).textContent.trim();
+    if (!text) return;
+    const ok = await window.api.copyText(text);
+    btn.textContent = window.t(ok ? 'settings.copied' : 'settings.copyFailed');
+    clearTimeout(timer);
+    timer = setTimeout(() => { btn.textContent = window.t('settings.copy'); }, 1400);
+  });
+}
+
+wireCopy('st-td-invite-copy', 'st-td-invite-text');
+wireCopy('st-td-recovery-copy', 'st-td-recovery-text');
+
+// ---- moving your setup by file ----
+
+document.getElementById('st-portable').addEventListener('click', () => window.api.openPortable());
+
 // ---- pickers ----
 
 // `selected` is the stored preference ('system' or an id), not the theme that

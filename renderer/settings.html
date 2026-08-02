@@ -83,6 +83,8 @@
               It is the only way back to your data if you lose every device. Nobody — not the server, not us — can recover it for you.
             </p>
             <div class="st-row">
+              <button id="st-td-recovery-copy" data-i18n="settings.copy">Copy</button>
+              <span class="st-spacer"></span>
               <button id="st-td-recovery-done" data-i18n="settings.td.recovery.done">I have saved it</button>
             </div>
           </div>
@@ -100,6 +102,7 @@
                 <span data-i18n="settings.td.invite.withAuth">Include the server login</span>
               </label>
               <span class="st-spacer"></span>
+              <button id="st-td-invite-copy" class="st-primary" data-i18n="settings.copy">Copy</button>
               <button id="st-td-invite-done" data-i18n="settings.td.invite.done">Done</button>
             </div>
           </div>
@@ -241,6 +244,21 @@
               <span class="st-spacer"></span>
               <span id="st-pull-state" class="st-file-state"></span>
             </div>
+          </div>
+        </div>
+
+        <!-- Carrying your setup by hand, for when there is no server in it: the
+             same window the rail used to open with its ⇄ button. Outside
+             #st-files deliberately — a bundle needs no connection, so hiding it
+             until one is configured would hide the offline answer. -->
+        <hr class="st-sep" />
+        <div class="st-field">
+          <label data-i18n="settings.portable.title">Move your setup by file</label>
+          <p class="st-hint" data-i18n="settings.portable.hint">
+            Memory, CLAUDE.md and preferences as one file you can carry to another machine. No server needed.
+          </p>
+          <div class="st-row">
+            <button id="st-portable" data-i18n="settings.portable.open">⇄ Export / import…</button>
           </div>
         </div>
       </section>

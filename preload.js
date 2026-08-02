@@ -65,7 +65,8 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.invoke('site:open-external', url),
 
   // Export / import of the portable light layer (memory, CLAUDE.md, prefs).
-  openPortable: () => ipcRenderer.invoke('portable:open'),
+  // Opening that window is Settings' job now; the rail only listens for what
+  // an import changed, so it can repaint the tabs it touched.
   onPortableImported: (cb) => {
     const listener = (_event, data) => cb(data);
     ipcRenderer.on('portable:imported', listener);

@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, nativeTheme, shell, dialog,
-        desktopCapturer, screen } = require('electron');
+        desktopCapturer, screen, clipboard } = require('electron');
 const { Worker } = require('worker_threads');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -544,6 +544,16 @@ app.whenReady().then(async () => {
   });
   app.on('will-quit', unwatchModel);
 
+  // Copying a pairing string to the clipboard. Goes through main rather than
+  // navigator.clipboard: these windows are file:// pages, where the async
+  // clipboard API is not something to rely on.
+  ipcMain.handle('clipboard:write', (event, text) => {
+    const str = String(text || '');
+    if (!str) return false;
+    clipboard.writeText(str);
+    return true;
+  });
+
   ipcMain.handle('theme:list', () => theme.list());
   ipcMain.handle('theme:set', async (event, id) => {
     settings.set('theme', id);
@@ -649,7 +659,13 @@ app.whenReady().then(async () => {
   });
 
   // ---- Portable state: export / import ----
-  ipcMain.handle('portable:open', () => { openPortableWindow(win); return true; });
+  // Parented to whoever asked, not always the main window: it opens from
+  // Settings now, and a modal owned by a window behind Settings would sit
+  // behind it too, blocking a window the user cannot see is blocked.
+  ipcMain.handle('portable:open', (event) => {
+    openPortableWindow(BrowserWindow.fromWebContents(event.sender) || win);
+    return true;
+  });
   ipcMain.on('portable:close', (event) => {
     const owner = BrowserWindow.fromWebContents(event.sender);
     if (owner && !owner.isDestroyed()) owner.close();

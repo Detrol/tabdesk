@@ -72,5 +72,13 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('sync:event', listener);
   },
 
+  // The invite and the recovery string are meant to be moved to another
+  // machine, so they get a copy button rather than a careful drag-select.
+  copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
+
+  // Export / import of memory, CLAUDE.md and preferences — its own window,
+  // reached from here since the rail no longer carries a button for it.
+  openPortable: () => ipcRenderer.invoke('portable:open'),
+
   close: () => ipcRenderer.send('settings:close'),
 });
