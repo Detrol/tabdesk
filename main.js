@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const https = require('https');
 const pty = require('node-pty');
 const previewRunner = require('./preview-runner');
 const appRunner = require('./app-runner');
@@ -1217,6 +1218,57 @@ app.whenReady().then(async () => {
     }
     return false;
   });
+
+  // ---- Bugs & Feedback ------------------------------------------------------
+  //
+  // Same endpoint, header and payload shape Moraine posts to, so both apps land
+  // in the one admin panel that already reads them. `app` is added here and
+  // ignored by a server that does not know it yet — it is what lets the panel
+  // tell a TabDesk report from a Moraine one once it grows a column for it,
+  // since `version` alone cannot.
+  //
+  // The key is weak on purpose and always has been: it ships inside a public
+  // binary, so it only turns away bots that hit the endpoint blind. It is not
+  // an authenticator and nothing here should treat it as one.
+  //
+  // Posted from main rather than the renderer: this is the one request the app
+  // makes to a host it does not serve, and keeping it here means no page ever
+  // needs an origin exemption to reach it.
+  ipcMain.handle('feedback:send', (event, payload) => new Promise((resolve) => {
+    const body = JSON.stringify({
+      type: ['bug', 'feedback', 'feature'].includes(payload && payload.type) ? payload.type : 'feedback',
+      message: String((payload && payload.message) || '').slice(0, 8000),
+      email: String((payload && payload.email) || '').slice(0, 200),
+      version: app.getVersion(),
+      os: process.platform,
+      arch: process.arch,
+      app: 'tabdesk',
+    });
+
+    const req = https.request({
+      hostname: 'www.thern.io',
+      path: '/feedback.php',
+      method: 'POST',
+      timeout: 20000,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        'X-Moraine-Key': 'mrn-fb-7d1a9c3e',
+      },
+    }, (res) => {
+      // Drain: leaving the socket unread keeps the agent alive.
+      res.resume();
+      resolve(res.statusCode >= 200 && res.statusCode < 300
+        ? { ok: true }
+        : { ok: false, code: `http-${res.statusCode}` });
+    });
+
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, code: 'timeout' }); });
+    req.on('error', (err) => resolve({ ok: false, code: err.code || 'network' }));
+    req.end(body);
+  }));
+
+  ipcMain.handle('app:version', () => app.getVersion());
 
   ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd }) => {
     if (terminals.has(id)) return;

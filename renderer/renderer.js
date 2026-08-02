@@ -1084,6 +1084,78 @@ document.getElementById('preview-reload').addEventListener('click', () => {
   else openPreview();
 });
 
+// ---- Bugs & Feedback -------------------------------------------------------
+//
+// The status bar carries two links where Total and Msgs-today used to be. One
+// opens my site; the other opens this, which posts straight to the same place
+// Moraine's reports land.
+//
+// The dialog is ordinary DOM, and the embedded terminals are native X windows
+// stacked above everything the page paints — so "in front" is not something CSS
+// can win. They go away while it is open. Nothing is lost by that: the panels
+// keep their `shown` class, so the next sync puts them back exactly where they
+// were, and the shell underneath never noticed.
+const fbBackdrop = document.getElementById('fb-backdrop');
+const fbMsg = document.getElementById('fb-msg');
+const fbEmail = document.getElementById('fb-email');
+const fbKind = document.getElementById('fb-kind');
+const fbStatus = document.getElementById('fb-status');
+const fbSend = document.getElementById('fb-send');
+
+async function openFeedback() {
+  fbStatus.textContent = '';
+  fbStatus.classList.remove('bad');
+  fbSend.disabled = false;
+  document.getElementById('fb-note').textContent =
+    t('fb.note', { version: (await window.api.appVersion()) || '', os: navigator.platform || 'linux' });
+  fbBackdrop.classList.remove('hidden');
+  for (const [tid, tt] of tabs) if (tt.embed) window.api.hideEmbedTerminal(tid);
+  fbMsg.focus();
+}
+
+function closeFeedback() {
+  fbBackdrop.classList.add('hidden');
+  scheduleSync();          // brings the terminals back where they were
+}
+
+document.getElementById('feedback-btn').addEventListener('click', openFeedback);
+document.getElementById('fb-cancel').addEventListener('click', closeFeedback);
+// Click-outside closes; a click that started inside must not.
+fbBackdrop.addEventListener('click', (e) => { if (e.target === fbBackdrop) closeFeedback(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !fbBackdrop.classList.contains('hidden')) closeFeedback();
+});
+
+fbSend.addEventListener('click', async () => {
+  const message = fbMsg.value.trim();
+  if (!message) {
+    fbStatus.textContent = t('fb.empty');
+    fbStatus.classList.add('bad');
+    return;
+  }
+  fbSend.disabled = true;
+  fbStatus.classList.remove('bad');
+  fbStatus.textContent = t('fb.sending');
+
+  const res = await window.api.sendFeedback({ type: fbKind.value, message, email: fbEmail.value.trim() });
+  if (res && res.ok) {
+    fbStatus.textContent = t('fb.sent');
+    fbMsg.value = '';
+    fbEmail.value = '';
+    setTimeout(closeFeedback, 900);
+    return;
+  }
+  // Say which way it failed. "Could not send" with no reason is the message
+  // that makes people retype the whole report into an email instead.
+  fbStatus.textContent = t('fb.failed', { code: (res && res.code) || 'network' });
+  fbStatus.classList.add('bad');
+  fbSend.disabled = false;
+});
+
+document.getElementById('by-link').addEventListener('click', () => {
+  window.api.openExternal('https://www.thern.io');
+});
+
 // Populate the rail with all projects, most-recently-used first. A project
 // whose tab was closed with the × stays out until it is picked again.
 window.api.listProjects().then((projects) => {
@@ -1242,7 +1314,6 @@ function fmtTokens(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
   return String(n | 0);
 }
-function fmtCost(c) { return '≈$' + (c >= 100 ? c.toFixed(0) : c.toFixed(2)); }
 function fmtBytes(b) { return (b / 1073741824).toFixed(1) + 'G'; }
 function pct(v, max) { return max > 0 ? Math.min(100, (v / max) * 100) : 0; }
 
@@ -1253,10 +1324,6 @@ function setMeter(sel, fillPct, valText, hot) {
   fill.classList.toggle('hot', !!hot);
   el.querySelector('.m-val').textContent = valText;
 }
-function setStat(sel, valText) {
-  document.getElementById(sel).querySelector('.m-val').textContent = valText;
-}
-
 function setMeterLabel(sel, key) {
   const el = document.getElementById(sel).querySelector('.m-label');
   el.dataset.i18n = key;          // keeps it in the declarative re-translate sweep
@@ -1343,17 +1410,14 @@ async function refreshLimits() {
 }
 
 // The transcript scan walks every .jsonl under ~/.claude/projects — worth doing
-// rarely. It feeds Total/Msgs, and the meters too whenever the plan quota is
-// out of reach.
+// rarely. The totals it produces are read in Settings → Statistics now; what is
+// still needed down here is the meters, which fall back to this scan whenever
+// the plan quota is out of reach.
 async function refreshUsage() {
   const u = await window.api.getUsageStats();
   if (!u) return;
   usage = u;
   renderMeters();
-  setStat('m-total', `${fmtTokens(u.total.tokens)} · ${fmtCost(u.total.cost)}`);
-  setStat('m-msgs', String(u.today.msgs));
-  document.getElementById('m-total').title =
-    t('bar.totalTitle', { tokens: u.total.tokens.toLocaleString(), days: u.total.days });
 }
 
 async function refreshSystem() {

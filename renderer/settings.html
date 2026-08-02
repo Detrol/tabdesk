@@ -22,6 +22,10 @@
               aria-selected="true" data-i18n="settings.nav.general">General</button>
       <button class="st-navbtn" data-section="sync" role="tab"
               aria-selected="false" data-i18n="settings.nav.sync">Sync</button>
+      <button class="st-navbtn" data-section="stats" role="tab"
+              aria-selected="false" data-i18n="settings.nav.stats">Statistics</button>
+      <button class="st-navbtn" data-section="about" role="tab"
+              aria-selected="false" data-i18n="settings.nav.about">About</button>
     </nav>
 
     <div id="st-body">
@@ -260,6 +264,41 @@
           <div class="st-row">
             <button id="st-portable" data-i18n="settings.portable.open">⇄ Export / import…</button>
           </div>
+        </div>
+      </section>
+
+      <!-- Statistics. These two numbers used to sit in the status bar, which is
+           the wrong place for them: they change slowly and you read them on
+           purpose, not out of the corner of your eye. -->
+      <section class="st-section hidden" data-section="stats">
+        <div class="st-field">
+          <label data-i18n="settings.stats.usage">Usage across all projects</label>
+          <dl class="st-stats" id="st-stats">
+            <div><dt data-i18n="settings.stats.total">Total</dt><dd id="st-total">–</dd></div>
+            <div><dt data-i18n="settings.stats.msgs">Messages today</dt><dd id="st-msgs">–</dd></div>
+            <div><dt data-i18n="settings.stats.span">Measured over</dt><dd id="st-span">–</dd></div>
+          </dl>
+          <p class="st-hint" data-i18n="settings.stats.hint">
+            Counted from the transcripts under ~/.claude/projects. Nothing leaves this machine to produce them.
+          </p>
+        </div>
+      </section>
+
+      <section class="st-section hidden" data-section="about">
+        <div class="st-field">
+          <label data-i18n="settings.about.heading">TabDesk</label>
+          <dl class="st-stats">
+            <div><dt data-i18n="settings.about.version">Version</dt><dd id="st-version">–</dd></div>
+            <div><dt data-i18n="settings.about.licence">Licence</dt><dd>MIT</dd></div>
+            <div><dt data-i18n="settings.about.author">By</dt><dd>Jonaz Thern</dd></div>
+          </dl>
+          <div class="st-row">
+            <button id="st-site" data-i18n="settings.about.site">thern.io</button>
+            <button id="st-repo" data-i18n="settings.about.repo">Source on GitHub</button>
+          </div>
+          <p class="st-hint" data-i18n="settings.about.hint">
+            Bugs and ideas go through “🐞 Bugs &amp; Feedback” in the status bar — it reaches me directly.
+          </p>
         </div>
       </section>
     </div>

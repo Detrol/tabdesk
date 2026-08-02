@@ -673,3 +673,42 @@ el('st-td-join-go').addEventListener('click', async () => {
   await loadFiles();
   flashSaved();
 });
+
+// ---- Statistics & About ----------------------------------------------------
+//
+// Total and Messages-today used to live in the status bar. They change slowly
+// and you read them deliberately, which is not what a status bar is for — so
+// they moved here, next to the version they belong beside.
+
+function fmtTokens(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n | 0);
+}
+const fmtCost = (c) => '≈$' + (c >= 100 ? c.toFixed(0) : c.toFixed(2));
+
+async function loadStats() {
+  const u = await window.api.getUsageStats();
+  if (!u || !u.total) return;
+  el('st-total').textContent = `${fmtTokens(u.total.tokens)} · ${fmtCost(u.total.cost)}`;
+  el('st-total').title = u.total.tokens.toLocaleString();
+  el('st-msgs').textContent = String(u.today.msgs);
+  el('st-span').textContent = window.t('settings.stats.days', { days: u.total.days });
+}
+
+async function loadAbout() {
+  el('st-version').textContent = (await window.api.appVersion()) || '–';
+}
+
+el('st-site').addEventListener('click', () => window.api.openExternal('https://www.thern.io'));
+el('st-repo').addEventListener('click', () => window.api.openExternal('https://github.com/TheJonaz/tabdesk'));
+
+// The transcript scan behind this is the expensive one, so it runs when the
+// pane is actually opened rather than on every settings launch.
+for (const b of document.querySelectorAll('.st-navbtn')) {
+  b.addEventListener('click', () => {
+    if (b.dataset.section === 'stats') loadStats();
+    if (b.dataset.section === 'about') loadAbout();
+  });
+}

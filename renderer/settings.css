@@ -329,3 +329,24 @@
 }
 #st-advanced[open] > summary { margin-bottom: 14px; color: var(--text); }
 #st-advanced > .st-row, #st-advanced > .st-field { margin-bottom: 14px; }
+
+/* ---- Statistics & About ----
+   A definition list rather than the label/value rows the rest of the pane uses:
+   these are readouts, not settings, and nothing here is editable. */
+.st-stats { margin: 6px 0 0; padding: 0; }
+.st-stats > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.st-stats > div:last-child { border-bottom: 0; }
+.st-stats dt { color: var(--dim); font-size: 12px; }
+.st-stats dd {
+  margin: 0;
+  color: var(--accent-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: var(--glow-text);
+}

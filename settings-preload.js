@@ -42,6 +42,15 @@ contextBridge.exposeInMainWorld('api', {
   pickKeyFile: () => ipcRenderer.invoke('sync:pick-key'),
 
   // ---- project files ----
+  // ---- statistics & about ----
+  // Same handlers the status bar used before these numbers moved in here; the
+  // scan behind usage:stats is cached in main, so opening this pane repeatedly
+  // costs an IPC round trip and nothing more.
+  getUsageStats: () => ipcRenderer.invoke('usage:stats'),
+  getUsageLimits: () => ipcRenderer.invoke('usage:limits'),
+  appVersion: () => ipcRenderer.invoke('app:version'),
+  openExternal: (url) => ipcRenderer.invoke('site:open-external', url),
+
   listProjects: () => ipcRenderer.invoke('projects:list'),
   filesList: () => ipcRenderer.invoke('sync:files-list'),
   filesPush: (slug, root) => ipcRenderer.invoke('sync:files-push', { slug, root }),
