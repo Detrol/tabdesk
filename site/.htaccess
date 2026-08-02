@@ -9,3 +9,13 @@ Options -Indexes
 <FilesMatch "\.(sqlite|sqlite-wal|sqlite-shm|db)$">
     Require all denied
 </FilesMatch>
+
+# stats-token.php holds the shared statistics token. PHP executes it, so today
+# it answers 200 with an empty body rather than leaking anything — but that is
+# the PHP handler doing the protecting, not us. Lose the handler (a config
+# change, a move to another host) and the same request serves the source.
+# visitors.php reads it through require(), off the filesystem, which this does
+# not affect.
+<Files "stats-token.php">
+    Require all denied
+</Files>

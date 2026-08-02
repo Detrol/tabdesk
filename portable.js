@@ -13,8 +13,8 @@
 // in hundreds of kilobytes.
 //
 // The awkward part is that ~/.claude/projects names its directories after a
-// slugified absolute path — /home/jonaz/claude-projects/thern.io becomes
-// -home-jonaz-claude-projects-thern-io — and TabDesk's own projectModels map is
+// slugified absolute path — /home/you/projects/site becomes
+// -home-you-projects-site — and TabDesk's own projectModels map is
 // keyed by absolute path. Both are meaningless on a machine with a different
 // user or project root. So paths travel home-relative wherever they can, and
 // are re-anchored to the importing machine's home on the way in.
@@ -313,7 +313,7 @@ function safeMemoryName(name) {
   return norm;
 }
 
-// Absolute paths baked into memory prose ("the key lives in /home/jonaz/...")
+// Absolute paths baked into memory prose ("the key lives in /home/you/...")
 // don't survive a different home on their own.
 function rewriteHome(text, sourceHome) {
   const home = os.homedir();

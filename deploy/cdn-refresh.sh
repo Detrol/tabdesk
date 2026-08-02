@@ -8,7 +8,7 @@
 #     --dry-run   wait, then print the trigger command without running it
 #
 # The CDN (cdn.thern.io) is PULL-based and firewalled; the way in is the ssh
-# alias `cdn` (root@10.10.0.3, ProxyJump thern-vpn). This waits for the release
+# alias `cdn`, which your own ~/.ssh/config defines. This waits for the release
 # build to attach the .deb, then runs the host's pull service once.
 #
 # Idempotent: cdn-pull.sh records the last-published version and no-ops when
