@@ -561,6 +561,24 @@ function applyLanguage(win) {
 // Watch the desktop for theme changes. nativeTheme covers the light/dark
 // preference; gsettings monitor catches a full GTK theme swap (new colours
 // without a light/dark flip), which nativeTheme never reports.
+// The monitors are plain children: they outlive us when the process dies to a
+// signal (guard restart, SIGKILL), since will-quit never runs then. Each child
+// is tagged with TABDESK_MONITOR=1 so a later start can find and reap the
+// orphans — matched by comm + ppid 1 + the tag, never by name alone.
+function reapOrphanMonitors() {
+  let pids = [];
+  try { pids = fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d)); } catch (_) { return; }
+  for (const pid of pids) {
+    try {
+      if (fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim() !== 'gsettings') continue;
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      if (Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]) !== 1) continue;
+      if (!fs.readFileSync(`/proc/${pid}/environ`, 'utf8').includes('TABDESK_MONITOR=1')) continue;
+      process.kill(Number(pid), 'SIGTERM');
+    } catch (_) { /* raced away or unreadable — leave it */ }
+  }
+}
+
 function watchDesktopTheme(win) {
   const refresh = () => {
     theme.invalidate();
@@ -568,10 +586,14 @@ function watchDesktopTheme(win) {
   };
   nativeTheme.on('updated', refresh);
 
+  reapOrphanMonitors();
   const schemas = ['org.cinnamon.desktop.interface', 'org.gnome.desktop.interface'];
   const monitors = schemas.map((schema) => {
     try {
-      const p = spawn('gsettings', ['monitor', schema], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const p = spawn('gsettings', ['monitor', schema], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: { ...process.env, TABDESK_MONITOR: '1' },
+      });
       p.stdout.on('data', (buf) => {
         if (/gtk-theme|color-scheme|accent-color/.test(String(buf))) refresh();
       });
@@ -658,6 +680,11 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => tray.showWindow());
 }
+
+// A TERM (guard restart, system shutdown, plain kill) should be a clean quit:
+// without this the process dies without will-quit, leaking the gsettings
+// monitors and skipping every other will-quit cleanup.
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => app.quit());
 
 app.whenReady().then(async () => {
   // Resolve before the first window so it opens in the right colours.
