@@ -354,6 +354,13 @@ function agentFor(t) {
   return first ? first.id : 'shell';
 }
 
+// The agent id sent along to main for the tmux wrap — null for every tab that
+// must NOT get a session: ad-hoc terminals (no cwd), the update installer and
+// demo runs (their own startCmd). Its absence is the whole guard.
+function tmuxAgentFor(t) {
+  return (!t.startCmd && t.cwd) ? agentFor(t) : null;
+}
+
 // Build only the tab row in the rail. The terminal/pty is created lazily.
 //
 // `atTop` is for tabs the user just created by hand — those go straight to the
@@ -421,7 +428,7 @@ function materialize(t) {
       if (activeId !== id) { activeId = id; applyLayout(); }
     });
     wireDrop(panelEl, id, (text) => window.api.insertIntoEmbed(id, text));
-    window.api.createEmbedTerminal(id, t.cwd, startCmdFor(t));
+    window.api.createEmbedTerminal(id, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null);
     Object.assign(t, {
       materialized: true, embed: true, panelEl,
       cleanup: () => ro.disconnect(),
@@ -451,7 +458,7 @@ function materialize(t) {
   // In-app backend: the pty is ours, so the path goes straight down it.
   wireDrop(panelEl, id, (text) => { window.api.sendInput(id, text); return true; });
 
-  window.api.createTerminal(id, term.cols, term.rows, t.cwd, startCmdFor(t));
+  window.api.createTerminal(id, term.cols, term.rows, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null);
   term.onData((data) => window.api.sendInput(id, data));
   let firstData = true;
   const offData = window.api.onData(id, (data) => {

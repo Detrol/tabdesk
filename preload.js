@@ -106,10 +106,12 @@ contextBridge.exposeInMainWorld('api', {
   // of the app's own surface, so it has to be cut out of the screen instead.
   captureTerminal: (rect, name, embed) =>
     ipcRenderer.invoke('screenshot:capture', { rect, name, embed }),
-  createTerminal: (id, cols, rows, cwd, startCmd) => ipcRenderer.send('term:create', { id, cols, rows, cwd, startCmd }),
+  createTerminal: (id, cols, rows, cwd, startCmd, agent, session) =>
+    ipcRenderer.send('term:create', { id, cols, rows, cwd, startCmd, agent, session }),
 
   // Embedded native terminal (xterm as a real X11 window reparented into a panel).
-  createEmbedTerminal: (id, cwd, startCmd) => ipcRenderer.send('embed:create', { id, cwd, startCmd }),
+  createEmbedTerminal: (id, cwd, startCmd, agent, session) =>
+    ipcRenderer.send('embed:create', { id, cwd, startCmd, agent, session }),
   // Main refused to start a terminal for an untrusted synced project. The tab
   // has to be put back to unmaterialized, or its panel stays empty and the
   // only way to retry is closing and reopening it.

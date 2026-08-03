@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, nativeTheme, shell, dialog,
         desktopCapturer, screen, clipboard } = require('electron');
 const { Worker } = require('worker_threads');
 const { spawn, execFile } = require('child_process');
+const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -36,31 +37,52 @@ const syncInvite = require('./sync/invite');
 const PROJECTS_DIR = process.env.TABDESK_PROJECTS_DIR || path.join(os.homedir(), 'claude-projects');
 const DEMO_START_CMD = process.env.TABDESK_START_CMD || null;
 
-// Run every agent tab inside a named tmux session, so the agent outlives
-// TabDesk itself — quit, crash, even an X restart. `-A` makes reopening a tab
-// an attach instead of a second agent. Persistence is for the deaths nobody
-// chose: the × on a tab means "done with this project" and kills the session
-// too (see term:kill / embed:kill), so no terminal command is ever needed and
-// a model change is just close + reopen. The status line is turned off at
-// creation because its clock redraw counts as terminal activity and would
-// pulse every background tab's flag. The inner command must stay
-// double-quote-safe: it is built from the constants in agents.js plus a
-// SAFE_ID-gated model flag, and anything else is left unwrapped rather than
-// quoted around.
-function wrapStartCmd(startCmd, cwd) {
+// The tmux session name a directory maps to. Inside PROJECTS_DIR the relative
+// path is the identity (so worktrees under different projects stay apart);
+// outside it, basenames alone would collide across folders, so the full path
+// is pinned with a short hash.
+function slugFor(cwd) {
+  const root = PROJECTS_DIR + path.sep;
+  if (cwd.startsWith(root)) {
+    return cwd.slice(root.length).replace(/[^A-Za-z0-9_-]/g, '-');
+  }
+  const hash = crypto.createHash('sha256').update(cwd).digest('hex').slice(0, 6);
+  return `${path.basename(cwd).replace(/[^A-Za-z0-9_-]/g, '-')}-${hash}`;
+}
+
+// Run every agent and shell tab inside a named tmux session, so the work
+// outlives TabDesk itself — quit, crash, even an X restart. `-A` makes
+// reopening a tab an attach instead of a second agent. Persistence is for the
+// deaths nobody chose: the × on a tab means "done with this project" and kills
+// the session too (see term:kill / embed:kill), so no terminal command is ever
+// needed and a model change is just close + reopen.
+//
+// The pty shell `exec`s into the tmux client and the payload IS the pane
+// command, so when the agent (or a shell tab's shell) exits, the session ends
+// and the pty dies with it — the tab shows its exit banner instead of lying
+// around as a live-looking shell. `agent` is the gate: renderer sends it only
+// for tabs that should have a session; its absence protects the update
+// installer, demo runs, and ad-hoc terminals. A caller-supplied session name
+// (duplicate/restored tabs) is used only if it matches the strict pattern.
+// The status line is turned off at creation because its clock redraw counts
+// as terminal activity and would pulse every background tab's flag. The inner
+// command must stay double-quote-safe: it is built from the constants in
+// agents.js plus a SAFE_ID-gated model flag, and anything else is left
+// unwrapped rather than quoted around.
+function wrapStartCmd(startCmd, cwd, agent, session) {
   const plain = { cmd: startCmd, session: null };
-  if (!startCmd || !cwd || DEMO_START_CMD) return plain;
-  if (/["\\$`]/.test(startCmd)) return plain;
+  if (!agent || !cwd || DEMO_START_CMD) return plain;
+  if (startCmd && /["\\$`]/.test(startCmd)) return plain;
   if (!agents.onPath('tmux')) return plain;
-  const spec = agents.list().find((a) => a.id === agents.getFor(cwd));
-  if (!spec || !spec.command) return plain;
-  const base = path.basename(cwd).replace(/[^A-Za-z0-9_-]/g, '-');
-  const session = `td-${spec.id}-${base}`;
+  const name = (typeof session === 'string' && /^td-[A-Za-z0-9_-]+$/.test(session))
+    ? session
+    : `td-${agent}-${slugFor(cwd)}`;
+  if (!/^td-[A-Za-z0-9_-]+$/.test(name)) return plain;
   const shell = process.env.SHELL || '/bin/bash';
+  const inner = startCmd || `exec ${shell} -i`;
   return {
-    cmd: `tmux new-session -A -s ${session} ` +
-      `"tmux set-option status off; ${startCmd}; exec ${shell} -i"`,
-    session,
+    cmd: `exec tmux new-session -A -s ${name} "tmux set-option status off; ${inner}"`,
+    session: name,
   };
 }
 
@@ -677,12 +699,12 @@ app.whenReady().then(async () => {
   // kept out of file sync for exactly this reason (sync/manifest.js), but the
   // rest of the tree is still material the agent will read and act on, so the
   // same question is asked here as before Run and Preview.
-  ipcMain.on('embed:create', async (event, { id, cwd, startCmd }) => {
+  ipcMain.on('embed:create', async (event, { id, cwd, startCmd, agent, session }) => {
     if (cwd && !(await allowRun(BrowserWindow.fromWebContents(event.sender), cwd, 'terminal'))) {
       if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
       return;
     }
-    const wrapped = wrapStartCmd(startCmd, cwd);
+    const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
     if (wrapped.session) tmuxSessions.set(id, wrapped.session);
     termEmbed.create(id, { cwd, startCmd: wrapped.cmd });
   });
@@ -1331,7 +1353,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('app:version', () => app.getVersion());
 
-  ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd }) => {
+  ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd, agent, session }) => {
     if (terminals.has(id)) return;
     // Same gate as the embedded backend — this path is only taken when native
     // embedding is off, and it starts the same agent in the same directory.
@@ -1352,10 +1374,11 @@ app.whenReady().then(async () => {
       env: process.env,
     });
 
-    // Optionally auto-run a command (e.g. launch Claude Code in the project).
-    if (startCmd) {
-      const wrapped = wrapStartCmd(startCmd, cwd);
-      if (wrapped.session) tmuxSessions.set(id, wrapped.session);
+    // Auto-run the tab's command — the tmux attach for session tabs, a plain
+    // command for the update installer, nothing at all for ad-hoc shells.
+    const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
+    if (wrapped.session) tmuxSessions.set(id, wrapped.session);
+    if (wrapped.cmd) {
       setTimeout(() => { try { term.write(wrapped.cmd + '\r'); } catch (_) {} }, 350);
     }
 
