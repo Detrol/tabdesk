@@ -221,7 +221,11 @@ app.on('ready', async () => {
   // Started by the SDK (a code review, a subagent) — a job, not a conversation.
   write(path.join(cdir, '44444444-4444-4444-4444-444444444444.jsonl'),
     line({ type: 'user', cwd: CWD, entrypoint: 'sdk-py' }) + line({ type: 'ai-title', aiTitle: 'Granskning' }), 2500000);
+  // The id is spliced into a command line, so a filename that could be read as
+  // a flag never becomes one.
+  write(path.join(cdir, '--dangerously-skip-permissions.jsonl'), line({ type: 'user', cwd: CWD }), 2600000);
   const claudeRows = await H.claudeSessions(CWD, path.join(STORE, 'claude'));
+  ok('filnamn som ser ut som flaggor listas inte', !claudeRows.some((r) => r.id.startsWith('-')));
   ok('sdk-sessioner listas inte', !claudeRows.some((r) => r.id.startsWith('4444')));
   ok('bada sessionerna listas', claudeRows.length === 2, String(claudeRows.length));
   ok('nyast forst', claudeRows[0].id === '22222222-2222-2222-2222-222222222222');

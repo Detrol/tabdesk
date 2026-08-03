@@ -28,11 +28,16 @@ const AGENTS = [
     // --model, but each names its models its own way, so the ids come from
     // model.js per agent and never cross between them.
     takesModel: true,
+    // How this CLI is told to pick a conversation up again. `{id}` is one of
+    // the ids history.js read out of the agent's own store; `continueArgs`
+    // takes the newest one without naming it.
+    resumeArgs: '--resume {id}',
+    continueArgs: '--continue',
     hint: 'agent.hint.claude',
   },
-  { id: 'codex',    label: 'Codex',        bin: 'codex',        command: 'codex',        takesModel: true, hint: 'agent.hint.codex' },
-  { id: 'gemini',   label: 'Gemini CLI',   bin: 'gemini',       command: 'gemini',       takesModel: true, hint: 'agent.hint.gemini' },
-  { id: 'opencode', label: 'opencode',     bin: 'opencode',     command: 'opencode',     takesModel: true, hint: 'agent.hint.opencode' },
+  { id: 'codex',    label: 'Codex',        bin: 'codex',        command: 'codex',        takesModel: true, resumeArgs: 'resume {id}',  continueArgs: 'resume --last',   hint: 'agent.hint.codex' },
+  { id: 'gemini',   label: 'Gemini CLI',   bin: 'gemini',       command: 'gemini',       takesModel: true, resumeArgs: '--resume {id}', continueArgs: '--resume latest', hint: 'agent.hint.gemini' },
+  { id: 'opencode', label: 'opencode',     bin: 'opencode',     command: 'opencode',     takesModel: true, resumeArgs: '--session {id}', continueArgs: '--continue',     hint: 'agent.hint.opencode' },
   // Aider and Cursor Agent spell the flag differently enough that TabDesk
   // leaves their model choice to them.
   { id: 'aider',    label: 'Aider',        bin: 'aider',        command: 'aider',        hint: 'agent.hint.aider' },
@@ -69,8 +74,11 @@ function list() {
   if (cache && now - cachedAt < CACHE_MS) return cache;
   cache = AGENTS
     .filter((a) => onPath(a.bin))
-    .map(({ id, label, hint, command, takesModel }) =>
-      ({ id, label, hint, command: command || null, takesModel: !!takesModel }));
+    .map(({ id, label, hint, command, takesModel, resumeArgs, continueArgs }) =>
+      ({
+        id, label, hint, command: command || null, takesModel: !!takesModel,
+        resumeArgs: resumeArgs || null, continueArgs: continueArgs || null,
+      }));
   cachedAt = now;
   return cache;
 }

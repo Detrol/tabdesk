@@ -71,6 +71,12 @@ function clip(s, n = 90) {
   return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 }
 
+// An id ends up spliced into the command a terminal starts with, so only ones
+// that can't be anything but an id leave this module: no quotes, no spaces, and
+// no leading dash for a CLI to read as a flag. Both agents name sessions with
+// uuids; anything else in those directories is not ours to hand on.
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 async function subdirs(dir) {
   try {
     const entries = await fsp.readdir(dir, { withFileTypes: true });
@@ -103,7 +109,7 @@ async function claudeSessions(cwd, root) {
   try { names = await fsp.readdir(dir); } catch (_) { return []; }
 
   const stats = await Promise.all(names
-    .filter((n) => n.endsWith('.jsonl'))
+    .filter((n) => n.endsWith('.jsonl') && SAFE_ID.test(n.slice(0, -6)))
     .map(async (name) => {
       try {
         const st = await fsp.stat(path.join(dir, name));
