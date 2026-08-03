@@ -276,8 +276,21 @@ function createWindow() {
   // live, so selecting one showed a blank panel with nothing left to recreate.
   // The guest's navigation arrives here with isMainFrame false; only the page
   // itself being replaced is true.
+  // The same goes for the in-app ptys (the embed-off path this fork runs):
+  // they survive a reload in `terminals`, and the new page's first tab collides
+  // with them exactly as described above. Killing a pty only kills the tmux
+  // client — the session lives on and the new page re-adopts it via restore —
+  // but onExit would then strike the registry record. Clearing tmuxSessions
+  // FIRST makes that forgetTab a no-op (it looks the session up by id), so the
+  // records survive the reload the same way they survive a quit.
   win.webContents.on('did-start-navigation', (details) => {
-    if (details.isMainFrame && !details.isSameDocument) termEmbed.killAll();
+    if (!details.isMainFrame || details.isSameDocument) return;
+    termEmbed.killAll();
+    tmuxSessions.clear();
+    for (const term of terminals.values()) {
+      try { term.kill(); } catch (_) { /* already gone */ }
+    }
+    terminals.clear();
   });
 
   return win;
