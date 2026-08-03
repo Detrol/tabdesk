@@ -365,9 +365,11 @@ function startCmdFor(t) {
   return spec.command + flag;
 }
 
-// Which CLI this project starts. Mirrors agents.getFor() in main, including
-// its fallback: an agent that has since been uninstalled must not leave a tab
-// starting a command that no longer exists.
+// Which CLI a tab starts. The tab owns the answer — two tabs on one project
+// can run different agents, so the project's stored pick is only the seed a
+// new tab is born with (agentSeed below). Mirrors agents.getFor() in main,
+// including its fallback: an agent that has since been uninstalled must not
+// leave a tab starting a command that no longer exists.
 function agentFor(t) {
   if (!t.cwd) return 'shell';
   const has = (id) => agentList.some((a) => a.id === id);
@@ -391,7 +393,7 @@ function tmuxAgentFor(t) {
 // top so a new project isn't born at the bottom of a rail that no longer
 // reshuffles to bring it up. It is placement, not a hoist: the boot loop that
 // lists every known project leaves it off and keeps the order it was given.
-function buildTab({ name, cwd, model, startCmd, atTop }) {
+function buildTab({ name, cwd, model, agent, startCmd, atTop }) {
   const id = `t${++seq}`;
   const tabEl = document.createElement('li');
   tabEl.className = 'tab';
@@ -413,7 +415,13 @@ function buildTab({ name, cwd, model, startCmd, atTop }) {
   if (atTop) tabList.prepend(tabEl);
   else tabList.appendChild(tabEl);
 
-  tabs.set(id, { id, name, cwd, model: model || 'default', startCmd, tabEl, materialized: false });
+  // The agent is pinned onto the tab at birth — from an explicit pick, else
+  // from what this project was last opened with. Later picks on other tabs of
+  // the same project leave this one alone.
+  tabs.set(id, {
+    id, name, cwd, model: model || 'default', startCmd, tabEl, materialized: false,
+    agent: cwd ? (agent || agentByProject[cwd] || undefined) : undefined,
+  });
   syncTray();
   return id;
 }
@@ -424,6 +432,9 @@ function materialize(t) {
   // The model this terminal is actually launching with — a later pick can't
   // reach the running process, so the bar compares against this.
   t.runningModel = t.model;
+  // Same for the agent: once this tab is running one, that is what it is,
+  // whatever the project is set to open next.
+  t.agent = agentFor(t);
 
   const panelEl = document.createElement('div');
   panelEl.className = 'panel';
@@ -580,13 +591,14 @@ addBtn.addEventListener('click', async () => {
     ? null
     : [...tabs.values()].find((x) => x.cwd === choice.path);
   if (existing) {
-    // Its terminal is already running the old CLI; the new one starts with the
-    // next tab, the same caveat the agent menu reports.
+    // Focusing a tab is not the place to restart it under another CLI: an
+    // unstarted tab takes the pick, a running one keeps what it is running.
     if (choice.agent) {
-      existing.agent = agentByProject[choice.path];
       if (existing.materialized) {
         toast(window.t('toast.agentLater',
-          { project: existing.name, agent: agentLabel(existing.agent) }));
+          { project: existing.name, agent: agentLabel(choice.agent) }));
+      } else {
+        existing.agent = choice.agent;
       }
     }
     setActive(existing.id);
@@ -597,22 +609,31 @@ addBtn.addEventListener('click', async () => {
   // at the next start.
   window.api.setProjectClosed(choice.path, false);
 
-  // A second tab on the same project needs its own session, reserved by main
-  // so two quick clicks can't pick the same name. The label wears the same
-  // number the session does, so the rail and `tmux ls` agree.
+  // Another tab on the project needs its own session, reserved by main so two
+  // quick clicks can't pick the same name. Numbering is per agent: the first
+  // Codex tab beside a Claude one is nobody's second tab, so it stays unnumbered
+  // — unless a tab that hasn't started yet is already promised that same plain
+  // name, which only main can tell once it knows the project's session slug.
+  const agent = agentFor({ cwd: choice.path, agent: choice.agent });
+  const siblings = [...tabs.values()].filter((x) => x.cwd === choice.path);
+  const basePromised = siblings.some(
+    (x) => !x.session && !x.materialized && agentFor(x) === agent);
+  // Two tabs on one project reading the same in the rail is no good. When the
+  // project is running more than one CLI, say which this tab is; when they all
+  // run the same one, the number alone tells them apart.
+  const base = siblings.some((x) => agentFor(x) !== agent)
+    ? `${choice.name} · ${agentLabel(agent)}`
+    : choice.name;
+  const alloc = await window.api.allocateSession(choice.path, agent, base, basePromised);
+
   let session = null;
-  let name = choice.name;
-  const dup = [...tabs.values()].some((x) => x.cwd === choice.path);
-  if (dup) {
-    const alloc = await window.api.allocateSession(
-      choice.path, agentFor({ cwd: choice.path, agent: choice.agent }), choice.name);
-    if (alloc && alloc.session) {
-      session = alloc.session;
-      if (alloc.suffix) name = `${choice.name} ·${alloc.suffix}`;
-    }
+  let name = base;
+  if (alloc && alloc.session) {
+    session = alloc.session;
+    if (alloc.suffix) name = `${base} ·${alloc.suffix}`;
   }
 
-  const id = buildTab({ name, cwd: choice.path, model: choice.model, atTop: true });
+  const id = buildTab({ name, cwd: choice.path, model: choice.model, agent, atTop: true });
   if (session) tabs.get(id).session = session;
   setActive(id);
 });
@@ -1081,11 +1102,10 @@ agentMenu.addEventListener('click', async (e) => {
     toast(window.t('toast.agentFailed', { error: (res && res.error) || '' }));
     return;
   }
-  // The choice belongs to the project, so every tab on it follows — otherwise
-  // a sibling tab would start the old CLI from a stale copy.
-  for (const other of tabs.values()) {
-    if (other.cwd === t.cwd) other.agent = res.agent;
-  }
+  // This tab only. Storing it against the project as well is what makes the
+  // next tab on it start the same way, without dragging the tabs that are
+  // already open along.
+  t.agent = res.agent;
   agentByProject[t.cwd] = res.agent;
   renderAgentBtn();
   // A running terminal was started by the old CLI and can't be swapped under it.
@@ -1249,10 +1269,8 @@ window.api.listProjects().then((projects) => {
       if (rec.agent) free.agent = rec.agent;
       continue;
     }
-    const id = buildTab({ name: rec.name, cwd: rec.cwd });
-    const t = tabs.get(id);
-    t.session = rec.session;
-    if (rec.agent) t.agent = rec.agent;
+    const id = buildTab({ name: rec.name, cwd: rec.cwd, agent: rec.agent || undefined });
+    tabs.get(id).session = rec.session;
   }
 }).catch(() => { /* a rail without restored tabs still works */ });
 

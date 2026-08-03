@@ -773,17 +773,23 @@ app.whenReady().then(async () => {
   // the record here, not at terminal creation, is what stops two fast clicks
   // from both picking "-2": the reservation is the registry entry.
   //
-  // Numbering starts at 2 and the bare name is never handed out: the project's
-  // own tab computes that name for itself when it starts (no session in its
-  // payload), so reserving it here would point two tabs at one agent.
-  ipcMain.handle('tabs:allocate', async (event, { cwd, agent, name }) => {
+  // Numbering is per agent, and the plain name is handed out when it is really
+  // free: a first Codex tab next to a Claude one is not anybody's second tab.
+  // `basePromised` is the renderer saying an unstarted tab will compute that
+  // plain name for itself when it starts — only it knows its tabs, only we
+  // know the name they resolve to.
+  ipcMain.handle('tabs:allocate', async (event, { cwd, agent, name, basePromised }) => {
     if (typeof cwd !== 'string' || !cwd || typeof agent !== 'string' || !agent) return null;
     const taken = await liveSessions();
     const base = `td-${agent}-${slugFor(cwd)}`;
+    const label = name || path.basename(cwd);
+    if (!basePromised && !taken.has(base)) {
+      rememberTab({ session: base, cwd, agent, name: label });
+      return { session: base, suffix: 0 };
+    }
     let suffix = 2;
     while (taken.has(`${base}-${suffix}`)) suffix++;
     const session = `${base}-${suffix}`;
-    const label = name || path.basename(cwd);
     rememberTab({ session, cwd, agent, name: `${label} ·${suffix}` });
     return { session, suffix };
   });
