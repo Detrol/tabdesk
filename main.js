@@ -90,12 +90,59 @@ function wrapStartCmd(startCmd, cwd, agent, session) {
 // with it. App quit and crashes never consult this — those sessions live on.
 const tmuxSessions = new Map();
 
+// The tab registry: what should come back next time TabDesk starts. A session
+// that ends while the app runs (agent quit, × on the tab) drops out; app quit
+// leaves every record standing, which is the whole point of persisting them.
+// Records are keyed by session name — the one identifier that is unique per
+// tab, unlike cwd.
+function openTabs() {
+  const v = settings.get('openTabs');
+  return Array.isArray(v) ? v.filter((r) => r && typeof r.session === 'string') : [];
+}
+
+function rememberTab(rec) {
+  const rest = openTabs().filter((r) => r.session !== rec.session);
+  settings.set('openTabs', [...rest, rec]);
+}
+
+function forgetTab(session) {
+  if (!session) return;
+  const rest = openTabs().filter((r) => r.session !== session);
+  if (rest.length !== openTabs().length) settings.set('openTabs', rest);
+}
+
+// Set while the app is on its way down, so terminals dying *because* we are
+// quitting don't strip the registry we are quitting in order to keep.
+let quitting = false;
+
 function killTmuxSession(id) {
   const session = tmuxSessions.get(id);
   tmuxSessions.delete(id);
   if (!session) return;
+  forgetTab(session);
   // `=` pins an exact-name match; already-gone sessions are fine.
   try { execFile('tmux', ['kill-session', '-t', '=' + session], () => {}); } catch (_) {}
+}
+
+// Session names currently spoken for: the registry plus whatever tmux itself
+// is holding. Used to pick the next free suffix for a second tab on the same
+// project — reserving in the registry is what keeps two fast clicks apart.
+function liveSessions() {
+  return new Promise((resolve) => {
+    const taken = new Set(openTabs().map((r) => r.session));
+    for (const s of tmuxSessions.values()) taken.add(s);
+    try {
+      execFile('tmux', ['ls', '-F', '#S'], (err, stdout) => {
+        if (!err && stdout) {
+          for (const line of String(stdout).split('\n')) {
+            const name = line.trim();
+            if (name) taken.add(name);
+          }
+        }
+        resolve(taken);
+      });
+    } catch (_) { resolve(taken); }
+  });
 }
 
 // Aggregate Claude Code usage off the main thread.
@@ -699,13 +746,16 @@ app.whenReady().then(async () => {
   // kept out of file sync for exactly this reason (sync/manifest.js), but the
   // rest of the tree is still material the agent will read and act on, so the
   // same question is asked here as before Run and Preview.
-  ipcMain.on('embed:create', async (event, { id, cwd, startCmd, agent, session }) => {
+  ipcMain.on('embed:create', async (event, { id, cwd, startCmd, agent, session, name }) => {
     if (cwd && !(await allowRun(BrowserWindow.fromWebContents(event.sender), cwd, 'terminal'))) {
       if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
       return;
     }
     const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
-    if (wrapped.session) tmuxSessions.set(id, wrapped.session);
+    if (wrapped.session) {
+      tmuxSessions.set(id, wrapped.session);
+      rememberTab({ session: wrapped.session, cwd, agent, name });
+    }
     termEmbed.create(id, { cwd, startCmd: wrapped.cmd });
   });
   ipcMain.on('embed:place', (event, { id, rect }) => termEmbed.place(id, rect));
@@ -717,6 +767,28 @@ app.whenReady().then(async () => {
   ipcMain.handle('embed:insert', (event, { id, text }) =>
     termEmbed.insert(id, String(text || '')));
   ipcMain.on('embed:kill', (event, { id }) => { termEmbed.kill(id); killTmuxSession(id); });
+
+  // ---- Tab sessions ----
+  // Reserve a session name for a second (third, …) tab on a project. Writing
+  // the record here, not at terminal creation, is what stops two fast clicks
+  // from both picking "-2": the reservation is the registry entry.
+  ipcMain.handle('tabs:allocate', async (event, { cwd, agent, name }) => {
+    if (typeof cwd !== 'string' || !cwd || typeof agent !== 'string' || !agent) return null;
+    const taken = await liveSessions();
+    const base = `td-${agent}-${slugFor(cwd)}`;
+    let session = base;
+    for (let n = 2; taken.has(session); n++) session = `${base}-${n}`;
+    rememberTab({ session, cwd, agent, name: name || path.basename(cwd) });
+    return { session, suffix: session === base ? 0 : Number(session.slice(base.length + 1)) };
+  });
+
+  // A tab closed before it ever started its terminal still owns a reservation
+  // (and possibly a restored session) that nothing else would clean up.
+  ipcMain.on('tabs:release', (event, { session }) => {
+    if (typeof session !== 'string' || !/^td-[A-Za-z0-9_-]+$/.test(session)) return;
+    forgetTab(session);
+    try { execFile('tmux', ['kill-session', '-t', '=' + session], () => {}); } catch (_) {}
+  });
 
   // ---- Terminal lifecycle over IPC ----
 
@@ -1353,7 +1425,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('app:version', () => app.getVersion());
 
-  ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd, agent, session }) => {
+  ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd, agent, session, name }) => {
     if (terminals.has(id)) return;
     // Same gate as the embedded backend — this path is only taken when native
     // embedding is off, and it starts the same agent in the same directory.
@@ -1377,7 +1449,10 @@ app.whenReady().then(async () => {
     // Auto-run the tab's command — the tmux attach for session tabs, a plain
     // command for the update installer, nothing at all for ad-hoc shells.
     const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
-    if (wrapped.session) tmuxSessions.set(id, wrapped.session);
+    if (wrapped.session) {
+      tmuxSessions.set(id, wrapped.session);
+      rememberTab({ session: wrapped.session, cwd, agent, name });
+    }
     if (wrapped.cmd) {
       setTimeout(() => { try { term.write(wrapped.cmd + '\r'); } catch (_) {} }, 350);
     }
@@ -1387,6 +1462,10 @@ app.whenReady().then(async () => {
     });
     term.onExit(() => {
       terminals.delete(id);
+      // The session ended with the agent (or the tab was closed) — unless we
+      // are quitting, in which case the session is still out there waiting.
+      if (!quitting) forgetTab(tmuxSessions.get(id));
+      tmuxSessions.delete(id);
       if (!win.isDestroyed()) win.webContents.send(`term:exit:${id}`);
     });
 
@@ -1423,7 +1502,10 @@ app.whenReady().then(async () => {
   });
 });
 
+app.on('before-quit', () => { quitting = true; });
+
 app.on('window-all-closed', () => {
+  quitting = true;
   for (const term of terminals.values()) term.kill();
   terminals.clear();
   termEmbed.killAll();

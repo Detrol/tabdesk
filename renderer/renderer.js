@@ -428,7 +428,7 @@ function materialize(t) {
       if (activeId !== id) { activeId = id; applyLayout(); }
     });
     wireDrop(panelEl, id, (text) => window.api.insertIntoEmbed(id, text));
-    window.api.createEmbedTerminal(id, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null);
+    window.api.createEmbedTerminal(id, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null, t.name);
     Object.assign(t, {
       materialized: true, embed: true, panelEl,
       cleanup: () => ro.disconnect(),
@@ -458,7 +458,7 @@ function materialize(t) {
   // In-app backend: the pty is ours, so the path goes straight down it.
   wireDrop(panelEl, id, (text) => { window.api.sendInput(id, text); return true; });
 
-  window.api.createTerminal(id, term.cols, term.rows, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null);
+  window.api.createTerminal(id, term.cols, term.rows, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null, t.name);
   term.onData((data) => window.api.sendInput(id, data));
   let firstData = true;
   const offData = window.api.onData(id, (data) => {

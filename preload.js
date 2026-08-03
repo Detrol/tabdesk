@@ -106,12 +106,17 @@ contextBridge.exposeInMainWorld('api', {
   // of the app's own surface, so it has to be cut out of the screen instead.
   captureTerminal: (rect, name, embed) =>
     ipcRenderer.invoke('screenshot:capture', { rect, name, embed }),
-  createTerminal: (id, cols, rows, cwd, startCmd, agent, session) =>
-    ipcRenderer.send('term:create', { id, cols, rows, cwd, startCmd, agent, session }),
+  createTerminal: (id, cols, rows, cwd, startCmd, agent, session, name) =>
+    ipcRenderer.send('term:create', { id, cols, rows, cwd, startCmd, agent, session, name }),
+
+  // Reserve a session name (and its registry record) for a second tab on a
+  // project; release one that a tab gave up before it ever started.
+  allocateSession: (cwd, agent, name) => ipcRenderer.invoke('tabs:allocate', { cwd, agent, name }),
+  releaseSession: (session) => ipcRenderer.send('tabs:release', { session }),
 
   // Embedded native terminal (xterm as a real X11 window reparented into a panel).
-  createEmbedTerminal: (id, cwd, startCmd, agent, session) =>
-    ipcRenderer.send('embed:create', { id, cwd, startCmd, agent, session }),
+  createEmbedTerminal: (id, cwd, startCmd, agent, session, name) =>
+    ipcRenderer.send('embed:create', { id, cwd, startCmd, agent, session, name }),
   // Main refused to start a terminal for an untrusted synced project. The tab
   // has to be put back to unmaterialized, or its panel stays empty and the
   // only way to retry is closing and reopening it.
