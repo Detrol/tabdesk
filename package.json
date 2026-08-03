@@ -11,8 +11,7 @@
     "test": "electron test/main.js"
   },
   "author": {
-    "name": "Jonaz Thern",
-    "email": "info@thern.io"
+    "name": "Andreas Thun"
   },
   "license": "MIT",
   "devDependencies": {
@@ -98,6 +97,6 @@
       ]
     }
   },
-  "homepage": "https://github.com/TheJonaz/tabdesk",
+  "homepage": "https://github.com/Detrol/tabdesk",
   "desktopName": "tabdesk.desktop"
 }

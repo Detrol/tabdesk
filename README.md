@@ -11,7 +11,12 @@
 
 ---
 
-## Fork notes (misty-moon)
+## Fork notes
+
+A heavily modified fork of [TabDesk](https://github.com/TheJonaz/tabdesk) by
+Jonaz Thern. Updates are release-driven: the built-in updater follows this
+repository's `v*` tags (release = `npm version minor && git push --follow-tags
+origin main`), never individual pushes.
 
 The rail on the left holds **projects**; the strip above the terminals holds
 the **sessions** of whichever project is selected. Every session runs inside a
@@ -139,4 +144,4 @@ instead (screenshottable, but no native window).
 
 ## License
 
-[MIT](LICENSE) © Jonaz Thern
+[MIT](LICENSE) © Andreas Thun · based on [TabDesk](https://github.com/TheJonaz/tabdesk) © Jonaz Thern

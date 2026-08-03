@@ -728,8 +728,8 @@ async function loadAbout() {
   el('st-version').textContent = (await window.api.appVersion()) || '–';
 }
 
-el('st-site').addEventListener('click', () => window.api.openExternal('https://www.thern.io'));
-el('st-repo').addEventListener('click', () => window.api.openExternal('https://github.com/TheJonaz/tabdesk'));
+el('st-repo').addEventListener('click', () => window.api.openExternal('https://github.com/Detrol/tabdesk'));
+el('st-origin').addEventListener('click', () => window.api.openExternal('https://github.com/TheJonaz/tabdesk'));
 
 // The transcript scan behind this is the expensive one, so it runs when the
 // pane is actually opened rather than on every settings launch.
