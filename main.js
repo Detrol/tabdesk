@@ -671,14 +671,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('projects:list', () => {
     try {
       const closed = new Set(closedProjects());
+      // stat rather than the Dirent: a symlinked project is still a project
+      // (isDirectory() is false for the link itself), and dot-dirs (.git,
+      // .trash, editor state) are bookkeeping, not projects.
       return fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
+        .filter((e) => !e.name.startsWith('.'))
         .map((e) => {
           const full = path.join(PROJECTS_DIR, e.name);
-          let mtime = 0;
-          try { mtime = fs.statSync(full).mtimeMs; } catch (_) { /* skip */ }
-          return { name: e.name, path: full, mtime, model: model.getFor(full), closed: closed.has(full) };
+          let st;
+          try { st = fs.statSync(full); } catch (_) { return null; } // dead link
+          if (!st.isDirectory()) return null;
+          return { name: e.name, path: full, mtime: st.mtimeMs, model: model.getFor(full), closed: closed.has(full) };
         })
+        .filter(Boolean)
         .sort((a, b) => b.mtime - a.mtime);
     } catch (_) {
       return [];
