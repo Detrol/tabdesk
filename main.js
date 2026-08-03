@@ -1307,7 +1307,7 @@ app.whenReady().then(async () => {
 
     const startDir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
     const term = pty.spawn(shell, [], {
-      name: 'xterm-color',
+      name: 'xterm-256color',
       cols: cols || 80,
       rows: rows || 24,
       cwd: startDir,

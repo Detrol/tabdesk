@@ -9,7 +9,10 @@ const emptyState = document.getElementById('empty-state');
 // X11 window reparented over the panel. false: in-app xterm.js (renders in the
 // DOM). Native embedding is X11-only, and being a window of its own rather than
 // DOM is what the screenshot button has to work around.
-const EMBED_NATIVE = true;
+// Off on this fork: the pty path needs no xterm/xdotool on the host, screenshots
+// capture the DOM directly, and killing a tab reaches only the tmux client in
+// the pty — the session (see wrapStartCmd in main.js) lives on either way.
+const EMBED_NATIVE = false;
 
 let seq = 0;
 let activeId = null;
