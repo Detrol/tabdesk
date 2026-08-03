@@ -1,9 +1,9 @@
 // Update window.
 //
-// One linear flow: what's installed → what apt has published → install →
+// One linear flow: what's running → the newest release tag → fast-forward →
 // restart. Every step that can fail says so in place rather than closing the
-// window, and a failed privileged install offers the terminal command instead
-// of a dead end.
+// window, and a blocked fast-forward offers the terminal command instead of a
+// dead end.
 
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -95,12 +95,21 @@
     phase = state.available ? 'available' : 'current';
     render();
     if (!state.available) setStatus(window.t('update.noneStatus'), '');
+    showCommits();
+  }
+
+  // The release's commit list is the changelog; show it where dpkg's output
+  // used to go.
+  function showCommits() {
+    const list = (state && state.commits) || [];
+    $('up-output').textContent = list.join('\n');
+    $('up-output').classList.toggle('hidden', phase !== 'available' || !list.length);
   }
 
   // ---- install ----
   //
-  // apt fetches, verifies and installs as one step, so there is no percentage
-  // to report — the bar just says "working".
+  // git fetches and fast-forwards as one step, so there is no percentage to
+  // report — the bar just says "working".
   window.api.onProgress((p) => {
     if (p.step !== 'install') return;
     setProgress(null, '');
@@ -124,12 +133,11 @@
       return;
     }
 
-    // A dismissed polkit prompt or a missing pkexec isn't a failure of the
-    // update — apt just needs a password somewhere it can ask for one.
-    if (res && (res.reason === 'not-authorised' || res.reason === 'no-pkexec')) {
+    // Local commits or uncommitted files block the fast-forward — that's not a
+    // failure of the update, it's work of yours to look at in a terminal.
+    if (res && res.reason === 'local-changes') {
       phase = 'manual';
-      setStatus(window.t(res.reason === 'no-pkexec'
-        ? 'update.err.noPkexec' : 'update.err.notAuthorised'), 'bad');
+      setStatus(window.t('update.err.localChanges'), 'bad');
       render();
       return;
     }
@@ -166,6 +174,7 @@
       phase = state.available ? 'available' : 'current';
       render();
       if (!state.available) setStatus(window.t('update.noneStatus'), '');
+      showCommits();
     } else {
       check(false);
     }

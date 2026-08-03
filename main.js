@@ -474,9 +474,9 @@ function openSettingsWindow(parent) {
 
 // ---- Updates ---------------------------------------------------------------
 //
-// A background check asks the CDN's apt index what's published and tells the
-// renderer, which raises a chip in the system bar. Everything privileged lives
-// in updater.js; this is the window and the plumbing around it.
+// A background check asks the fork's repository for new release tags and tells
+// the renderer, which raises a chip in the system bar. The git work lives in
+// updater.js; this is the window and the plumbing around it.
 let updateWin = null;
 let updateState = null;     // last check result, or null before the first one
 let updateBusy = false;     // an install is in flight
@@ -1346,8 +1346,6 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('update:state', () => (updateState ? { ok: true, state: updateState } : null));
-  // `refresh` is only ever true for an explicit "check again": it runs
-  // `apt-get update` under pkexec, and the background timer must not prompt.
   ipcMain.handle('update:check', (event, options) => checkForUpdate(win, options));
 
   ipcMain.handle('update:run', async (event) => {
@@ -1357,14 +1355,14 @@ app.whenReady().then(async () => {
     const sender = event.sender;
     const send = (payload) => { if (!sender.isDestroyed()) sender.send('update:progress', payload); };
     try {
-      // apt does the fetching, the signature check and the install in one step,
-      // so there is no download phase of our own to report progress for.
+      // git fetches and fast-forwards as one step, so there is no download
+      // phase of our own to report progress for.
       send({ step: 'install' });
       const res = await updater.install();
       if (res.ok) {
-        // The installed version moved; re-read it so the chip settles.
+        // HEAD moved; re-read so the chip settles (the tag is now reached).
         await checkForUpdate(win);
-        return { ok: true, version: updateState ? updateState.installed : null };
+        return { ok: true, version: res.version };
       }
       return { ok: false, ...res };
     } catch (err) {
@@ -1374,8 +1372,8 @@ app.whenReady().then(async () => {
     }
   });
 
-  // Fallback when the polkit prompt is unavailable or dismissed: hand the
-  // command to a real TabDesk terminal and let the user type their password.
+  // Fallback when the fast-forward is blocked by local work: hand the command
+  // to a real TabDesk terminal where the conflict can be looked at.
   ipcMain.handle('update:terminal', () => {
     if (!win.isDestroyed()) {
       win.webContents.send('update:open-terminal', { command: updater.installCommand() });

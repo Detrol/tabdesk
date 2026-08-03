@@ -1060,8 +1060,8 @@ document.getElementById('fullscreen-btn').addEventListener('click', () => window
 document.getElementById('settings-btn').addEventListener('click', () => window.api.openSettings());
 
 // ---- Update chip ----
-// Hidden until the background check finds something newer than the installed
-// .deb; the window it opens does the downloading and installing.
+// Hidden until the background check finds a release tag this checkout hasn't
+// reached; the window it opens does the fast-forwarding.
 const updateBtn = document.getElementById('update-btn');
 updateBtn.addEventListener('click', () => window.api.openUpdate());
 
@@ -1076,8 +1076,8 @@ window.api.onUpdateAvailable((state) => {
   }
 });
 
-// The update window couldn't get a polkit prompt, so the install command comes
-// back here to run in a real terminal where a password can be typed.
+// The update window's fast-forward was blocked by local work, so the command
+// comes back here to run in a real terminal where it can be looked at.
 window.api.onUpdateTerminal(({ command }) => {
   setActive(buildTab({
     name: window.t('update.tabName'), cwd: null, projectCwd: activeCwd, startCmd: command,
