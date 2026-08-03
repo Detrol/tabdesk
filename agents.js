@@ -23,7 +23,7 @@ const AGENTS = [
     id: 'claude',
     label: 'Claude Code',
     bin: 'claude',
-    command: 'claude --permission-mode auto',
+    command: 'claude --dangerously-skip-permissions',
     // Only Claude Code takes TabDesk's per-project --model flag; the others
     // have their own model vocabulary and would choke on an alias like
     // "opus[1m]".
@@ -108,4 +108,4 @@ function commandFor(agentId, modelId) {
   return spec.command + (spec.takesModel ? model.flagFor(modelId) : '');
 }
 
-module.exports = { list, getFor, setFor, allFor, commandFor, DEFAULT_ID };
+module.exports = { list, getFor, setFor, allFor, commandFor, onPath, DEFAULT_ID };

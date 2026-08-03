@@ -36,6 +36,29 @@ const syncInvite = require('./sync/invite');
 const PROJECTS_DIR = process.env.TABDESK_PROJECTS_DIR || path.join(os.homedir(), 'claude-projects');
 const DEMO_START_CMD = process.env.TABDESK_START_CMD || null;
 
+// Run every agent tab inside a named tmux session, so the agent outlives
+// TabDesk itself — quit, crash, even an X restart. `-A` makes reopening a tab
+// an attach instead of a second agent, and killing a tab only kills the tmux
+// client; ending the agent for real is `tmux kill-session -t td-<agent>-<dir>`.
+// The status line is turned off at creation because its clock redraw counts as
+// terminal activity and would pulse every background tab's flag. The inner
+// command must stay double-quote-safe: it is built from the constants in
+// agents.js plus a SAFE_ID-gated model flag, and anything else is left
+// unwrapped rather than quoted around. Because `-A` ignores the command on
+// reattach, a per-project model change only takes effect once the old session
+// has ended.
+function wrapStartCmd(startCmd, cwd) {
+  if (!startCmd || !cwd || DEMO_START_CMD) return startCmd;
+  if (/["\\$`]/.test(startCmd)) return startCmd;
+  if (!agents.onPath('tmux')) return startCmd;
+  const spec = agents.list().find((a) => a.id === agents.getFor(cwd));
+  if (!spec || !spec.command) return startCmd;
+  const base = path.basename(cwd).replace(/[^A-Za-z0-9_-]/g, '-');
+  const shell = process.env.SHELL || '/bin/bash';
+  return `tmux new-session -A -s td-${spec.id}-${base} ` +
+    `"tmux set-option status off; ${startCmd}; exec ${shell} -i"`;
+}
+
 // Aggregate Claude Code usage off the main thread.
 function scanUsage() {
   return new Promise((resolve) => {
@@ -617,7 +640,7 @@ app.whenReady().then(async () => {
 
   // ---- Embedded native terminal lifecycle ----
   // Opening a tab is not a passive act here: it starts the configured agent —
-  // by default `claude --permission-mode auto` — with the project as its
+  // by default `claude --dangerously-skip-permissions` — with the project as its
   // working directory. For a directory that arrived over sync, that points an
   // auto-approving agent at somebody else's files. CLAUDE.md and .claude/ are
   // kept out of file sync for exactly this reason (sync/manifest.js), but the
@@ -628,7 +651,7 @@ app.whenReady().then(async () => {
       if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
       return;
     }
-    termEmbed.create(id, { cwd, startCmd });
+    termEmbed.create(id, { cwd, startCmd: wrapStartCmd(startCmd, cwd) });
   });
   ipcMain.on('embed:place', (event, { id, rect }) => termEmbed.place(id, rect));
   ipcMain.on('embed:hide', (event, { id }) => termEmbed.hide(id));
@@ -1293,7 +1316,8 @@ app.whenReady().then(async () => {
 
     // Optionally auto-run a command (e.g. launch Claude Code in the project).
     if (startCmd) {
-      setTimeout(() => { try { term.write(startCmd + '\r'); } catch (_) {} }, 350);
+      const cmd = wrapStartCmd(startCmd, cwd);
+      setTimeout(() => { try { term.write(cmd + '\r'); } catch (_) {} }, 350);
     }
 
     term.onData((data) => {
