@@ -1168,12 +1168,33 @@ document.getElementById('by-link').addEventListener('click', () => {
 
 // Populate the rail with all projects, most-recently-used first. A project
 // whose tab was closed with the × stays out until it is picked again.
+//
+// Then take back the sessions that outlived the last run. A session whose
+// project already has a rail tab attaches to it — clicking that tab lands in
+// the running agent instead of starting a second one — and anything left over
+// (a second tab on one project, a worktree, a folder that isn't in the rail)
+// becomes a tab of its own. Restore runs after the rail so adoption has
+// something to adopt.
 window.api.listProjects().then((projects) => {
   for (const p of projects) {
     if (p.closed) continue;
     buildTab({ name: p.name, cwd: p.path, model: p.model });
   }
-});
+  return window.api.restoreTabs();
+}).then((records) => {
+  for (const rec of records || []) {
+    const free = [...tabs.values()].find((t) => t.cwd === rec.cwd && !t.session && !t.materialized);
+    if (free) {
+      free.session = rec.session;
+      if (rec.agent) free.agent = rec.agent;
+      continue;
+    }
+    const id = buildTab({ name: rec.name, cwd: rec.cwd });
+    const t = tabs.get(id);
+    t.session = rec.session;
+    if (rec.agent) t.agent = rec.agent;
+  }
+}).catch(() => { /* a rail without restored tabs still works */ });
 
 // ---- Model picker (bottom system bar) ----
 // The model belongs to the project, not to the app: the bar always shows the

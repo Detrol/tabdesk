@@ -782,6 +782,34 @@ app.whenReady().then(async () => {
     return { session, suffix: session === base ? 0 : Number(session.slice(base.length + 1)) };
   });
 
+  // What the rail should carry beyond the plain project list: the tabs that
+  // were open last time, plus any td- session tmux is still holding that no
+  // record claims — a session started before the registry existed, or one
+  // whose record was lost. Sorted so the unsuffixed session is offered first
+  // and adopts the project's own rail tab, leaving -2 to become an extra.
+  ipcMain.handle('tabs:restore', () => new Promise((resolve) => {
+    const records = openTabs().filter((r) => r.cwd && fs.existsSync(r.cwd));
+    const claimed = new Set(records.map((r) => r.session));
+    const done = (orphans) => resolve(
+      [...records, ...orphans].sort((a, b) => a.session.localeCompare(b.session)));
+    try {
+      execFile('tmux', ['ls', '-F', '#S #{session_path}'], (err, stdout) => {
+        if (err || !stdout) return done([]);
+        const orphans = [];
+        for (const line of String(stdout).split('\n')) {
+          const gap = line.indexOf(' ');
+          if (gap < 1) continue;
+          const session = line.slice(0, gap);
+          const cwd = line.slice(gap + 1).trim();
+          if (!session.startsWith('td-') || claimed.has(session)) continue;
+          if (!cwd || !fs.existsSync(cwd)) continue;
+          orphans.push({ session, cwd, agent: null, name: path.basename(cwd) });
+        }
+        done(orphans);
+      });
+    } catch (_) { done([]); }
+  }));
+
   // A tab closed before it ever started its terminal still owns a reservation
   // (and possibly a restored session) that nothing else would clean up.
   ipcMain.on('tabs:release', (event, { session }) => {

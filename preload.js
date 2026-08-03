@@ -112,6 +112,7 @@ contextBridge.exposeInMainWorld('api', {
   // Reserve a session name (and its registry record) for a second tab on a
   // project; release one that a tab gave up before it ever started.
   allocateSession: (cwd, agent, name) => ipcRenderer.invoke('tabs:allocate', { cwd, agent, name }),
+  restoreTabs: () => ipcRenderer.invoke('tabs:restore'),
   releaseSession: (session) => ipcRenderer.send('tabs:release', { session }),
 
   // Embedded native terminal (xterm as a real X11 window reparented into a panel).
