@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TabDesk
+Comment=Terminal workspace for agent projects
+Exec=/srv/dev/tabdesk/extras/tabdesk-guard.sh
+Icon=/srv/dev/tabdesk/build/icon.png
+Terminal=false
+Categories=Development;
+StartupWMClass=tabdesk

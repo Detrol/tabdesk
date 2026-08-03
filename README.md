@@ -54,6 +54,8 @@ ends it too. No tmux command is ever required.
   can be worked oldest-first.
 - Only one TabDesk runs at a time; `extras/tabdesk-autostart.desktop` starts
   `extras/tabdesk-guard.sh`, which brings it back after a crash.
+  `extras/tabdesk.desktop` is the applications-menu entry (copy it to
+  `~/.local/share/applications/`) — launching while one runs just focuses it.
 
 Other deltas: in-app xterm.js terminals (no xterm/xdotool needed), Claude
 sessions start with `--dangerously-skip-permissions`, symlinked projects show
