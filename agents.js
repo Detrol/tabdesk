@@ -24,15 +24,17 @@ const AGENTS = [
     label: 'Claude Code',
     bin: 'claude',
     command: 'claude --dangerously-skip-permissions',
-    // Only Claude Code takes TabDesk's per-project --model flag; the others
-    // have their own model vocabulary and would choke on an alias like
-    // "opus[1m]".
+    // `takesModel` is about the flag, not the vocabulary: these CLIs all accept
+    // --model, but each names its models its own way, so the ids come from
+    // model.js per agent and never cross between them.
     takesModel: true,
     hint: 'agent.hint.claude',
   },
-  { id: 'codex',    label: 'Codex',        bin: 'codex',        command: 'codex',        hint: 'agent.hint.codex' },
-  { id: 'gemini',   label: 'Gemini CLI',   bin: 'gemini',       command: 'gemini',       hint: 'agent.hint.gemini' },
-  { id: 'opencode', label: 'opencode',     bin: 'opencode',     command: 'opencode',     hint: 'agent.hint.opencode' },
+  { id: 'codex',    label: 'Codex',        bin: 'codex',        command: 'codex',        takesModel: true, hint: 'agent.hint.codex' },
+  { id: 'gemini',   label: 'Gemini CLI',   bin: 'gemini',       command: 'gemini',       takesModel: true, hint: 'agent.hint.gemini' },
+  { id: 'opencode', label: 'opencode',     bin: 'opencode',     command: 'opencode',     takesModel: true, hint: 'agent.hint.opencode' },
+  // Aider and Cursor Agent spell the flag differently enough that TabDesk
+  // leaves their model choice to them.
   { id: 'aider',    label: 'Aider',        bin: 'aider',        command: 'aider',        hint: 'agent.hint.aider' },
   { id: 'cursor',   label: 'Cursor Agent', bin: 'cursor-agent', command: 'cursor-agent', hint: 'agent.hint.cursor' },
   // Always offered: a project tab that starts nothing but your shell.

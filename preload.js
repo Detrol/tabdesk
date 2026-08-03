@@ -27,10 +27,10 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   // ---- Claude model, chosen per project ----
-  listModels: () => ipcRenderer.invoke('model:list'),
+  listModels: (agent) => ipcRenderer.invoke('model:list', agent),
   getGlobalModel: () => ipcRenderer.invoke('model:global'),
-  getModel: (projectPath) => ipcRenderer.invoke('model:get', projectPath),
-  setModel: (projectPath, id) => ipcRenderer.invoke('model:set', { path: projectPath, id }),
+  getModel: (projectPath, agent) => ipcRenderer.invoke('model:get', { path: projectPath, agent }),
+  setModel: (projectPath, agent, id) => ipcRenderer.invoke('model:set', { path: projectPath, agent, id }),
 
   // Which CLI a project's terminal starts. listAgents() returns only what is
   // actually installed, each with the command line it starts — those strings

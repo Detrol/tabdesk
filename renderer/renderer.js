@@ -416,12 +416,15 @@ function buildTab({ name, cwd, model, agent, startCmd, atTop }) {
   else tabList.appendChild(tabEl);
 
   // The agent is pinned onto the tab at birth — from an explicit pick, else
-  // from what this project was last opened with. Later picks on other tabs of
-  // the same project leave this one alone.
-  tabs.set(id, {
+  // from what this project was last opened with. Pinning it now, rather than
+  // resolving it at start time, is what stops a later pick elsewhere from
+  // changing what this tab was going to run.
+  const rec = {
     id, name, cwd, model: model || 'default', startCmd, tabEl, materialized: false,
-    agent: cwd ? (agent || agentByProject[cwd] || undefined) : undefined,
-  });
+    agent: agent || undefined,
+  };
+  if (cwd) rec.agent = agentFor(rec);
+  tabs.set(id, rec);
   syncTray();
   return id;
 }
@@ -633,7 +636,11 @@ addBtn.addEventListener('click', async () => {
     if (alloc.suffix) name = `${base} ·${alloc.suffix}`;
   }
 
-  const id = buildTab({ name, cwd: choice.path, model: choice.model, agent, atTop: true });
+  // The picker listed the project's model for the agent it opens with by
+  // default; this tab may be starting a different one, and models don't cross
+  // between agents.
+  const model = await window.api.getModel(choice.path, agent);
+  const id = buildTab({ name, cwd: choice.path, model, agent, atTop: true });
   if (session) tabs.get(id).session = session;
   setActive(id);
 });
@@ -1275,16 +1282,38 @@ window.api.listProjects().then((projects) => {
 }).catch(() => { /* a rail without restored tabs still works */ });
 
 // ---- Model picker (bottom system bar) ----
-// The model belongs to the project, not to the app: the bar always shows the
-// active tab's model, and switching tabs switches what it shows. That keeps an
-// expensive model on one project from eating every other project's usage.
-// The pick becomes a --model flag when that project's terminal starts, so a
-// session already running keeps its own until you /model inside it.
+// The model belongs to the tab's project and its agent, not to the app: the bar
+// always shows the active tab's model, and switching tabs switches what it
+// shows. That keeps an expensive model on one project from eating every other
+// project's usage, and keeps a Codex pick off the Claude tab beside it.
+// The pick becomes a --model flag when that tab's terminal starts, so a session
+// already running keeps its own until you /model inside it.
+//
+// What can be picked comes from the agent: Claude Code has TabDesk's alias
+// list, opencode is asked for its providers, and a CLI that can only be
+// configured from inside itself shows what it is set to, read-only.
 const modelBtn = document.getElementById('model-btn');
 const modelMenu = document.getElementById('model-menu');
 const bootModel = (window.api.boot && window.api.boot.model) || {};
-let modelList = bootModel.list || [];
-let globalModel = bootModel.global || 'default';
+let modelList = [{ id: 'default', label: 'Default', hint: 'model.hint.default' }];
+let modelListAgent = null;                       // which agent modelList is for
+let globalModel = bootModel.global || 'default'; // what Default means for it
+
+// Load the rows for an agent, if they aren't already the ones in hand.
+async function loadModels(agent) {
+  if (modelListAgent === agent) return;
+  const res = await window.api.listModels(agent);
+  if (!res || !Array.isArray(res.list) || !res.list.length) return;
+  modelList = res.list;
+  globalModel = res.global || 'default';
+  modelListAgent = agent;
+}
+
+// The agent whose models the bar is currently about.
+function activeAgent() {
+  const t = tabs.get(activeId);
+  return t && t.cwd ? agentFor(t) : null;
+}
 
 // Unknown ids (someone pinned a full model name by hand) show as-is rather
 // than falling back to something that isn't what's actually configured.
@@ -1308,6 +1337,11 @@ function barLabel(id) {
 function renderModelBtn() {
   const tab = tabs.get(activeId);
   const id = activeModel();
+  // Follow the active tab: its agent decides what the bar can say and offer.
+  const want = activeAgent();
+  if (want && modelListAgent !== want) {
+    loadModels(want).then(() => { if (activeAgent() === want) renderModelBtn(); });
+  }
   // A terminal keeps the model it launched with. Say so in the bar rather than
   // only in a toast: while a terminal is open it covers the toast area (native
   // X window on top of the page), so that message can go unseen.
@@ -1315,13 +1349,18 @@ function renderModelBtn() {
   modelBtn.textContent = barLabel(id) + (pending ? ' •' : '');
   modelBtn.classList.toggle('inherited', id === 'default' && !pending);
   modelBtn.classList.toggle('pending', pending);
-  // Only project tabs auto-start Claude; an ad-hoc shell has nothing to flag.
-  modelBtn.disabled = !tab || !tab.cwd;
-  modelBtn.title = !tab || !tab.cwd
+  // An ad-hoc shell has nothing to flag; an agent with nothing to offer but
+  // its own default is shown, not offered — the bar still says what it runs.
+  const agent = activeAgent();
+  const pickable = modelListAgent === agent && modelList.length > 1;
+  modelBtn.disabled = !agent || !pickable;
+  modelBtn.title = !agent
     ? t('bar.model.none')
     : (pending
       ? t('bar.model.pending', { model: barLabel(tab.runningModel) })
-      : t('bar.model.title', { project: tab.name }));
+      : (pickable
+        ? t('bar.model.title', { project: tab.name })
+        : t('bar.model.agentOnly', { agent: agentLabel(agent) })));
 }
 
 function renderModelMenu() {
@@ -1351,10 +1390,16 @@ function closeModelMenu() {
   modelBtn.setAttribute('aria-expanded', 'false');
 }
 
-modelBtn.addEventListener('click', (e) => {
+modelBtn.addEventListener('click', async (e) => {
   e.stopPropagation();
   const open = modelMenu.classList.contains('hidden');
-  if (open) renderModelMenu();
+  // Re-read on open: opencode's list comes from the CLI and a provider added
+  // since boot should be pickable without restarting TabDesk.
+  if (open) {
+    const agent = activeAgent();
+    if (agent) { modelListAgent = null; await loadModels(agent); }
+    renderModelMenu();
+  }
   modelMenu.classList.toggle('hidden', !open);
   modelBtn.setAttribute('aria-expanded', String(open));
 });
@@ -1371,15 +1416,17 @@ modelMenu.addEventListener('click', async (e) => {
   const id = item.dataset.model;
   if (id === tab.model) return;
 
-  const res = await window.api.setModel(tab.cwd, id);
+  const agent = agentFor(tab);
+  const res = await window.api.setModel(tab.cwd, agent, id);
   if (!res || !res.ok) {
     toast(window.t('toast.modelFailed', { error: (res && res.error) || '' }));
     return;
   }
-  // Stored against the project, so sibling tabs on it must not keep showing
-  // (and launching with) the model they were built with.
+  // Stored against the project *and* the agent, so the tabs that follow are
+  // the ones running the same CLI on the same project — not a Codex tab
+  // inheriting a Claude alias.
   for (const other of tabs.values()) {
-    if (other.cwd === tab.cwd) other.model = res.model;
+    if (other.cwd === tab.cwd && agentFor(other) === agent) other.model = res.model;
   }
   renderModelBtn();
 
@@ -1402,7 +1449,7 @@ window.api.onGlobalModelChanged((id) => {
 window.api.onPortableImported(({ models }) => {
   for (const tab of tabs.values()) {
     if (!tab.cwd) continue;
-    tab.model = (models && models[tab.cwd]) || 'default';
+    tab.model = (models && models[`${agentFor(tab)}|${tab.cwd}`]) || 'default';
   }
   renderModelBtn();
   if (!modelMenu.classList.contains('hidden')) renderModelMenu();

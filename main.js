@@ -672,17 +672,22 @@ app.whenReady().then(async () => {
       theme: activeTheme,
       i18n: activeI18n,
       settings: settings.all(),
-      model: { list: model.list(), global: model.globalDefault(), byProject: model.allFor() },
+      model: { global: model.globalDefault('claude') },
       agents: { list: agents.list(), byProject: agents.allFor(), fallback: agents.DEFAULT_ID },
       demoStartCmd: DEMO_START_CMD,
     };
   });
 
   // ---- Claude model, per project ----
-  ipcMain.handle('model:list', () => model.list());
-  ipcMain.handle('model:global', () => model.globalDefault());
-  ipcMain.handle('model:get', (event, projectPath) => model.getFor(projectPath));
-  ipcMain.handle('model:set', (event, { path: projectPath, id }) => model.setFor(projectPath, id));
+  // The picker asks per agent: what it can offer, and what "Default" means to
+  // that CLI right now.
+  ipcMain.handle('model:list', async (event, agent) => ({
+    list: await model.list(agent),
+    global: model.globalDefault(agent),
+  }));
+  ipcMain.handle('model:global', (event, agent) => model.globalDefault(agent));
+  ipcMain.handle('model:get', (event, { path: projectPath, agent }) => model.getFor(projectPath, agent));
+  ipcMain.handle('model:set', (event, { path: projectPath, agent, id }) => model.setFor(projectPath, agent, id));
 
   // ---- Which CLI a project starts (Claude Code, another agent, plain shell) ----
   // The list is re-read rather than cached in the renderer: an agent installed
@@ -852,7 +857,7 @@ app.whenReady().then(async () => {
       if (e.name.startsWith('.')) continue;
       const full = path.join(dir, '.worktrees', e.name);
       try { if (!fs.statSync(full).isDirectory()) continue; } catch (_) { continue; }
-      out.push({ name: `${path.basename(dir)}/${e.name}`, path: full, model: model.getFor(full) });
+      out.push({ name: `${path.basename(dir)}/${e.name}`, path: full, model: model.getFor(full, agents.getFor(full)) });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
   };
@@ -875,7 +880,7 @@ app.whenReady().then(async () => {
           if (!st.isDirectory()) return null;
           return {
             name: e.name, path: full, mtime: st.mtimeMs,
-            model: model.getFor(full), closed: closed.has(full),
+            model: model.getFor(full, agents.getFor(full)), closed: closed.has(full),
             worktrees: worktreesIn(full),
           };
         })
@@ -909,7 +914,7 @@ app.whenReady().then(async () => {
     });
     if (res.canceled || !res.filePaths.length) return null;
     const dir = res.filePaths[0];
-    return { name: path.basename(dir), path: dir, model: model.getFor(dir) };
+    return { name: path.basename(dir), path: dir, model: model.getFor(dir, agents.getFor(dir)) };
   });
 
   // ---- Portable state: export / import ----

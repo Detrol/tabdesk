@@ -25,6 +25,13 @@ tmux command is ever required.
   Extra tabs are numbered (`myproj ·2`) and carry their own session.
 - **Worktrees** under `<project>/.worktrees/` appear indented under their
   project in the picker; searching a branch name finds them.
+- **Each tab owns its agent.** Opening a Codex tab doesn't turn the project
+  into a Codex project — the project's pick is only the seed the next tab is
+  born with, and tabs already open keep what they are running.
+- **The model bar follows the tab's agent.** Claude Code gets the alias list,
+  opencode is asked for its providers, and a CLI that can only be configured
+  from inside itself shows what it is set to, read-only. Picks are stored per
+  project *and* agent, so they never cross.
 - **Finished tabs show how long they have waited**, so a rail of green dots
   can be worked oldest-first.
 - Only one TabDesk runs at a time; `extras/tabdesk-autostart.desktop` starts
