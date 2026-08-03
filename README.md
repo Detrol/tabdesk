@@ -11,6 +11,20 @@
 
 ---
 
+## Fork notes (misty-moon)
+
+This fork runs every agent tab inside a named tmux session
+(`td-<agent>-<dir>`), so agents survive TabDesk quitting, crashing, or the X
+session restarting — reopening a tab reattaches. Consequences: closing a tab
+only detaches (end an agent with `tmux kill-session -t td-<agent>-<dir>`), and
+a per-project model change takes effect only after the old session ends.
+Other deltas: in-app xterm.js terminals (no xterm/xdotool needed), Claude tabs
+start with `--dangerously-skip-permissions`, symlinked projects show in the
+rail and dot-dirs don't, Laravel previews run `php artisan serve`, and the
+usage scan caches per file (`userData/usage-cache.json`). Launch with
+`./tabdesk.sh` (points the rail at `/srv/dev`); `node scripts/seed-closed.js`
+once pre-hides the non-project directories.
+
 ## Features
 
 - **Project tab rail** — every directory under your projects folder becomes a tab, most-recently-modified first. Opening one spawns a terminal already running `claude --permission-mode auto` in that project.
