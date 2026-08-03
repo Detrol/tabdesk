@@ -1,6 +1,7 @@
 #!/bin/sh
-# Launch TabDesk against /srv/dev on the local X display.
-export TABDESK_PROJECTS_DIR="${TABDESK_PROJECTS_DIR:-/srv/dev}"
+# Launch TabDesk on the local X display. The projects folder is the app's own
+# setting (chosen at first run, changeable in Settings); TABDESK_PROJECTS_DIR
+# in the environment overrides it for a single run without persisting.
 export DISPLAY="${DISPLAY:-:0}"
 # new-session refuses inside an existing tmux client, and the ptys inherit our
 # environment — launching from a tmux'd SSH session must not poison them.

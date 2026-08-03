@@ -1616,6 +1616,24 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
 //
 // Nothing is started here: the strip shows what was running, and a click is
 // what reattaches to it.
+// No projects folder chosen yet (or the chosen one is gone): everything the
+// rail would show derives from it, so the only meaningful screen is the one
+// that asks for it. Sessions in tmux wait safely — restore runs after the
+// choice, when there are rows to hang them under.
+const bootRoot = (window.api.boot && window.api.boot.projectsRoot) || { configured: true };
+if (!bootRoot.configured) {
+  document.getElementById('first-run').classList.remove('hidden');
+  emptyState.classList.add('hidden');
+  const frError = document.getElementById('fr-error');
+  document.getElementById('fr-choose').addEventListener('click', async () => {
+    const res = await window.api.chooseProjectsRoot();
+    // Success reloads the whole window from main; only failure comes back.
+    if (res && !res.ok && !res.canceled) {
+      frError.textContent = res.error || '';
+      frError.classList.remove('hidden');
+    }
+  });
+} else {
 window.api.listProjects().then((list) => {
   for (const p of list) {
     if (p.closed) continue;
@@ -1643,6 +1661,7 @@ window.api.listProjects().then((list) => {
     if (first) showOverview(first);
   }
 }).catch(() => { /* a rail without restored sessions still works */ });
+}
 
 // ---- Model picker (bottom system bar) ----
 // The model belongs to the tab's project and its agent, not to the app: the bar

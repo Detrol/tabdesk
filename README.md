@@ -61,7 +61,7 @@ Other deltas: in-app xterm.js terminals (no xterm/xdotool needed), Claude
 sessions start with `--dangerously-skip-permissions`, symlinked projects show
 in the rail and dot-dirs don't, Laravel previews run `php artisan serve`, and
 the usage scan caches per file (`userData/usage-cache.json`). Launch with
-`./tabdesk.sh` (points the rail at `/srv/dev`); `node scripts/seed-closed.js`
+`./tabdesk.sh`; `node scripts/seed-closed.js`
 once pre-hid the non-project directories, which stay out of the rail.
 
 ## Features
@@ -100,7 +100,13 @@ standalone from `/opt/TabDesk`.
 
 ## Configuration
 
-Projects are read from `~/claude-projects` (`PROJECTS_DIR` in `main.js`).
+The projects folder — the folder whose subfolders are your projects — is
+chosen on first run and stored as `projectsDir` in `settings.json`; change it
+any time under Settings → General (the window reloads, running sessions
+survive in tmux). `TABDESK_PROJECTS_DIR` in the environment overrides it for
+a single run without persisting anything. Machines that used the old
+`~/claude-projects` default keep working — it is adopted into the setting on
+first start.
 
 ### Theme and language
 

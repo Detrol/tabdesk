@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('api', {
   listThemes: () => ipcRenderer.invoke('theme:list'),
   setTheme: (id) => ipcRenderer.invoke('theme:set', id),
   setGlow: (on) => ipcRenderer.invoke('theme:glow', on),
+  chooseProjectsRoot: () => ipcRenderer.invoke('projects:choose-root'),
   listLanguages: () => ipcRenderer.invoke('i18n:list'),
   setLanguage: (code) => ipcRenderer.invoke('language:set', code),
 

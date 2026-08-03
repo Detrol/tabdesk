@@ -30,7 +30,10 @@ const FORMAT = 'tabdesk-portable';
 const VERSION = 1;
 
 const claudeProjectsDir = () => path.join(os.homedir(), '.claude', 'projects');
-const projectsRoot = () => path.join(os.homedir(), 'claude-projects');
+// The same resolved root the rail uses — settings-backed, env-overridable —
+// so the export scans the projects that are actually on screen. Null before
+// first run has chosen one.
+const projectsRoot = () => require('./projects-root').resolve();
 
 // Claude Code's directory naming: every character that isn't alphanumeric
 // becomes a dash. Lossy on purpose — "bokföring" lands as "bokf-ring" and there
@@ -84,12 +87,14 @@ function candidatePaths() {
   const root = projectsRoot();
   // Home and the projects root are projects in their own right — Claude Code is
   // routinely run in both, and both accumulate memory.
-  const set = new Set([home, root]);
+  const set = new Set(root ? [home, root] : [home]);
   try {
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (entry.isDirectory()) set.add(path.join(root, entry.name));
+    if (root) {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (entry.isDirectory()) set.add(path.join(root, entry.name));
+      }
     }
-  } catch (_) { /* no ~/claude-projects on this machine */ }
+  } catch (_) { /* no projects folder on this machine */ }
   for (const key of Object.keys(settings.get('projectModels') || {})) {
     if (path.isAbsolute(key)) set.add(path.normalize(key));
   }

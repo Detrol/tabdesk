@@ -56,6 +56,16 @@
         <p data-i18n-html="empty.select">Select a <strong>project</strong> on the left to open a terminal.</p>
         <p data-i18n-html="empty.grid">Use <strong>▦ Grid</strong> to show 1–6 at once.</p>
       </div>
+      <!-- Shown instead of the rail's advice when no projects folder has been
+           chosen yet (or the chosen one is gone) — the one thing to do first. -->
+      <div id="first-run" class="hidden">
+        <div id="fr-card">
+          <h2 data-i18n="firstrun.title">Welcome to TabDesk</h2>
+          <p data-i18n="firstrun.lead">Pick your projects folder — the folder whose subfolders are your projects. Each one becomes a row in the rail on the left.</p>
+          <button id="fr-choose" data-i18n="firstrun.choose">📁 Choose projects folder…</button>
+          <p id="fr-error" class="hidden"></p>
+        </div>
+      </div>
       <div id="panels"></div>
       <div id="toast"></div>
     </main>

@@ -122,6 +122,15 @@ async function loadLanguages() {
     currentLanguage, (l) => ({ value: l.code, label: l.name }));
 }
 
+// The resolved projects folder (env override and legacy adoption included),
+// not the raw setting. A successful change closes this window from main and
+// reloads the rail, so there is nothing to re-read here.
+const projDirEl = document.getElementById('st-projects-dir');
+projDirEl.value = ((window.api.boot && window.api.boot.projectsRoot) || {}).path || '';
+document.getElementById('st-projects-pick').addEventListener('click', () => {
+  window.api.chooseProjectsRoot();
+});
+
 const glowBox = document.getElementById('st-glow');
 glowBox.checked = bootSettings.glow !== false;
 glowBox.addEventListener('change', async () => {

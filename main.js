@@ -32,20 +32,22 @@ const syncPull = require('./sync/pullwatch');
 const syncKeys = require('./sync/keys');
 const syncInvite = require('./sync/invite');
 
-// Demo/testing hooks, unset in normal use. TABDESK_PROJECTS_DIR points the rail
-// at a scratch set of projects (screenshots, trying layout changes against a
-// known set) without touching the real one; TABDESK_START_CMD gives those tabs
-// a command other than a live Claude session.
-const PROJECTS_DIR = process.env.TABDESK_PROJECTS_DIR || path.join(os.homedir(), 'claude-projects');
+// Where the rail's projects live — the user's stored choice, resolved (and
+// changeable) through projects-root.js. Null until first run has picked one.
+// TABDESK_START_CMD is a demo/testing hook giving tabs a command other than a
+// live Claude session; TABDESK_PROJECTS_DIR (read in projects-root.js) points
+// the rail at a scratch set for a single run without persisting anything.
+const rootDir = () => projectsRoot.resolve();
 const DEMO_START_CMD = process.env.TABDESK_START_CMD || null;
 
-// The tmux session name a directory maps to. Inside PROJECTS_DIR the relative
-// path is the identity (so worktrees under different projects stay apart);
-// outside it, basenames alone would collide across folders, so the full path
-// is pinned with a short hash.
+// The tmux session name a directory maps to. Inside the projects folder the
+// relative path is the identity (so worktrees under different projects stay
+// apart); outside it, basenames alone would collide across folders, so the
+// full path is pinned with a short hash.
 function slugFor(cwd) {
-  const root = PROJECTS_DIR + path.sep;
-  if (cwd.startsWith(root)) {
+  const base = rootDir();
+  const root = base ? base + path.sep : null;
+  if (root && cwd.startsWith(root)) {
     return cwd.slice(root.length).replace(/[^A-Za-z0-9_-]/g, '-');
   }
   // Everything else — the projects folder itself included — is named by
@@ -349,15 +351,17 @@ function openProjectPicker(parent) {
   });
 }
 
-// A project name becomes a directory under PROJECTS_DIR, so it may not carry a
-// path of its own — the created directory has to stay inside PROJECTS_DIR.
+// A project name becomes a directory under the projects folder, so it may not
+// carry a path of its own — the created directory has to stay inside it.
 function createProject(rawName) {
+  const base = rootDir();
+  if (!base) return { ok: false, error: 'invalid' };
   const name = String(rawName || '').trim();
   if (!name) return { ok: false, error: 'empty' };
   if (name === '.' || name === '..' || /[/\\\0]/.test(name)) return { ok: false, error: 'invalid' };
 
-  const full = path.join(PROJECTS_DIR, name);
-  if (path.dirname(path.resolve(full)) !== path.resolve(PROJECTS_DIR)) {
+  const full = path.join(base, name);
+  if (path.dirname(path.resolve(full)) !== path.resolve(base)) {
     return { ok: false, error: 'invalid' };
   }
   if (fs.existsSync(full)) return { ok: false, error: 'exists' };
@@ -388,7 +392,8 @@ function setProjectClosed(dir, closed) {
   // elsewhere ("Other folder…") is never listed at start, so closing its tab
   // has nothing to suppress and would just leave a dead entry behind.
   if (closed) {
-    if (path.dirname(path.resolve(dir)) !== path.resolve(PROJECTS_DIR)) return;
+    const base = rootDir();
+    if (!base || path.dirname(path.resolve(dir)) !== path.resolve(base)) return;
     set.add(dir);
   } else {
     set.delete(dir);
@@ -717,10 +722,50 @@ app.whenReady().then(async () => {
       theme: activeTheme,
       i18n: activeI18n,
       settings: settings.all(),
+      // The resolved projects folder, not the raw setting: env override and
+      // legacy adoption both land here. `configured` false is what sends the
+      // renderer to the first-run screen instead of an empty rail.
+      projectsRoot: { path: rootDir(), configured: projectsRoot.configured() },
       model: { global: model.globalDefault('claude') },
       agents: { list: agents.list(), byProject: agents.allFor(), fallback: agents.DEFAULT_ID },
       demoStartCmd: DEMO_START_CMD,
     };
+  });
+
+  // ---- The projects folder itself ----
+  //
+  // set-root does the work (validate, persist, rebuild); choose-root is the
+  // native dialog in front of it. Split so the harness can drive set-root
+  // directly — nothing can click a native dialog. Rebuilding is a full page
+  // reload: every piece of rail state derives from projects:list +
+  // tabs:restore, the running tmux sessions survive their ptys (see
+  // did-start-navigation), and restore re-adopts them on the way back up.
+  const applyRoot = (dir) => {
+    try {
+      projectsRoot.setRoot(dir);
+    } catch (err) {
+      return { ok: false, error: String(err.message || err) };
+    }
+    // Child windows hold pre-change state (picker's project list, settings'
+    // shown path); the main window survives the reload, they just close.
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w !== win && !w.isDestroyed()) w.close();
+    }
+    if (!win.isDestroyed()) win.webContents.reload();
+    return { ok: true, path: rootDir() };
+  };
+
+  ipcMain.handle('projects:set-root', (event, dir) => applyRoot(dir));
+
+  ipcMain.handle('projects:choose-root', async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const base = rootDir();
+    const res = await dialog.showOpenDialog(owner, {
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: base && fs.existsSync(base) ? base : os.homedir(),
+    });
+    if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
+    return applyRoot(res.filePaths[0]);
   });
 
   // ---- Claude model, per project ----
@@ -870,10 +915,12 @@ app.whenReady().then(async () => {
   // physical spelling would grow a second rail row for the same project.
   const projectSpellings = () => {
     const out = [];
+    const base = rootDir();
+    if (!base) return out;
     try {
-      for (const name of fs.readdirSync(PROJECTS_DIR)) {
+      for (const name of fs.readdirSync(base)) {
         if (name.startsWith('.')) continue;
-        const full = path.join(PROJECTS_DIR, name);
+        const full = path.join(base, name);
         try { out.push({ path: full, real: fs.realpathSync(full) }); } catch (_) { /* dead link */ }
       }
     } catch (_) { /* no projects dir — nothing to map against */ }
@@ -964,28 +1011,32 @@ app.whenReady().then(async () => {
     return out.sort((a, b) => a.name.localeCompare(b.name));
   };
 
-  // List project directories under PROJECTS_DIR, most-recently-modified first.
-  // `closed` carries the user's × on that tab: the rail leaves those out, the
-  // picker still offers them (see closedProjects below).
+  // List project directories under the projects folder, most-recently-modified
+  // first. `closed` carries the user's × on that tab: the rail leaves those
+  // out, the picker still offers them (see closedProjects below). Always an
+  // array — with no root chosen yet the first-run signal travels in app:boot,
+  // and the picker/settings consumers of this handler iterate whatever comes.
   //
   // The projects folder itself leads the list: work that spans projects — an
   // agent asked about the whole tree — runs in the root, and those sessions
   // and conversations need a row to live under just like any project's do.
   ipcMain.handle('projects:list', () => {
+    const base = rootDir();
+    if (!base) return [];
     try {
       const closed = new Set(closedProjects());
       const root = {
-        name: path.basename(PROJECTS_DIR), path: PROJECTS_DIR, root: true,
-        model: model.getFor(PROJECTS_DIR, agents.getFor(PROJECTS_DIR)),
+        name: path.basename(base), path: base, root: true,
+        model: model.getFor(base, agents.getFor(base)),
         closed: false, worktrees: [],
       };
       // stat rather than the Dirent: a symlinked project is still a project
       // (isDirectory() is false for the link itself), and dot-dirs (.git,
       // .trash, editor state) are bookkeeping, not projects.
-      const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
+      const dirs = fs.readdirSync(base, { withFileTypes: true })
         .filter((e) => !e.name.startsWith('.'))
         .map((e) => {
-          const full = path.join(PROJECTS_DIR, e.name);
+          const full = path.join(base, e.name);
           let st;
           try { st = fs.statSync(full); } catch (_) { return null; } // dead link
           if (!st.isDirectory()) return null;
@@ -1017,12 +1068,13 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('projects:create', (event, name) => createProject(name));
 
-  // Escape hatch for a project that doesn't live under ~/claude-projects.
+  // Escape hatch for a project that doesn't live under the projects folder.
   ipcMain.handle('projects:browse', async (event) => {
     const owner = BrowserWindow.fromWebContents(event.sender);
+    const base = rootDir();
     const res = await dialog.showOpenDialog(owner, {
       properties: ['openDirectory', 'createDirectory'],
-      defaultPath: fs.existsSync(PROJECTS_DIR) ? PROJECTS_DIR : os.homedir(),
+      defaultPath: base && fs.existsSync(base) ? base : os.homedir(),
     });
     if (res.canceled || !res.filePaths.length) return null;
     const dir = res.filePaths[0];
@@ -1174,12 +1226,13 @@ app.whenReady().then(async () => {
 
   // ---- Receiving, on its own ----
   //
-  // A pulled project lands in PROJECTS_DIR under its slug, which is where the
-  // rail looks — so a project that appears on the server shows up as a tab
-  // without anyone naming a path for it.
-  const pullRoot = (slug) => path.join(PROJECTS_DIR, slug);
+  // A pulled project lands in the projects folder under its slug, which is
+  // where the rail looks — so a project that appears on the server shows up
+  // as a tab without anyone naming a path for it.
+  const pullRoot = (slug) => path.join(rootDir(), slug);
 
   function startPulling() {
+    if (!rootDir()) return { ok: false, watching: [] };  // nowhere to land yet
     const slugs = syncConfig.all().pullProjects || [];
     return syncPull.start(slugs, pullRoot, (payload) => {
       if (!win.isDestroyed()) win.webContents.send('sync:event', payload);

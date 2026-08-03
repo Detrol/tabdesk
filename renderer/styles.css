@@ -301,6 +301,46 @@ html, body {
 #empty-state strong { color: var(--accent-2); text-shadow: var(--glow-accent-2); }
 #empty-state.hidden { display: none; }
 
+/* First run: no projects folder chosen yet. Same slot as the empty state —
+   which must stay out of the way however applyLayout toggles it. */
+#content:has(#first-run:not(.hidden)) #empty-state { display: none; }
+#first-run {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#first-run.hidden { display: none; }
+#fr-card {
+  max-width: 420px;
+  padding: 28px 32px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+}
+#fr-card h2 { margin: 0; font-size: 16px; color: var(--text); }
+#fr-card p { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--dim); }
+#fr-choose {
+  padding: 9px 18px;
+  border: 1px solid var(--accent-2);
+  border-radius: 8px;
+  background: var(--tint-2);
+  color: var(--accent-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+#fr-choose:hover { background: var(--tint-2-strong); box-shadow: var(--glow-accent-2); }
+#fr-error { color: var(--danger); font-size: 12px; }
+#fr-error.hidden { display: none; }
+
 #toast {
   position: absolute;
   bottom: 16px;

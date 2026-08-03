@@ -49,6 +49,17 @@
         </div>
 
         <div class="st-field">
+          <label for="st-projects-dir" data-i18n="settings.projectsDir">Projects folder</label>
+          <div class="st-row">
+            <input id="st-projects-dir" class="st-grow" type="text" spellcheck="false" readonly />
+            <button id="st-projects-pick" data-i18n="settings.projectsDir.change">Choose…</button>
+          </div>
+          <p class="st-hint" data-i18n="settings.projectsDir.hint">
+            The folder whose subfolders are your projects. Changing it reloads the window; running sessions survive.
+          </p>
+        </div>
+
+        <div class="st-field">
           <label for="st-lang" data-i18n="settings.language">Language</label>
           <select id="st-lang"></select>
           <p class="st-hint" data-i18n="settings.language.hint">
