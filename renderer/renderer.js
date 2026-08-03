@@ -1604,75 +1604,8 @@ document.getElementById('preview-reload').addEventListener('click', () => {
 });
 
 // ---- Bugs & Feedback -------------------------------------------------------
-//
-// The status bar carries two links where Total and Msgs-today used to be. One
-// opens my site; the other opens this, which posts straight to the same place
-// Moraine's reports land.
-//
-// The dialog is ordinary DOM, and the embedded terminals are native X windows
-// stacked above everything the page paints — so "in front" is not something CSS
-// can win. They go away while it is open. Nothing is lost by that: the panels
-// keep their `shown` class, so the next sync puts them back exactly where they
-// were, and the shell underneath never noticed.
-const fbBackdrop = document.getElementById('fb-backdrop');
-const fbMsg = document.getElementById('fb-msg');
-const fbEmail = document.getElementById('fb-email');
-const fbKind = document.getElementById('fb-kind');
-const fbStatus = document.getElementById('fb-status');
-const fbSend = document.getElementById('fb-send');
-
-async function openFeedback() {
-  fbStatus.textContent = '';
-  fbStatus.classList.remove('bad');
-  fbSend.disabled = false;
-  document.getElementById('fb-note').textContent =
-    t('fb.note', { version: (await window.api.appVersion()) || '', os: navigator.platform || 'linux' });
-  fbBackdrop.classList.remove('hidden');
-  for (const [tid, tt] of tabs) if (tt.embed) window.api.hideEmbedTerminal(tid);
-  fbMsg.focus();
-}
-
-function closeFeedback() {
-  fbBackdrop.classList.add('hidden');
-  scheduleSync();          // brings the terminals back where they were
-}
-
-document.getElementById('feedback-btn').addEventListener('click', openFeedback);
-document.getElementById('fb-cancel').addEventListener('click', closeFeedback);
-// Click-outside closes; a click that started inside must not.
-fbBackdrop.addEventListener('click', (e) => { if (e.target === fbBackdrop) closeFeedback(); });
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !fbBackdrop.classList.contains('hidden')) closeFeedback();
-});
-
-fbSend.addEventListener('click', async () => {
-  const message = fbMsg.value.trim();
-  if (!message) {
-    fbStatus.textContent = t('fb.empty');
-    fbStatus.classList.add('bad');
-    return;
-  }
-  fbSend.disabled = true;
-  fbStatus.classList.remove('bad');
-  fbStatus.textContent = t('fb.sending');
-
-  const res = await window.api.sendFeedback({ type: fbKind.value, message, email: fbEmail.value.trim() });
-  if (res && res.ok) {
-    fbStatus.textContent = t('fb.sent');
-    fbMsg.value = '';
-    fbEmail.value = '';
-    setTimeout(closeFeedback, 900);
-    return;
-  }
-  // Say which way it failed. "Could not send" with no reason is the message
-  // that makes people retype the whole report into an email instead.
-  fbStatus.textContent = t('fb.failed', { code: (res && res.code) || 'network' });
-  fbStatus.classList.add('bad');
-  fbSend.disabled = false;
-});
-
-document.getElementById('by-link').addEventListener('click', () => {
-  window.api.openExternal('https://www.thern.io');
+document.getElementById('feedback-btn').addEventListener('click', () => {
+  window.api.openExternal('https://github.com/Detrol/tabdesk/issues');
 });
 
 // Fill the rail with the projects on disk, most recently touched first, and

@@ -64,7 +64,6 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('app:event', listener);
   },
   openExternal: (url) => ipcRenderer.invoke('site:open-external', url),
-  sendFeedback: (payload) => ipcRenderer.invoke('feedback:send', payload),
   appVersion: () => ipcRenderer.invoke('app:version'),
 
   // Export / import of the portable light layer (memory, CLAUDE.md, prefs).

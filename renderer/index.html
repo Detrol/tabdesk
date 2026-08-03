@@ -133,10 +133,8 @@
 
     <!-- Where Total and Msgs-today used to sit. Those are numbers you read
          occasionally, not while you work, so they moved to Settings →
-         Statistics. What earns a permanent seat down here is a way to reach
-         the person who wrote it. -->
+         Statistics. -->
     <button id="feedback-btn" class="sb-link" data-i18n="bar.feedback">🐞 Bugs &amp; Feedback</button>
-    <button id="by-link" class="sb-link" data-i18n="bar.by">by Jonaz Thern</button>
 
     <div class="sb-spacer"></div>
 
@@ -166,38 +164,6 @@
        worktrees. Placed on the window rather than in the strip so it isn't
        clipped by the strip's own horizontal scroll. -->
   <div id="strip-menu" class="menu hidden" role="menu"></div>
-  </div>
-
-  <!-- Bugs & Feedback. Ordinary DOM over the page, like the model menu — but
-       unlike it this has to cover the panels, where the embedded terminals are
-       native X windows stacked above everything the page paints. Opening it
-       therefore hides them (see openFeedback in renderer.js); nothing CSS can
-       do would put this in front of them. -->
-  <div id="fb-backdrop" class="hidden">
-    <div id="fb-dialog" role="dialog" aria-modal="true" aria-labelledby="fb-title">
-      <h2 id="fb-title" data-i18n="fb.title">🐞 Bugs &amp; Feedback</h2>
-      <p class="fb-lead" data-i18n="fb.lead">Found a bug or have an idea? Send it straight to the developer.</p>
-
-      <select id="fb-kind">
-        <option value="bug" data-i18n="fb.kind.bug">🐞 Bug</option>
-        <option value="feedback" data-i18n="fb.kind.feedback">💡 Feedback</option>
-        <option value="feature" data-i18n="fb.kind.feature">✨ Feature request</option>
-      </select>
-
-      <label for="fb-msg" data-i18n="fb.message">Your message</label>
-      <textarea id="fb-msg" rows="6"></textarea>
-
-      <input id="fb-email" type="email" data-i18n-placeholder="fb.email"
-             placeholder="Your email (optional — so I can reply)">
-
-      <p class="fb-note" id="fb-note"></p>
-      <p class="fb-status" id="fb-status"></p>
-
-      <div class="fb-row">
-        <button id="fb-cancel" data-i18n="fb.cancel">Cancel</button>
-        <button id="fb-send" class="accent" data-i18n="fb.send">Send</button>
-      </div>
-    </div>
   </div>
 
   <script src="ui.js"></script>
