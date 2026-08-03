@@ -107,7 +107,7 @@ function probeGtk() {
 
 // Build the full token set from a handful of base colours. Everything the CSS
 // needs is derived here so a theme file only has to carry the essentials.
-function buildTokens(p) {
+function buildTokens(p, glowOn = true) {
   const dark = lum(p.bg) < 0.5;
   const bg = dark ? shade(p.bg, -0.12) : p.bg;
   const bg2 = p.base;
@@ -123,7 +123,9 @@ function buildTokens(p) {
 
   // Glow is the signature of the neon preset; on a desktop-derived theme it is
   // toned down (and dropped entirely in light themes, where it reads as smudge).
-  const g = dark ? 1 : 0;
+  // The user can switch it off outright (settings), which forces the flat
+  // variants below the same way a light theme does.
+  const g = glowOn && dark ? 1 : 0;
   const glow = (c, a, b) => (g ? `0 0 6px ${rgba(c, a)}, 0 0 16px ${rgba(c, b)}` : 'none');
 
   return {
@@ -244,13 +246,24 @@ function loadPresets() {
     String(a.name).localeCompare(String(b.name)));
 }
 
-function materialize(def) {
-  const tokens = buildTokens(def.palette);
+// The tokens that carry glow. With glow off these must come from the derived
+// (flat) set even when a preset overrides them — neon.json carries its glow
+// hardcoded, and spreading those overrides back in would defeat the switch.
+const GLOW_KEYS = ['glow-accent', 'glow-accent-2', 'glow-ok', 'glow-danger', 'glow-text',
+  'shadow-rail', 'shadow-dock', 'shadow-bar', 'shadow-panel', 'shadow-panel-focus', 'meter-glow'];
+
+function materialize(def, glowOn = true) {
+  const tokens = buildTokens(def.palette, glowOn);
+  let overrides = def.tokens || {};
+  if (!glowOn) {
+    overrides = { ...overrides };
+    for (const k of GLOW_KEYS) delete overrides[k];
+  }
   return {
     id: def.id,
     name: def.name,
     dark: lum(tokens.bg) < 0.5,
-    tokens: { ...tokens, ...(def.tokens || {}) },        // a preset may override any token
+    tokens: { ...tokens, ...overrides },                 // a preset may override any token
     terminal: { ...buildTerminal(def.palette, tokens), ...(def.terminal || {}) },
   };
 }
@@ -259,12 +272,12 @@ function materialize(def) {
 
 let gtkCache = null;
 
-async function systemTheme() {
+async function systemTheme(glowOn = true) {
   if (gtkCache === null) gtkCache = (await probeGtk()) || false;
   const gtk = gtkCache || null;
   const prefersDark = nativeTheme.shouldUseDarkColors || (gtk && gtk.prefer_dark) || false;
   const palette = paletteFromGtk(gtk, prefersDark);
-  const tokens = buildTokens(palette);
+  const tokens = buildTokens(palette, glowOn);
   return {
     id: 'system',
     name: gtk && gtk.theme_name ? `System (${gtk.theme_name})` : 'System',
@@ -277,10 +290,10 @@ async function systemTheme() {
 // Drop the probe cache so the next resolve() picks up a theme switch.
 function invalidate() { gtkCache = null; }
 
-async function resolve(id) {
-  if (!id || id === 'system') return systemTheme();
+async function resolve(id, glowOn = true) {
+  if (!id || id === 'system') return systemTheme(glowOn);
   const def = loadPresets().find((d) => d.id === id);
-  return def ? materialize(def) : systemTheme();
+  return def ? materialize(def, glowOn) : systemTheme(glowOn);
 }
 
 async function list() {

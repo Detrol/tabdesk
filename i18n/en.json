@@ -53,6 +53,8 @@
   "settings.about.hint": "Bugs and ideas go through “🐞 Bugs & Feedback” in the status bar — it reaches me directly.",
   "settings.theme": "Theme",
   "settings.theme.hint": "“System” follows your desktop’s light/dark setting.",
+  "settings.glow": "Glow effects",
+  "settings.glow.hint": "Neon glow around buttons and text in dark themes.",
   "settings.language": "Language",
   "settings.language.system": "System",
   "settings.language.hint": "“System” follows your desktop’s locale.",

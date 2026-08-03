@@ -543,7 +543,7 @@ function broadcast(channel, payload) {
 }
 
 async function applyTheme(win) {
-  activeTheme = await theme.resolve(settings.get('theme'));
+  activeTheme = await theme.resolve(settings.get('theme'), settings.get('glow') !== false);
   termEmbed.setTheme(activeTheme.terminal);
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w.isDestroyed()) w.setBackgroundColor(activeTheme.tokens.bg);
@@ -688,7 +688,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => app.quit());
 
 app.whenReady().then(async () => {
   // Resolve before the first window so it opens in the right colours.
-  activeTheme = await theme.resolve(settings.get('theme'));
+  activeTheme = await theme.resolve(settings.get('theme'), settings.get('glow') !== false);
   activeI18n = i18n.resolve(settings.get('language'));
   termEmbed.setTheme(activeTheme.terminal);
 
@@ -746,6 +746,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('theme:list', () => theme.list());
   ipcMain.handle('theme:set', async (event, id) => {
     settings.set('theme', id);
+    return applyTheme(win);
+  });
+  ipcMain.handle('theme:glow', async (event, on) => {
+    settings.set('glow', !!on);
     return applyTheme(win);
   });
 

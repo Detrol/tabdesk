@@ -53,6 +53,8 @@
   "settings.about.hint": "Buggar och idéer går via ”🐞 Buggar & synpunkter” i statusraden — det når mig direkt.",
   "settings.theme": "Tema",
   "settings.theme.hint": "”System” följer skrivbordets ljusa eller mörka läge.",
+  "settings.glow": "Glödeffekter",
+  "settings.glow.hint": "Neonglöd runt knappar och text i mörka teman.",
   "settings.language": "Språk",
   "settings.language.system": "System",
   "settings.language.hint": "”System” följer skrivbordets språkinställning.",

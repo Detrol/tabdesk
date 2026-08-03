@@ -122,6 +122,13 @@ async function loadLanguages() {
     currentLanguage, (l) => ({ value: l.code, label: l.name }));
 }
 
+const glowBox = document.getElementById('st-glow');
+glowBox.checked = bootSettings.glow !== false;
+glowBox.addEventListener('change', async () => {
+  await window.api.setGlow(glowBox.checked);
+  flashSaved();
+});
+
 themeSel.addEventListener('change', async () => {
   currentTheme = themeSel.value;
   await window.api.setTheme(themeSel.value);

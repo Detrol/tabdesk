@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('api', {
   // dropped into themes/ while TabDesk runs should turn up without a restart.
   listThemes: () => ipcRenderer.invoke('theme:list'),
   setTheme: (id) => ipcRenderer.invoke('theme:set', id),
+  setGlow: (on) => ipcRenderer.invoke('theme:glow', on),
   listLanguages: () => ipcRenderer.invoke('i18n:list'),
   setLanguage: (code) => ipcRenderer.invoke('language:set', code),
 
