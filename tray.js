@@ -137,4 +137,4 @@ function destroy() {
   tray = null;
 }
 
-module.exports = { init, setTabs, setStrings, destroy };
+module.exports = { init, setTabs, setStrings, destroy, showWindow };

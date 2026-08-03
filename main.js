@@ -577,6 +577,15 @@ function cropRegion(image, rect, w, h) {
   });
 }
 
+// One TabDesk per machine: a second instance would -A-attach the same tmux
+// sessions (two windows typing into one agent) and fight over the openTabs
+// registry. The second launch just brings the first window forward.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => tray.showWindow());
+}
+
 app.whenReady().then(async () => {
   // Resolve before the first window so it opens in the right colours.
   activeTheme = await theme.resolve(settings.get('theme'));
