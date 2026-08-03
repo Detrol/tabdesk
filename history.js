@@ -95,6 +95,19 @@ function claudeDirFor(cwd) {
   return String(cwd).replace(/[^A-Za-z0-9]/g, '-');
 }
 
+// A project reached through a symlink has two spellings: the one the rail
+// shows and the one the kernel handed the agent as its cwd. The agents key
+// their stores on what they saw — the physical path — so every lookup here
+// must accept either spelling of the same directory.
+function spellingsOf(cwd) {
+  const out = [String(cwd)];
+  try {
+    const real = fs.realpathSync(cwd);
+    if (real && !out.includes(real)) out.push(real);
+  } catch (_) { /* gone or unreadable — the literal spelling is all there is */ }
+  return out;
+}
+
 // The title Claude Code gives a conversation, written again on every turn, so
 // the last one in the file is the current one. Sessions too short to have been
 // titled fall back to what was last typed into them.
@@ -104,24 +117,33 @@ function claudeTitle(text) {
 }
 
 async function claudeSessions(cwd, root) {
-  const dir = path.join(root || path.join(os.homedir(), '.claude', 'projects'), claudeDirFor(cwd));
-  let names;
-  try { names = await fsp.readdir(dir); } catch (_) { return []; }
+  const spellings = spellingsOf(cwd);
+  const base = root || path.join(os.homedir(), '.claude', 'projects');
+  // Both spellings' directories are read and merged — logs can sit under
+  // either, depending on which path the agent was started with over time.
+  const dirs = [...new Set(spellings.map(claudeDirFor))].map((n) => path.join(base, n));
 
-  const stats = await Promise.all(names
-    .filter((n) => n.endsWith('.jsonl') && SAFE_ID.test(n.slice(0, -6)))
-    .map(async (name) => {
+  const stats = [];
+  for (const dir of dirs) {
+    let names;
+    try { names = await fsp.readdir(dir); } catch (_) { continue; }
+    for (const name of names.filter((n) => n.endsWith('.jsonl') && SAFE_ID.test(n.slice(0, -6)))) {
       try {
         const st = await fsp.stat(path.join(dir, name));
-        return { name, at: st.mtimeMs };
-      } catch (_) { return null; }
-    }));
-  const newest = stats.filter(Boolean).sort((a, b) => b.at - a.at);
+        stats.push({ dir, name, at: st.mtimeMs });
+      } catch (_) { /* raced away */ }
+    }
+  }
+  const newest = stats.sort((a, b) => b.at - a.at);
 
   const out = [];
+  const seen = new Set();
   let opened = 0;
-  for (const { name, at } of newest) {
+  for (const { dir, name, at } of newest) {
     if (out.length >= MAX_PER_AGENT || opened >= CLAUDE_MAX_FILES) break;
+    const id = name.replace(/\.jsonl$/, '');
+    if (seen.has(id)) continue;      // same session mirrored under both spellings
+    seen.add(id);
     opened += 1;
     const file = path.join(dir, name);
     const head = await readHead(file, MARK_BYTES);
@@ -131,7 +153,7 @@ async function claudeSessions(cwd, root) {
     // written for, and a resume that landed in another project's conversation
     // would be worse than an empty list.
     const owner = /"cwd":"((?:[^"\\]|\\.)*)"/.exec(head);
-    if (owner && unquote(owner[1]) !== cwd) continue;
+    if (owner && !spellings.includes(unquote(owner[1]))) continue;
 
     // A session the SDK started is a tool doing a job — a code review, a
     // subagent — not a conversation anybody means to pick up again. The
@@ -148,7 +170,7 @@ async function claudeSessions(cwd, root) {
       || claudeTitle(await readHead(file, HEAD_BYTES));
     out.push({
       agent: 'claude',
-      id: name.replace(/\.jsonl$/, ''),
+      id,
       title: title ? clip(title) : null,
       at,
     });
@@ -200,6 +222,7 @@ async function codexDays(root) {
 }
 
 async function codexSessions(cwd, root) {
+  const spellings = spellingsOf(cwd);
   const base = root || path.join(os.homedir(), '.codex', 'sessions');
   const out = [];
   let opened = 0;
@@ -216,7 +239,7 @@ async function codexSessions(cwd, root) {
       const head = await readHead(file, META_BYTES);
       const nl = head.indexOf('\n');
       const meta = codexMeta(nl > 0 ? head.slice(0, nl) : head);
-      if (!meta || meta.skip || meta.cwd !== cwd) continue;
+      if (!meta || meta.skip || !spellings.includes(meta.cwd)) continue;
 
       const [body, st] = await Promise.all([
         readHead(file, HEAD_BYTES),
@@ -248,7 +271,10 @@ async function previousSessions(cwd, agentIds, roots) {
   const where = roots || {};
   const wanted = (Array.isArray(agentIds) ? agentIds : Object.keys(PROVIDERS))
     .filter((id) => PROVIDERS[id]);
-  const key = `${cwd}|${wanted.join(',')}|${wanted.map((id) => where[id] || '').join(',')}`;
+  // Keyed on the resolved spelling so the same project asked for through its
+  // symlink and through its target shares one cache entry.
+  const spellings = spellingsOf(cwd);
+  const key = `${spellings[spellings.length - 1]}|${wanted.join(',')}|${wanted.map((id) => where[id] || '').join(',')}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.rows;
 
@@ -262,5 +288,5 @@ module.exports = {
   previousSessions,
   // Exported for the tests, which drive the parsers directly rather than
   // depending on whatever conversations happen to be on the machine.
-  claudeDirFor, claudeTitle, claudeSessions, codexMeta, codexTitle, codexSessions,
+  claudeDirFor, spellingsOf, claudeTitle, claudeSessions, codexMeta, codexTitle, codexSessions,
 };

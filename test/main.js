@@ -286,7 +286,49 @@ app.on('ready', async () => {
   ok('ingen agent utan lasare', (await H.previousSessions(CWD, ['aider'], where)).length === 0);
   ok('tom sokvag ger tom lista', (await H.previousSessions('', ['claude'], where)).length === 0);
 
+  console.log('== symlankade projekt ==');
+  // The agents record their cwd physically (the kernel resolves the symlink),
+  // while the rail asks with the symlink's spelling — both must meet.
+  const symBase = fsx.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-sym-'));
+  const phys = path.join(symBase, 'workspace', 'projekt');
+  fsx.mkdirSync(phys, { recursive: true });
+  const link = path.join(symBase, 'projekt');
+  fsx.symlinkSync(phys, link);
+  const realPhys = fsx.realpathSync(phys);
+
+  ok('spellingsOf ger bada stavningarna',
+    H.spellingsOf(link).includes(link) && H.spellingsOf(link).includes(realPhys));
+
+  write(path.join(STORE, 'claude', H.claudeDirFor(realPhys), '55555555-5555-4555-8555-555555555555.jsonl'),
+    line({ type: 'user', cwd: realPhys }) + line({ type: 'last-prompt', lastPrompt: 'via symlank' }), 4000000);
+  const viaLink = await H.claudeSessions(link, path.join(STORE, 'claude'));
+  ok('fysiskt lagrad session hittas via symlanken',
+    viaLink.length === 1 && viaLink[0].id === '55555555-5555-4555-8555-555555555555',
+    viaLink.map((r) => r.id).join(', '));
+  ok('titeln foljer med via symlanken', viaLink[0] && viaLink[0].title === 'via symlank');
+
+  // The same session mirrored under both spellings is one conversation.
+  write(path.join(STORE, 'claude', H.claudeDirFor(link), '55555555-5555-4555-8555-555555555555.jsonl'),
+    line({ type: 'user', cwd: link }), 3900000);
+  ok('samma id under bada stavningarna listas en gang',
+    (await H.claudeSessions(link, path.join(STORE, 'claude'))).length === 1);
+
+  // The collision guard still rejects a file written for an unrelated path.
+  write(path.join(STORE, 'claude', H.claudeDirFor(realPhys), '66666666-6666-4666-8666-666666666666.jsonl'),
+    line({ type: 'user', cwd: '/helt/annan/plats' }), 4100000);
+  ok('frammande cwd avvisas ocksa via symlank',
+    !(await H.claudeSessions(link, path.join(STORE, 'claude'))).some((r) => r.id.startsWith('6666')));
+
+  rollout('2026/08/03', 'ffffffff-6666-4666-8666-666666666666',
+    { cwd: realPhys, originator: 'codex_cli_rs' },
+    line({ type: 'event_msg', payload: { type: 'user_message', message: 'Symlank codex' } }), 4200000);
+  const codexViaLink = await H.codexSessions(link, croot);
+  ok('codex-session med fysisk cwd hittas via symlanken',
+    codexViaLink.some((r) => r.id === 'ffffffff-6666-4666-8666-666666666666'),
+    codexViaLink.map((r) => r.id).join(', '));
+
   try { fsx.rmSync(STORE, { recursive: true, force: true }); } catch (_) { /* gone */ }
+  try { fsx.rmSync(symBase, { recursive: true, force: true }); } catch (_) { /* gone */ }
 
 
   }
