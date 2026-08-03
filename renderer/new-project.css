@@ -86,27 +86,6 @@
    of something rather than more projects. */
 .pk-wt { margin-left: 14px; }
 .pk-wt .pk-name { color: var(--muted, inherit); }
-.pk-plus {
-  flex: 0 0 auto;
-  width: 28px;
-  font: inherit;
-  font-size: 15px;
-  line-height: 1;
-  color: var(--muted, var(--text));
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  opacity: 0;
-  cursor: pointer;
-}
-.pk-line:hover .pk-plus,
-.pk-plus:focus-visible { opacity: 1; }
-.pk-plus:hover,
-.pk-plus:focus-visible {
-  color: var(--text);
-  background: var(--hover, rgba(127, 127, 127, 0.14));
-}
-
 .pk-item {
   display: flex;
   align-items: baseline;

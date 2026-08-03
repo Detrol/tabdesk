@@ -54,9 +54,8 @@ function renderList() {
 
   listEl.innerHTML = '';
   for (const p of matches) {
-    // A row is two buttons side by side, not one inside the other: the name
-    // opens the project (focusing the tab it already has), the + always opens
-    // another tab on it — a second agent, or a second session of the same one.
+    // One row, one button: this window is for reaching a project, and opening
+    // more sessions in it is the strip's + once you are there.
     const row = document.createElement('div');
     row.className = p.worktree ? 'pk-line pk-wt' : 'pk-line';
 
@@ -79,14 +78,6 @@ function renderList() {
 
     item.addEventListener('click', () => choose({ kind: 'project', ...p }));
     row.appendChild(item);
-
-    const plus = document.createElement('button');
-    plus.type = 'button';
-    plus.className = 'pk-plus';
-    plus.textContent = '+';
-    plus.title = window.t('picker.newTab');
-    plus.addEventListener('click', () => choose({ kind: 'project', ...p, newTab: true }));
-    row.appendChild(plus);
 
     listEl.appendChild(row);
   }

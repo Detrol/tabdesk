@@ -13,42 +13,52 @@
 
 ## Fork notes (misty-moon)
 
-Every agent and shell tab runs inside a named tmux session
-(`td-<agent>-<project-path>`), so work survives TabDesk quitting, crashing, or
-the X session restarting — the tabs come back at the next start and reattach,
-scrollback and all. The × on a tab ends its session for real (that click is
-the "I'm done" signal), and quitting the agent inside a tab ends it too. No
-tmux command is ever required.
+The rail on the left holds **projects**; the strip above the terminals holds
+the **sessions** of whichever project is selected. Every session runs inside a
+named tmux session (`td-<agent>-<project-path>`), so work survives TabDesk
+quitting, crashing, or the X session restarting — the sessions come back at the
+next start and reattach, scrollback and all. The × on a session tab ends it for
+real (that click is the "I'm done" signal), and quitting the agent inside it
+ends it too. No tmux command is ever required.
 
-- **A project can have several tabs** — the `+` beside a picker row always
-  opens another one, for a second agent or a second session of the same one.
-  Extra tabs are numbered (`myproj ·2`) and carry their own session.
-- **Worktrees** under `<project>/.worktrees/` appear indented under their
-  project in the picker; searching a branch name finds them.
-- **Each tab owns its agent.** Opening a Codex tab doesn't turn the project
-  into a Codex project — the project's pick is only the seed the next tab is
-  born with, and tabs already open keep what they are running.
-- **The model bar follows the tab's agent.** Claude Code gets the alias list,
-  opencode is asked for its providers, and a CLI that can only be configured
-  from inside itself shows what it is set to, read-only. Picks are stored per
-  project *and* agent, so they never cross.
-- **Finished tabs show how long they have waited**, so a rail of green dots
+- **Every project's first tab is its overview** — what it is running now, what
+  it can start, and the conversations it has had before. That last list is read
+  from Claude Code's and Codex's own session stores, so picking one resumes it
+  (`claude --resume`, `codex resume`) in a session of its own. Sessions the SDK
+  started — code reviews, subagents — are left out; they are jobs, not
+  conversations.
+- **A project can run as many sessions as you like** — the strip's `+` opens
+  another under any installed CLI, or in one of the project's worktrees.
+  Numbering is per runtime (`Codex ·2`), and a worktree session hangs under the
+  project it branches from rather than taking a rail row of its own.
+- **The grid is composed, not cycled** — ▦ beside a project or a session keeps
+  that panel on screen while you work elsewhere, and the panel's × takes it out
+  again without ending anything.
+- **Each session owns its agent.** Opening a Codex session doesn't turn the
+  project into a Codex project — the project's pick is only the seed the next
+  session is born with, and sessions already open keep what they are running.
+- **The model bar follows the session's agent.** Claude Code gets the alias
+  list, opencode is asked for its providers, and a CLI that can only be
+  configured from inside itself shows what it is set to, read-only. Picks are
+  stored per project *and* agent, so they never cross.
+- **Finished sessions show how long they have waited**, and a project row
+  carries the longest wait of the sessions under it, so a rail of green dots
   can be worked oldest-first.
 - Only one TabDesk runs at a time; `extras/tabdesk-autostart.desktop` starts
   `extras/tabdesk-guard.sh`, which brings it back after a crash.
 
-Other deltas: in-app xterm.js terminals (no xterm/xdotool needed), Claude tabs
-start with `--dangerously-skip-permissions`, symlinked projects show in the
-rail and dot-dirs don't, Laravel previews run `php artisan serve`, and the
-usage scan caches per file (`userData/usage-cache.json`). Launch with
+Other deltas: in-app xterm.js terminals (no xterm/xdotool needed), Claude
+sessions start with `--dangerously-skip-permissions`, symlinked projects show
+in the rail and dot-dirs don't, Laravel previews run `php artisan serve`, and
+the usage scan caches per file (`userData/usage-cache.json`). Launch with
 `./tabdesk.sh` (points the rail at `/srv/dev`); `node scripts/seed-closed.js`
-once pre-hides the non-project directories.
+once pre-hid the non-project directories, which stay out of the rail.
 
 ## Features
 
-- **Project tab rail** — every directory under your projects folder becomes a tab, most-recently-modified first. Opening one spawns a terminal already running `claude --permission-mode auto` in that project.
-- **Grid view** — cycle from 1 up to 6 panels visible at once (`▦ Grid`) to watch several agents work side by side.
-- **Activity flags** — background tabs pulse while their terminal streams output and turn green when they fall quiet ("your turn").
+- **Project rail** — every directory under your projects folder becomes a row, most-recently-modified first; selecting one shows its sessions in the strip above the terminals.
+- **Grid view** — ▦ pins up to six panels on screen at once to watch several agents work side by side.
+- **Activity flags** — background sessions pulse while their terminal streams output and turn green when they fall quiet ("your turn"); a project row shows the state of the sessions under it.
 - **Live preview dock** — runs the active project (static HTML, Node, Python/Flask/FastAPI/Django, Rust, Go, …), finds the port it binds, and renders it in a webview. Hover any element to reveal its source.
 - **Follows your desktop** — colours are derived from the live GTK theme (light/dark, accent, borders) and the UI speaks your system language. Both update live when you change them in system settings.
 - **Themes** — the original neon look is kept as a preset in `themes/neon.json`; drop in more JSON files to add your own.
@@ -116,6 +126,7 @@ instead (screenshottable, but no native window).
 | `preview-runner.js` | Detects and launches a project for the live preview |
 | `preview-preload.js` | Element inspector injected into the preview webview |
 | `usage-worker.js` | Off-thread scan of `~/.claude/projects` for token usage |
+| `history.js` | Earlier conversations, read from the agents' own session stores |
 | `term-embed.js` | Native `xterm` embedding via X11 reparenting |
 | `theme.js` | Theme engine — GTK probe, token derivation, presets |
 | `themes/` | Theme presets (`neon.json`) |
