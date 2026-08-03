@@ -408,11 +408,15 @@ html, body {
   height: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 8px;
   background: var(--surface);
   box-shadow: var(--shadow-panel);
   overflow: hidden;
 }
+/* The inset goes on xterm's own element, not on .term: the fit addon subtracts
+   the terminal element's padding but takes the parent's height at face value,
+   so padding up on .term makes it count rows for space that isn't there and
+   the bottom line renders clipped. */
+.panel .term .xterm { padding: 8px; }
 
 /* Placeholder shown under the embedded native terminal until it maps. */
 .panel .term.embed {
