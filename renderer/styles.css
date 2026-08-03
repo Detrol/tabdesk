@@ -180,6 +180,17 @@ html, body {
 
 .tab .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* How long a finished tab has been waiting. Empty until it goes green, so it
+   costs no space on a tab that is working or being watched. */
+.tab .wait {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.tab.done .wait { color: var(--ok, var(--faint)); }
+
 .tab .close {
   border: none;
   background: transparent;

@@ -54,12 +54,33 @@ function syncTray() {
   });
 }
 
+// How long a finished tab has been waiting, as the badge shows it. Minutes
+// until an hour, then hours and minutes — a rotation is decided on "which has
+// waited longest", not on seconds.
+function waitLabel(since) {
+  const mins = Math.floor((Date.now() - since) / 60000);
+  if (mins < 1) return '';
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}m`;
+}
+
+function renderWait(t) {
+  const el = t.tabEl.querySelector('.wait');
+  if (!el) return;
+  const text = t.doneAt ? waitLabel(t.doneAt) : '';
+  if (el.textContent === text) return;   // one DOM write a minute, not one a second
+  el.textContent = text;
+  el.title = text ? window.t('tab.waiting', { time: text }) : '';
+}
+
 // Clear any busy/done flags on a tab (called when the user looks at it).
 function clearTabFlag(t) {
   clearTimeout(t.idleTimer);
   const wasBusy = t.busy;
   t.busy = false;
+  t.doneAt = 0;
   t.tabEl.classList.remove('busy', 'done');
+  renderWait(t);
   if (wasBusy) syncTray();
 }
 
@@ -93,8 +114,10 @@ function markActivity(id) {
 
   const wasBusy = t.busy;
   t.busy = true;
+  t.doneAt = 0;
   t.tabEl.classList.add('busy');
   t.tabEl.classList.remove('done');
+  renderWait(t);
   if (!wasBusy) syncTray();
   clearTimeout(t.idleTimer);
   t.idleTimer = setTimeout(() => {
@@ -105,6 +128,7 @@ function markActivity(id) {
     // position is what makes the colour findable in a rail too long to scan.
     if (!isWatched(id)) {
       t.tabEl.classList.add('done');
+      t.doneAt = Date.now();
       hoistOnDone(t);
     }
     syncTray();
@@ -375,6 +399,7 @@ function buildTab({ name, cwd, model, startCmd, atTop }) {
   tabEl.innerHTML = `
     <span class="dot"></span>
     <span class="label"></span>
+    <span class="wait"></span>
     <button class="close" title="${t('tab.close')}">×</button>`;
   tabEl.querySelector('.label').textContent = name;
   tabEl.addEventListener('click', (e) => {
@@ -1530,6 +1555,7 @@ function tickClock() {
   document.getElementById('m-clock').textContent =
     `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   tickResets();
+  for (const t of tabs.values()) if (t.doneAt) renderWait(t);
 }
 
 // Strings and colours baked into JS (button labels, live xterm palettes) don't
