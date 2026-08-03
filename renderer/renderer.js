@@ -1239,7 +1239,11 @@ window.api.listProjects().then((projects) => {
   return window.api.restoreTabs();
 }).then((records) => {
   for (const rec of records || []) {
-    const free = [...tabs.values()].find((t) => t.cwd === rec.cwd && !t.session && !t.materialized);
+    // Only the project's own session slots into the rail tab it already has;
+    // a numbered one is an extra tab and keeps its own name.
+    const free = rec.primary
+      ? [...tabs.values()].find((t) => t.cwd === rec.cwd && !t.session && !t.materialized)
+      : null;
     if (free) {
       free.session = rec.session;
       if (rec.agent) free.agent = rec.agent;

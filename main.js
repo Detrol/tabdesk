@@ -783,7 +783,8 @@ app.whenReady().then(async () => {
     let suffix = 2;
     while (taken.has(`${base}-${suffix}`)) suffix++;
     const session = `${base}-${suffix}`;
-    rememberTab({ session, cwd, agent, name: name || path.basename(cwd) });
+    const label = name || path.basename(cwd);
+    rememberTab({ session, cwd, agent, name: `${label} ·${suffix}` });
     return { session, suffix };
   });
 
@@ -795,8 +796,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('tabs:restore', () => new Promise((resolve) => {
     const records = openTabs().filter((r) => r.cwd && fs.existsSync(r.cwd));
     const claimed = new Set(records.map((r) => r.session));
-    const done = (orphans) => resolve(
-      [...records, ...orphans].sort((a, b) => a.session.localeCompare(b.session)));
+    // A session is the project's own only if its name is the one that project
+    // computes for itself; anything numbered belongs to an extra tab and must
+    // not take the project's place in the rail (it would lose its number and
+    // leave the base name unused).
+    const primary = (rec) => agents.list().some(
+      (a) => rec.session === `td-${a.id}-${slugFor(rec.cwd)}`);
+    const done = (orphans) => resolve([...records, ...orphans]
+      .sort((a, b) => a.session.localeCompare(b.session))
+      .map((r) => ({ ...r, primary: primary(r) })));
     try {
       execFile('tmux', ['ls', '-F', '#S #{session_path}'], (err, stdout) => {
         if (err || !stdout) return done([]);
