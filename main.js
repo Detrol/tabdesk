@@ -772,14 +772,19 @@ app.whenReady().then(async () => {
   // Reserve a session name for a second (third, …) tab on a project. Writing
   // the record here, not at terminal creation, is what stops two fast clicks
   // from both picking "-2": the reservation is the registry entry.
+  //
+  // Numbering starts at 2 and the bare name is never handed out: the project's
+  // own tab computes that name for itself when it starts (no session in its
+  // payload), so reserving it here would point two tabs at one agent.
   ipcMain.handle('tabs:allocate', async (event, { cwd, agent, name }) => {
     if (typeof cwd !== 'string' || !cwd || typeof agent !== 'string' || !agent) return null;
     const taken = await liveSessions();
     const base = `td-${agent}-${slugFor(cwd)}`;
-    let session = base;
-    for (let n = 2; taken.has(session); n++) session = `${base}-${n}`;
+    let suffix = 2;
+    while (taken.has(`${base}-${suffix}`)) suffix++;
+    const session = `${base}-${suffix}`;
     rememberTab({ session, cwd, agent, name: name || path.basename(cwd) });
-    return { session, suffix: session === base ? 0 : Number(session.slice(base.length + 1)) };
+    return { session, suffix };
   });
 
   // What the rail should carry beyond the plain project list: the tabs that

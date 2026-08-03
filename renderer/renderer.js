@@ -484,8 +484,10 @@ function closeTab(id) {
   if (!t) return;
   // The rail is rebuilt from the projects on disk at every start, so closing a
   // project tab has to be written down or it is back tomorrow. Reopening it
-  // from the picker clears the mark.
-  if (t.cwd) window.api.setProjectClosed(t.cwd, true);
+  // from the picker clears the mark. Only the project's *last* tab writes it —
+  // closing one of several says nothing about wanting the project gone.
+  const siblings = [...tabs.values()].filter((x) => x.cwd === t.cwd).length;
+  if (t.cwd && siblings === 1) window.api.setProjectClosed(t.cwd, true);
   if (t.materialized) {
     if (t.embed) {
       window.api.killEmbedTerminal(id);
@@ -496,6 +498,10 @@ function closeTab(id) {
       t.term.dispose();
     }
     t.panelEl.remove();
+  } else if (t.session) {
+    // Never started, but it owns a session (restored, or reserved for a
+    // duplicate) — main is the only one that can let it go.
+    window.api.releaseSession(t.session);
   }
   t.tabEl.remove();
   tabs.delete(id);
@@ -543,8 +549,11 @@ addBtn.addEventListener('click', async () => {
     if (res && res.ok) agentByProject[choice.path] = res.agent;
   }
 
-  // A project already in the rail gets focused rather than opened twice.
-  const existing = [...tabs.values()].find((x) => x.cwd === choice.path);
+  // A project already in the rail gets focused rather than opened twice —
+  // unless the + was used, which is the ask for another tab on it.
+  const existing = choice.newTab
+    ? null
+    : [...tabs.values()].find((x) => x.cwd === choice.path);
   if (existing) {
     // Its terminal is already running the old CLI; the new one starts with the
     // next tab, the same caveat the agent menu reports.
@@ -562,7 +571,25 @@ addBtn.addEventListener('click', async () => {
   // Opening it is the undo for having closed it: it belongs in the rail again
   // at the next start.
   window.api.setProjectClosed(choice.path, false);
-  setActive(buildTab({ name: choice.name, cwd: choice.path, model: choice.model, atTop: true }));
+
+  // A second tab on the same project needs its own session, reserved by main
+  // so two quick clicks can't pick the same name. The label wears the same
+  // number the session does, so the rail and `tmux ls` agree.
+  let session = null;
+  let name = choice.name;
+  const dup = [...tabs.values()].some((x) => x.cwd === choice.path);
+  if (dup) {
+    const alloc = await window.api.allocateSession(
+      choice.path, agentFor({ cwd: choice.path, agent: choice.agent }), choice.name);
+    if (alloc && alloc.session) {
+      session = alloc.session;
+      if (alloc.suffix) name = `${choice.name} ·${alloc.suffix}`;
+    }
+  }
+
+  const id = buildTab({ name, cwd: choice.path, model: choice.model, atTop: true });
+  if (session) tabs.get(id).session = session;
+  setActive(id);
 });
 
 document.getElementById('fullscreen-btn').addEventListener('click', () => window.api.toggleFullscreen());
@@ -1029,7 +1056,11 @@ agentMenu.addEventListener('click', async (e) => {
     toast(window.t('toast.agentFailed', { error: (res && res.error) || '' }));
     return;
   }
-  t.agent = res.agent;
+  // The choice belongs to the project, so every tab on it follows — otherwise
+  // a sibling tab would start the old CLI from a stale copy.
+  for (const other of tabs.values()) {
+    if (other.cwd === t.cwd) other.agent = res.agent;
+  }
   agentByProject[t.cwd] = res.agent;
   renderAgentBtn();
   // A running terminal was started by the old CLI and can't be swapped under it.
@@ -1298,7 +1329,11 @@ modelMenu.addEventListener('click', async (e) => {
     toast(window.t('toast.modelFailed', { error: (res && res.error) || '' }));
     return;
   }
-  tab.model = res.model;
+  // Stored against the project, so sibling tabs on it must not keep showing
+  // (and launching with) the model they were built with.
+  for (const other of tabs.values()) {
+    if (other.cwd === tab.cwd) other.model = res.model;
+  }
   renderModelBtn();
 
   const label = barLabel(tab.model);

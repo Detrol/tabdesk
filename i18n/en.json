@@ -5,6 +5,7 @@
   "picker.lead": "Pick the project this terminal belongs to, and what it starts.",
   "picker.starts": "Starts with",
   "picker.startsHint": "Untouched, the project keeps the choice it already had.",
+  "picker.newTab": "Open in a new tab",
   "picker.existing": "Existing project",
   "picker.search": "Search projects…",
   "picker.noneFound": "No project matches.",

@@ -5,6 +5,7 @@
   "picker.lead": "Välj vilket projekt terminalen hör till, och vad den startar.",
   "picker.starts": "Startar med",
   "picker.startsHint": "Rör du inget här behåller projektet valet det redan hade.",
+  "picker.newTab": "Öppna i en ny flik",
   "picker.existing": "Befintligt projekt",
   "picker.search": "Sök projekt…",
   "picker.noneFound": "Inget projekt matchar.",

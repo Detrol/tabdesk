@@ -42,6 +42,12 @@ function renderList() {
 
   listEl.innerHTML = '';
   for (const p of matches) {
+    // A row is two buttons side by side, not one inside the other: the name
+    // opens the project (focusing the tab it already has), the + always opens
+    // another tab on it — a second agent, or a second session of the same one.
+    const row = document.createElement('div');
+    row.className = 'pk-row';
+
     const item = document.createElement('button');
     item.className = 'pk-item';
     item.title = p.path;
@@ -60,7 +66,17 @@ function renderList() {
     }
 
     item.addEventListener('click', () => choose({ kind: 'project', ...p }));
-    listEl.appendChild(item);
+    row.appendChild(item);
+
+    const plus = document.createElement('button');
+    plus.type = 'button';
+    plus.className = 'pk-plus';
+    plus.textContent = '+';
+    plus.title = window.t('picker.newTab');
+    plus.addEventListener('click', () => choose({ kind: 'project', ...p, newTab: true }));
+    row.appendChild(plus);
+
+    listEl.appendChild(row);
   }
   noneEl.classList.toggle('hidden', matches.length > 0);
 }
