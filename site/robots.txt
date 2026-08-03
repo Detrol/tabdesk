@@ -1,6 +1,0 @@
-User-agent: *
-Allow: /
-
-# The page is public; the package it describes is not. Nothing here links to a
-# download, so there is nothing to keep crawlers out of.
-Sitemap: https://tabdesk.thern.io/sitemap.xml
