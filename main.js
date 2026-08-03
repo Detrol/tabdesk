@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, nativeTheme, shell, dialog,
         desktopCapturer, screen, clipboard } = require('electron');
 const { Worker } = require('worker_threads');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -38,25 +38,42 @@ const DEMO_START_CMD = process.env.TABDESK_START_CMD || null;
 
 // Run every agent tab inside a named tmux session, so the agent outlives
 // TabDesk itself — quit, crash, even an X restart. `-A` makes reopening a tab
-// an attach instead of a second agent, and killing a tab only kills the tmux
-// client; ending the agent for real is `tmux kill-session -t td-<agent>-<dir>`.
-// The status line is turned off at creation because its clock redraw counts as
-// terminal activity and would pulse every background tab's flag. The inner
-// command must stay double-quote-safe: it is built from the constants in
-// agents.js plus a SAFE_ID-gated model flag, and anything else is left
-// unwrapped rather than quoted around. Because `-A` ignores the command on
-// reattach, a per-project model change only takes effect once the old session
-// has ended.
+// an attach instead of a second agent. Persistence is for the deaths nobody
+// chose: the × on a tab means "done with this project" and kills the session
+// too (see term:kill / embed:kill), so no terminal command is ever needed and
+// a model change is just close + reopen. The status line is turned off at
+// creation because its clock redraw counts as terminal activity and would
+// pulse every background tab's flag. The inner command must stay
+// double-quote-safe: it is built from the constants in agents.js plus a
+// SAFE_ID-gated model flag, and anything else is left unwrapped rather than
+// quoted around.
 function wrapStartCmd(startCmd, cwd) {
-  if (!startCmd || !cwd || DEMO_START_CMD) return startCmd;
-  if (/["\\$`]/.test(startCmd)) return startCmd;
-  if (!agents.onPath('tmux')) return startCmd;
+  const plain = { cmd: startCmd, session: null };
+  if (!startCmd || !cwd || DEMO_START_CMD) return plain;
+  if (/["\\$`]/.test(startCmd)) return plain;
+  if (!agents.onPath('tmux')) return plain;
   const spec = agents.list().find((a) => a.id === agents.getFor(cwd));
-  if (!spec || !spec.command) return startCmd;
+  if (!spec || !spec.command) return plain;
   const base = path.basename(cwd).replace(/[^A-Za-z0-9_-]/g, '-');
+  const session = `td-${spec.id}-${base}`;
   const shell = process.env.SHELL || '/bin/bash';
-  return `tmux new-session -A -s td-${spec.id}-${base} ` +
-    `"tmux set-option status off; ${startCmd}; exec ${shell} -i"`;
+  return {
+    cmd: `tmux new-session -A -s ${session} ` +
+      `"tmux set-option status off; ${startCmd}; exec ${shell} -i"`,
+    session,
+  };
+}
+
+// Which tmux session each terminal id attached, so the × can take the session
+// with it. App quit and crashes never consult this — those sessions live on.
+const tmuxSessions = new Map();
+
+function killTmuxSession(id) {
+  const session = tmuxSessions.get(id);
+  tmuxSessions.delete(id);
+  if (!session) return;
+  // `=` pins an exact-name match; already-gone sessions are fine.
+  try { execFile('tmux', ['kill-session', '-t', '=' + session], () => {}); } catch (_) {}
 }
 
 // Aggregate Claude Code usage off the main thread.
@@ -656,7 +673,9 @@ app.whenReady().then(async () => {
       if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
       return;
     }
-    termEmbed.create(id, { cwd, startCmd: wrapStartCmd(startCmd, cwd) });
+    const wrapped = wrapStartCmd(startCmd, cwd);
+    if (wrapped.session) tmuxSessions.set(id, wrapped.session);
+    termEmbed.create(id, { cwd, startCmd: wrapped.cmd });
   });
   ipcMain.on('embed:place', (event, { id, rect }) => termEmbed.place(id, rect));
   ipcMain.on('embed:hide', (event, { id }) => termEmbed.hide(id));
@@ -666,7 +685,7 @@ app.whenReady().then(async () => {
   // window still starting), and the renderer says so rather than looking broken.
   ipcMain.handle('embed:insert', (event, { id, text }) =>
     termEmbed.insert(id, String(text || '')));
-  ipcMain.on('embed:kill', (event, { id }) => termEmbed.kill(id));
+  ipcMain.on('embed:kill', (event, { id }) => { termEmbed.kill(id); killTmuxSession(id); });
 
   // ---- Terminal lifecycle over IPC ----
 
@@ -1326,8 +1345,9 @@ app.whenReady().then(async () => {
 
     // Optionally auto-run a command (e.g. launch Claude Code in the project).
     if (startCmd) {
-      const cmd = wrapStartCmd(startCmd, cwd);
-      setTimeout(() => { try { term.write(cmd + '\r'); } catch (_) {} }, 350);
+      const wrapped = wrapStartCmd(startCmd, cwd);
+      if (wrapped.session) tmuxSessions.set(id, wrapped.session);
+      setTimeout(() => { try { term.write(wrapped.cmd + '\r'); } catch (_) {} }, 350);
     }
 
     term.onData((data) => {
@@ -1359,6 +1379,7 @@ app.whenReady().then(async () => {
       term.kill();
       terminals.delete(id);
     }
+    killTmuxSession(id);
   });
 
   ipcMain.on('window:toggle-fullscreen', () => {

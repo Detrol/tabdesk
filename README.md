@@ -15,9 +15,10 @@
 
 This fork runs every agent tab inside a named tmux session
 (`td-<agent>-<dir>`), so agents survive TabDesk quitting, crashing, or the X
-session restarting — reopening a tab reattaches. Consequences: closing a tab
-only detaches (end an agent with `tmux kill-session -t td-<agent>-<dir>`), and
-a per-project model change takes effect only after the old session ends.
+session restarting — reopening a tab reattaches. The × on a tab ends its
+session for real (that click is the "I'm done" signal), which also means a
+per-project model change is just close + reopen. No tmux command is ever
+required.
 Other deltas: in-app xterm.js terminals (no xterm/xdotool needed), Claude tabs
 start with `--dangerously-skip-permissions`, symlinked projects show in the
 rail and dot-dirs don't, Laravel previews run `php artisan serve`, and the
