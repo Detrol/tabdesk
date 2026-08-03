@@ -49,6 +49,21 @@ function detect(dir, port) {
   const P = String(port);
   const env = { PORT: P, BROWSER: 'none', FORCE_COLOR: '0', PYTHONUNBUFFERED: '1' };
 
+  // ---- Laravel: artisan outranks package.json ----
+  // A Laravel repo carries a package.json whose "dev" script is the Vite asset
+  // server — previewing that shows Vite's banner, not the app. artisan is the
+  // app.
+  if (exists(path.join(dir, 'artisan'))) {
+    const plan = {
+      kind: 'laravel', label: `php artisan serve --port ${P}`,
+      cmd: 'php', args: ['artisan', 'serve', '--host=127.0.0.1', `--port=${P}`], env,
+    };
+    if (!exists(path.join(dir, 'public/build/manifest.json')) && !exists(path.join(dir, 'public/hot'))) {
+      plan.warn = 'No built assets (public/build) and no Vite dev server — pages using @vite will show a manifest error. Run `npm run build` in the project once.';
+    }
+    return plan;
+  }
+
   // ---- Node (any package.json with a dev-ish script) ----
   const pkgPath = path.join(dir, 'package.json');
   if (exists(pkgPath)) {
@@ -156,6 +171,7 @@ async function start(projectPath, send) {
   }
 
   send('log', { name, kind: plan.kind, label: plan.label, line: `▶ ${plan.label}   (port ${port})\n\n` });
+  if (plan.warn) send('log', { line: `⚠ ${plan.warn}\n\n` });
 
   let proc;
   try {
