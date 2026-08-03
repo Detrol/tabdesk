@@ -131,7 +131,6 @@
   "rail.fullscreen": "⛶ Fullscreen",
   "rail.fullscreen.title": "Fullscreen (F11)",
   "tab.close": "End this session",
-  "panel.close": "Close this panel",
   "panel.loading": "▶ terminal…",
   "panel.exited": "[process exited]",
   "empty.select": "Select a <strong>project</strong> on the left to see its sessions.",

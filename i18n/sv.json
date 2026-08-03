@@ -131,7 +131,6 @@
   "rail.fullscreen": "⛶ Helskärm",
   "rail.fullscreen.title": "Helskärm (F11)",
   "tab.close": "Avsluta den här sessionen",
-  "panel.close": "Stäng den här panelen",
   "panel.loading": "▶ terminal…",
   "panel.exited": "[processen avslutades]",
   "empty.select": "Välj ett <strong>projekt</strong> till vänster för att se dess sessioner.",
