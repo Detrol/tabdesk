@@ -345,6 +345,49 @@ app.on('ready', async () => {
   try { fsx.rmSync(STORE, { recursive: true, force: true }); } catch (_) { /* gone */ }
   try { fsx.rmSync(symBase, { recursive: true, force: true }); } catch (_) { /* gone */ }
 
+  console.log('== codex-kvot ur rollout ==');
+  const CX = require(path.join(ROOT, 'codex-limits'));
+  const NOW = 1786000000000; // fast klocka: resets_at jamfors mot den
+  const snap = (obj) => JSON.stringify({ payload: { rate_limits: obj } });
+  const week = { used_percent: 46, window_minutes: 10080, resets_at: (NOW + 3600000) / 1000 };
+  const fiveH = { used_percent: 12, window_minutes: 300, resets_at: (NOW + 600000) / 1000 };
+
+  const bothWin = CX.parseRateLimits('x\n' + snap({ primary: week, secondary: fiveH }) + '\n', NOW);
+  ok('primart 7d-fonster blir week', bothWin && bothWin.week && bothWin.week.pct === 46);
+  ok('sekundart 5h-fonster blir session', bothWin && bothWin.session && bothWin.session.pct === 12);
+  ok('reset i epoksekunder blir ms', bothWin && bothWin.week.resetsAt === NOW + 3600000);
+
+  const singleWin = CX.parseRateLimits(snap({ primary: week, secondary: null }), NOW);
+  ok('utan sekundart fonster finns bara week', singleWin && singleWin.week && !singleWin.session);
+
+  const lastWins = CX.parseRateLimits(
+    snap({ primary: { ...week, used_percent: 10 } }) + '\n' + snap({ primary: week }), NOW);
+  ok('sista snapshotten i filen vinner', lastWins && lastWins.week.pct === 46);
+
+  ok('passerad reset kasseras',
+    CX.parseRateLimits(snap({ primary: { ...week, resets_at: (NOW - 1000) / 1000 } }), NOW) === null);
+  ok('text utan snapshot ger null', CX.parseRateLimits('inga granser har', NOW) === null);
+  ok('trasig snapshot ger null', CX.parseRateLimits('"rate_limits":{oparsbar', NOW) === null);
+
+  console.log('== nyaste rollout over dagkataloger ==');
+  const CODEXROOT = fsx.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-cx-'));
+  const dayOld = path.join(CODEXROOT, '2026', '08', '01');
+  const dayNew = path.join(CODEXROOT, '2026', '08', '03');
+  fsx.mkdirSync(dayOld, { recursive: true });
+  fsx.mkdirSync(dayNew, { recursive: true });
+  const resumedFile = path.join(dayOld, 'rollout-a.jsonl');
+  const todayFile = path.join(dayNew, 'rollout-b.jsonl');
+  fsx.writeFileSync(resumedFile, 'x');
+  fsx.writeFileSync(todayFile, 'y');
+  // En aterupptagen gammal session skrivs sist fast dess fil ligger i en aldre
+  // dagkatalog — mtime ska avgora, inte katalognamnet.
+  fsx.utimesSync(todayFile, new Date(1e12), new Date(1e12));
+  fsx.utimesSync(resumedFile, new Date(1e12 + 1000), new Date(1e12 + 1000));
+  const newestHit = CX.newestRollout(CODEXROOT);
+  ok('senaste skrivningen vinner over dagkatalogen', newestHit && newestHit.file === resumedFile,
+    newestHit && newestHit.file);
+  ok('saknad rot ger null', CX.newestRollout(path.join(CODEXROOT, 'finns-ej')) === null);
+  try { fsx.rmSync(CODEXROOT, { recursive: true, force: true }); } catch (_) { /* gone */ }
 
   }
 

@@ -101,7 +101,7 @@ contextBridge.exposeInMainWorld('api', {
   // Opens the "new tab" picker window; resolves with the choice, or null.
   pickProject: () => ipcRenderer.invoke('projects:pick'),
   getUsageStats: () => ipcRenderer.invoke('usage:stats'),
-  getUsageLimits: () => ipcRenderer.invoke('usage:limits'),
+  getUsageLimits: (agent) => ipcRenderer.invoke('usage:limits', agent),
   getSystemStats: () => ipcRenderer.invoke('system:stats'),
   // `embed` picks the capture path in main: a native terminal window isn't part
   // of the app's own surface, so it has to be cut out of the screen instead.

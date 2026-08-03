@@ -21,6 +21,7 @@ const projectsRoot = require('./projects-root');
 const portable = require('./portable');
 const updater = require('./updater');
 const usageLimits = require('./usage-limits');
+const codexLimits = require('./codex-limits');
 const tray = require('./tray');
 const syncConfig = require('./sync/config');
 const syncTransport = require('./sync/transport-sftp');
@@ -1481,7 +1482,14 @@ app.whenReady().then(async () => {
 
   // Plan limits (what /usage shows). Separate from usage:stats: that one is a
   // local scan of the transcripts, this one is the account's real quota.
-  ipcMain.handle('usage:limits', () => usageLimits.getLimits());
+  // The meters follow the focused session's runtime: Claude and Codex both
+  // publish their windows somewhere readable; for anything else the renderer
+  // gets an honest refusal rather than another runtime's numbers.
+  ipcMain.handle('usage:limits', (_event, agent) => {
+    if (agent === 'codex') return codexLimits.getLimits();
+    if (!agent || agent === 'claude' || agent === 'shell') return usageLimits.getLimits();
+    return { ok: false, reason: 'unsupported' };
+  });
 
   ipcMain.handle('system:stats', () => ({
     cpu: cpuPercent(),

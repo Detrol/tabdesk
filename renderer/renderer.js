@@ -391,6 +391,9 @@ function applyLayout() {
   renderAgentBtn();
   syncGridBtn();
   scheduleSync();
+  // So do the usage meters — focusing a Codex tab swaps the bar to Codex's
+  // windows. Cached in main, so a focus change costs an IPC round trip.
+  if (focusedAgent() !== metersAgent) refreshLimits();
 }
 
 function fitTerm(id) {
@@ -1884,9 +1887,30 @@ function setMeterLabelRaw(sel, text) {
 // local transcript estimate when we can't. Both states are legible on their
 // own; what's not acceptable is a bar that silently shows one while looking
 // like the other, so the labels and titles change with the mode.
+//
+// Which plan is a question of which runtime the focused session runs: a Codex
+// tab's meters are Codex's windows, not Claude's. Runtimes that publish no
+// usage anywhere readable (Gemini, opencode…) get an explicit dash — wrong
+// numbers with the right label are worse than none.
 const PLAN_METERS = [['m-session', 'session'], ['m-week', 'week'], ['m-scoped', 'scoped']];
 let usage = null;          // last local scan
 let limits = { ok: false }; // last plan-limit read
+let metersAgent = 'claude'; // the runtime `limits` describes
+
+// The runtime whose plan the meters should read: the focused session's agent.
+// Ad-hoc terminals, the overview and the empty state have no runtime of their
+// own, so they keep the Claude default the bar has always shown.
+function focusedAgent() {
+  const t = activeId && tabs.get(activeId);
+  if (!t || !tmuxAgentFor(t)) return 'claude';
+  const agent = agentFor(t);
+  return agent === 'shell' ? 'claude' : agent;
+}
+
+function agentLabelOf(id) {
+  const a = agentList.find((x) => x.id === id);
+  return (a && a.label) || id;
+}
 
 // The API grades each window itself; trust that when it's there and fall back
 // to a threshold of our own when it isn't.
@@ -1914,7 +1938,9 @@ function renderPlanMeters() {
     if (win.label) setMeterLabelRaw(sel, win.label);
     else setMeterLabel(sel, `bar.${key}`);
     setMeter(sel, win.pct, Math.round(win.pct) + '%', meterHot(win));
-    el.title = t(limits.stale ? 'bar.planTitleStale' : 'bar.planTitle');
+    el.title = metersAgent === 'codex'
+      ? t(limits.stale ? 'bar.codexTitleStale' : 'bar.codexTitle')
+      : t(limits.stale ? 'bar.planTitleStale' : 'bar.planTitle');
   }
 }
 
@@ -1937,17 +1963,38 @@ function renderLocalMeters() {
   }
 }
 
+// A runtime whose usage exists nowhere we can read: two dashed meters under
+// their usual labels, saying whose plan it is we can't see. Falling back to
+// the Claude transcripts here would dress one runtime in another's numbers.
+function renderNoDataMeters() {
+  document.getElementById('m-scoped').classList.add('hidden');
+  for (const sel of ['m-session', 'm-week']) {
+    const el = document.getElementById(sel);
+    el.classList.remove('hidden');
+    setMeterLabel(sel, sel === 'm-session' ? 'bar.session' : 'bar.week');
+    setMeter(sel, 0, '–');
+    el.title = t('bar.noQuota', { agent: agentLabelOf(metersAgent) });
+  }
+}
+
 function renderMeters() {
   if (limits.ok) renderPlanMeters();
-  else renderLocalMeters();
+  else if (metersAgent === 'claude') renderLocalMeters();
+  else renderNoDataMeters();
   tickResets();
 }
 
 // The plan windows are the live number, so they refresh on their own (cheap)
 // timer. Main caches them for a minute, so polling faster than that only costs
-// an IPC round trip.
+// an IPC round trip. The answer follows the focused session's runtime, and a
+// stale response for a tab you've already left must not repaint the bar — the
+// focus check after the await drops it.
 async function refreshLimits() {
-  limits = (await window.api.getUsageLimits()) || { ok: false, reason: 'network' };
+  const agent = focusedAgent();
+  const result = (await window.api.getUsageLimits(agent)) || { ok: false, reason: 'network' };
+  if (focusedAgent() !== agent) return;
+  metersAgent = agent;
+  limits = result;
   renderMeters();
 }
 
@@ -1995,7 +2042,9 @@ function tickResets() {
     if (!node) continue;
     const at = limits.ok
       ? (limits[key] && limits[key].resetsAt)
-      : (sel === 'm-session' ? midnight.getTime() : null);
+      // The midnight countdown belongs to the local-estimate fallback's daily
+      // bucket; a runtime shown as "no data" has nothing counting down.
+      : (metersAgent === 'claude' && sel === 'm-session' ? midnight.getTime() : null);
     node.textContent = at ? t('bar.reset', { time: fmtCountdown(at - now) }) : '';
   }
 }
