@@ -1,6 +1,9 @@
 {
   "id": "catppuccin-mocha",
   "name": "Catppuccin Mocha",
+  "family": "Catppuccin",
+  "variant": "Mocha",
+  "order": 4,
   "description": "Catppuccin's darkest flavour — soothing pastels on deep mocha.",
   "palette": {
     "bg": "#1e1e2e",

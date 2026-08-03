@@ -1,6 +1,9 @@
 {
   "id": "dracula",
   "name": "Dracula",
+  "family": "Dracula",
+  "variant": "Dracula",
+  "order": 1,
   "description": "The Dracula theme (draculatheme.com) — dark purple with pink/purple accents.",
   "palette": {
     "bg": "#282a36",

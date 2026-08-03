@@ -235,7 +235,13 @@ function loadPresets() {
       console.warn('[theme] bad preset', f, String(err));
     }
   }
-  return out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  // Families sort as a unit (Catppuccin's four flavours stay together), and
+  // inside one the JSON's `order` wins — variant order is light→dark or
+  // canonical, not alphabetical.
+  return out.sort((a, b) =>
+    String(a.family || a.name).localeCompare(String(b.family || b.name)) ||
+    (a.order || 0) - (b.order || 0) ||
+    String(a.name).localeCompare(String(b.name)));
 }
 
 function materialize(def) {
@@ -281,7 +287,10 @@ async function list() {
   const sys = await systemTheme();
   return [
     { id: 'system', name: sys.name, dark: sys.dark, builtin: true },
-    ...loadPresets().map((d) => ({ id: d.id, name: d.name, dark: lum(buildTokens(d.palette).bg) < 0.5 })),
+    ...loadPresets().map((d) => ({
+      id: d.id, name: d.name, dark: lum(buildTokens(d.palette).bg) < 0.5,
+      family: d.family || null, variant: d.variant || null,
+    })),
   ];
 }
 

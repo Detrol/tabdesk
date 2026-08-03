@@ -1,6 +1,9 @@
 {
   "id": "solarized-dark",
   "name": "Solarized Dark",
+  "family": "Solarized",
+  "variant": "Dark",
+  "order": 1,
   "description": "Ethan Schoonover's Solarized, dark variant — low-contrast teal-on-navy.",
   "palette": {
     "bg": "#002b36",

@@ -93,7 +93,27 @@ async function loadThemes() {
   // theme.list() already labels the system entry with the desktop theme it
   // resolved to ("System (Adwaita Dark)", theme.js), so the name is used as-is.
   // Wrapping it again here is what produced "System (System (Adwaita Dark))".
-  fill(themeSel, list, currentTheme, (th) => ({ value: th.id, label: th.name }));
+  // Themes that come in official variants carry a family: those become an
+  // optgroup with the variants under it, in the list's (already sorted) order.
+  themeSel.textContent = '';
+  const groups = new Map();
+  for (const th of list) {
+    let parent = themeSel;
+    if (th.family) {
+      if (!groups.has(th.family)) {
+        const g = document.createElement('optgroup');
+        g.label = th.family;
+        groups.set(th.family, g);
+        themeSel.appendChild(g);
+      }
+      parent = groups.get(th.family);
+    }
+    const opt = document.createElement('option');
+    opt.value = th.id;
+    opt.textContent = th.family ? (th.variant || th.name) : th.name;
+    opt.selected = th.id === currentTheme;
+    parent.appendChild(opt);
+  }
 }
 
 async function loadLanguages() {

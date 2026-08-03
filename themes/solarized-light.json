@@ -1,6 +1,9 @@
 {
   "id": "solarized-light",
   "name": "Solarized Light",
+  "family": "Solarized",
+  "variant": "Light",
+  "order": 2,
   "description": "Ethan Schoonover's Solarized, light variant — warm paper with the same accents.",
   "palette": {
     "bg": "#fdf6e3",

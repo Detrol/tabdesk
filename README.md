@@ -64,7 +64,7 @@ once pre-hid the non-project directories, which stay out of the rail.
 - **Activity flags** — background sessions pulse while their terminal streams output and turn green when they fall quiet ("your turn"); a project row shows the state of the sessions under it.
 - **Live preview dock** — runs the active project (static HTML, Node, Python/Flask/FastAPI/Django, Rust, Go, …), finds the port it binds, and renders it in a webview. Hover any element to reveal its source.
 - **Follows your desktop** — colours are derived from the live GTK theme (light/dark, accent, borders) and the UI speaks your system language. Both update live when you change them in system settings.
-- **Themes** — ships the classics as presets: Dracula, Nord, Solarized (dark & light), Gruvbox, Monokai, One Dark, Catppuccin Mocha, Tokyo Night, plus the original neon look. Drop more JSON files in `themes/` to add your own.
+- **Themes** — ships the classics as presets, each in its official variants: Dracula (+ Alucard), Nord, Solarized, Gruvbox and Atom One in dark & light, Catppuccin in all four flavours, Tokyo Night as Night/Storm/Day, Monokai, plus the original neon look. The theme menu groups a family's variants together. Drop more JSON files in `themes/` to add your own.
 - **Screenshot** — capture the focused terminal panel to a PNG in `~/Pictures`.
 - **System bar** — live Claude Code token usage (daily / weekly / total with cost estimate), plus CPU, RAM, and a clock.
 - **Fullscreen** — `F11` or the toolbar button.

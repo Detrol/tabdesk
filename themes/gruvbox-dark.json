@@ -1,6 +1,9 @@
 {
   "id": "gruvbox-dark",
   "name": "Gruvbox Dark",
+  "family": "Gruvbox",
+  "variant": "Dark",
+  "order": 1,
   "description": "Gruvbox (morhetz), dark medium contrast — retro warm browns and oranges.",
   "palette": {
     "bg": "#282828",

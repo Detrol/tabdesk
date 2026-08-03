@@ -1,6 +1,9 @@
 {
   "id": "one-dark",
   "name": "One Dark",
+  "family": "Atom One",
+  "variant": "Dark",
+  "order": 1,
   "description": "Atom's One Dark — muted slate with blue/purple accents.",
   "palette": {
     "bg": "#282c34",
