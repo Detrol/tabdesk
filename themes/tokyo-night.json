@@ -1,0 +1,41 @@
+{
+  "id": "tokyo-night",
+  "name": "Tokyo Night",
+  "description": "Tokyo Night (enkia) — deep indigo city-at-night with blue/purple neon.",
+  "palette": {
+    "bg": "#1a1b26",
+    "base": "#24283b",
+    "text": "#c0caf5",
+    "border": "#3b4261",
+    "accent": "#7aa2f7",
+    "accent2": "#bb9af7",
+    "faint": "#565f89",
+    "ok": "#9ece6a",
+    "warn": "#e0af68",
+    "danger": "#f7768e",
+    "magenta": "#bb9af7"
+  },
+  "terminal": {
+    "background": "#1a1b26",
+    "foreground": "#c0caf5",
+    "cursor": "#c0caf5",
+    "cursorAccent": "#1a1b26",
+    "selectionBackground": "rgba(40,52,87,.8)",
+    "black": "#15161e",
+    "red": "#f7768e",
+    "green": "#9ece6a",
+    "yellow": "#e0af68",
+    "blue": "#7aa2f7",
+    "magenta": "#bb9af7",
+    "cyan": "#7dcfff",
+    "white": "#a9b1d6",
+    "brightBlack": "#414868",
+    "brightRed": "#f7768e",
+    "brightGreen": "#9ece6a",
+    "brightYellow": "#e0af68",
+    "brightBlue": "#7aa2f7",
+    "brightMagenta": "#bb9af7",
+    "brightCyan": "#7dcfff",
+    "brightWhite": "#c0caf5"
+  }
+}

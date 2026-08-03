@@ -1,0 +1,41 @@
+{
+  "id": "one-dark",
+  "name": "One Dark",
+  "description": "Atom's One Dark — muted slate with blue/purple accents.",
+  "palette": {
+    "bg": "#282c34",
+    "base": "#353b45",
+    "text": "#abb2bf",
+    "border": "#3e4451",
+    "accent": "#61afef",
+    "accent2": "#c678dd",
+    "faint": "#5c6370",
+    "ok": "#98c379",
+    "warn": "#e5c07b",
+    "danger": "#e06c75",
+    "magenta": "#c678dd"
+  },
+  "terminal": {
+    "background": "#282c34",
+    "foreground": "#abb2bf",
+    "cursor": "#528bff",
+    "cursorAccent": "#282c34",
+    "selectionBackground": "rgba(62,68,81,.6)",
+    "black": "#282c34",
+    "red": "#e06c75",
+    "green": "#98c379",
+    "yellow": "#e5c07b",
+    "blue": "#61afef",
+    "magenta": "#c678dd",
+    "cyan": "#56b6c2",
+    "white": "#abb2bf",
+    "brightBlack": "#5c6370",
+    "brightRed": "#e5858c",
+    "brightGreen": "#a9ce90",
+    "brightYellow": "#eacd95",
+    "brightBlue": "#84c2f3",
+    "brightMagenta": "#d295e4",
+    "brightCyan": "#79c5cf",
+    "brightWhite": "#ffffff"
+  }
+}

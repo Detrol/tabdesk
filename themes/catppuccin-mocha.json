@@ -1,0 +1,41 @@
+{
+  "id": "catppuccin-mocha",
+  "name": "Catppuccin Mocha",
+  "description": "Catppuccin's darkest flavour — soothing pastels on deep mocha.",
+  "palette": {
+    "bg": "#1e1e2e",
+    "base": "#313244",
+    "text": "#cdd6f4",
+    "border": "#45475a",
+    "accent": "#cba6f7",
+    "accent2": "#f5c2e7",
+    "faint": "#6c7086",
+    "ok": "#a6e3a1",
+    "warn": "#fab387",
+    "danger": "#f38ba8",
+    "magenta": "#cba6f7"
+  },
+  "terminal": {
+    "background": "#1e1e2e",
+    "foreground": "#cdd6f4",
+    "cursor": "#f5e0dc",
+    "cursorAccent": "#1e1e2e",
+    "selectionBackground": "rgba(88,91,112,.5)",
+    "black": "#45475a",
+    "red": "#f38ba8",
+    "green": "#a6e3a1",
+    "yellow": "#f9e2af",
+    "blue": "#89b4fa",
+    "magenta": "#f5c2e7",
+    "cyan": "#94e2d5",
+    "white": "#a6adc8",
+    "brightBlack": "#585b70",
+    "brightRed": "#f38ba8",
+    "brightGreen": "#a6e3a1",
+    "brightYellow": "#f9e2af",
+    "brightBlue": "#89b4fa",
+    "brightMagenta": "#f5c2e7",
+    "brightCyan": "#94e2d5",
+    "brightWhite": "#bac2de"
+  }
+}

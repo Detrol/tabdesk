@@ -1,0 +1,41 @@
+{
+  "id": "monokai",
+  "name": "Monokai",
+  "description": "The classic Monokai (Wimer Hazenberg) — olive black with pink, green and orange.",
+  "palette": {
+    "bg": "#272822",
+    "base": "#3e3d32",
+    "text": "#f8f8f2",
+    "border": "#49483e",
+    "accent": "#fd971f",
+    "accent2": "#66d9ef",
+    "faint": "#75715e",
+    "ok": "#a6e22e",
+    "warn": "#e6db74",
+    "danger": "#f92672",
+    "magenta": "#ae81ff"
+  },
+  "terminal": {
+    "background": "#272822",
+    "foreground": "#f8f8f2",
+    "cursor": "#f8f8f2",
+    "cursorAccent": "#272822",
+    "selectionBackground": "rgba(73,72,62,.8)",
+    "black": "#272822",
+    "red": "#f92672",
+    "green": "#a6e22e",
+    "yellow": "#e6db74",
+    "blue": "#66d9ef",
+    "magenta": "#ae81ff",
+    "cyan": "#a1efe4",
+    "white": "#f8f8f2",
+    "brightBlack": "#75715e",
+    "brightRed": "#ff669e",
+    "brightGreen": "#beed5f",
+    "brightYellow": "#efe58a",
+    "brightBlue": "#8ae1f9",
+    "brightMagenta": "#c2a3ff",
+    "brightCyan": "#c1f3ec",
+    "brightWhite": "#f9f8f5"
+  }
+}

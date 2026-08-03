@@ -1,0 +1,41 @@
+{
+  "id": "solarized-dark",
+  "name": "Solarized Dark",
+  "description": "Ethan Schoonover's Solarized, dark variant — low-contrast teal-on-navy.",
+  "palette": {
+    "bg": "#002b36",
+    "base": "#073642",
+    "text": "#839496",
+    "border": "#586e75",
+    "accent": "#268bd2",
+    "accent2": "#2aa198",
+    "faint": "#586e75",
+    "ok": "#859900",
+    "warn": "#b58900",
+    "danger": "#dc322f",
+    "magenta": "#d33682"
+  },
+  "terminal": {
+    "background": "#002b36",
+    "foreground": "#839496",
+    "cursor": "#839496",
+    "cursorAccent": "#002b36",
+    "selectionBackground": "rgba(7,54,66,.9)",
+    "black": "#073642",
+    "red": "#dc322f",
+    "green": "#859900",
+    "yellow": "#b58900",
+    "blue": "#268bd2",
+    "magenta": "#d33682",
+    "cyan": "#2aa198",
+    "white": "#eee8d5",
+    "brightBlack": "#586e75",
+    "brightRed": "#cb4b16",
+    "brightGreen": "#9aad33",
+    "brightYellow": "#c9a72e",
+    "brightBlue": "#4ba1dc",
+    "brightMagenta": "#6c71c4",
+    "brightCyan": "#4fb3ab",
+    "brightWhite": "#fdf6e3"
+  }
+}
