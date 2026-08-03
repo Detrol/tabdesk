@@ -1688,12 +1688,14 @@ window.api.listProjects().then((list) => {
     const id = buildTab({ name, cwd: rec.cwd, projectCwd: owner, agent });
     tabs.get(id).session = rec.session;
   }
-  // Land on something rather than an empty window: the project with a session
-  // waiting for you, else the first one in the rail.
+  // Land on something rather than an empty window: the overview of the project
+  // with sessions waiting for you, else of the first one in the rail. The
+  // overview and not a terminal — attaching to an agent is a click you make,
+  // not something a restart does for you.
   if (!activeCwd) {
     const first = [...projects.keys()].find((cwd) => sessionsOf(cwd).length)
       || [...projects.keys()][0];
-    if (first) selectProject(first, { open: false });
+    if (first) showOverview(first);
   }
 }).catch(() => { /* a rail without restored sessions still works */ });
 
