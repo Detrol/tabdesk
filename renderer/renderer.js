@@ -936,11 +936,14 @@ function whenLabel(at) {
     { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+// A session TabDesk hasn't opened a terminal for is not therefore idle: if it
+// carries a tmux session it is running, this window just isn't looking at it —
+// which is exactly the state every restored session starts in.
 function sessionState(s) {
   if (s.dead) return t('overview.state.dead');
   if (s.busy) return t('overview.state.busy');
   if (s.doneAt) return t('overview.state.waiting', { time: waitLabel(s.doneAt) || '0m' });
-  if (!s.materialized) return t('overview.state.idle');
+  if (!s.materialized) return t(s.session ? 'overview.state.detached' : 'overview.state.idle');
   return t('overview.state.open');
 }
 

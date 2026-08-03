@@ -381,5 +381,6 @@
   "overview.state.open": "open",
   "overview.state.idle": "not started",
   "overview.state.dead": "ended",
-  "toast.gridFull": "The grid holds {n} panels."
+  "toast.gridFull": "The grid holds {n} panels.",
+  "overview.state.detached": "running, not open here"
 }

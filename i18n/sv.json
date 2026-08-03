@@ -381,5 +381,6 @@
   "overview.state.open": "öppen",
   "overview.state.idle": "inte startad",
   "overview.state.dead": "avslutad",
-  "toast.gridFull": "Rutnätet rymmer {n} rutor."
+  "toast.gridFull": "Rutnätet rymmer {n} rutor.",
+  "overview.state.detached": "kör, inte öppnad här"
 }

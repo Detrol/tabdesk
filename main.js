@@ -814,25 +814,38 @@ app.whenReady().then(async () => {
     // leave the base name unused).
     const primary = (rec) => agents.list().some(
       (a) => rec.session === `td-${a.id}-${slugFor(rec.cwd)}`);
-    const done = (orphans) => resolve([...records, ...orphans]
+    const done = (keep, orphans) => resolve([...keep, ...orphans]
       .sort((a, b) => a.session.localeCompare(b.session))
       .map((r) => ({ ...r, primary: primary(r) })));
     try {
       execFile('tmux', ['ls', '-F', '#S #{session_path}'], (err, stdout) => {
-        if (err || !stdout) return done([]);
+        // Nothing to check against: hand back what was written down rather than
+        // conclude from a failed command that every session is gone.
+        if (err || !stdout) return done(records, []);
         const orphans = [];
+        const live = new Set();
         for (const line of String(stdout).split('\n')) {
           const gap = line.indexOf(' ');
           if (gap < 1) continue;
           const session = line.slice(0, gap);
           const cwd = line.slice(gap + 1).trim();
-          if (!session.startsWith('td-') || claimed.has(session)) continue;
+          if (!session.startsWith('td-')) continue;
+          live.add(session);
+          if (claimed.has(session)) continue;
           if (!cwd || !fs.existsSync(cwd)) continue;
           orphans.push({ session, cwd, agent: null, name: path.basename(cwd) });
         }
-        done(orphans);
+        // A record whose session tmux no longer holds is not something to come
+        // back to: the agent inside it exited while TabDesk was closed, so
+        // nothing was running to strike the record. Left in, it becomes a tab
+        // that looks live and starts a brand new agent when clicked. Drop it —
+        // the conversation itself is still offered under the overview's
+        // "earlier", which is where starting it again belongs.
+        const keep = records.filter((r) => live.has(r.session));
+        for (const r of records) if (!live.has(r.session)) forgetTab(r.session);
+        done(keep, orphans);
       });
-    } catch (_) { done([]); }
+    } catch (_) { done(records, []); }
   }));
 
   // What the project's overview lists under "earlier": the conversations the
