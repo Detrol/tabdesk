@@ -65,7 +65,12 @@ function scanUsage() {
     let worker;
     try {
       worker = new Worker(path.join(__dirname, 'usage-worker.js'), {
-        workerData: { dir: path.join(os.homedir(), '.claude', 'projects') },
+        workerData: {
+          dir: path.join(os.homedir(), '.claude', 'projects'),
+          // Worker threads can't reach Electron's `app`, so the per-file cache
+          // location is decided here.
+          cacheFile: path.join(app.getPath('userData'), 'usage-cache.json'),
+        },
       });
     } catch (_) { return resolve(null); }
     worker.once('message', (msg) => { resolve(msg); worker.terminate(); });
