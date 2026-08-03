@@ -38,7 +38,19 @@ function showError(msg) {
 
 function renderList() {
   const q = searchEl.value.trim().toLowerCase();
-  const matches = q ? projects.filter((p) => p.name.toLowerCase().includes(q)) : projects;
+  // Searching matches worktrees too, and a project stays listed while any of
+  // its worktrees match — otherwise a search for a branch name shows the
+  // worktree under nothing.
+  const hit = (s) => s.toLowerCase().includes(q);
+  const rows = [];
+  for (const p of projects) {
+    const wts = (p.worktrees || []).filter((w) => !q || hit(w.name));
+    if (!q || hit(p.name) || wts.length) {
+      rows.push(p);
+      for (const w of wts) rows.push({ ...w, worktree: true });
+    }
+  }
+  const matches = rows;
 
   listEl.innerHTML = '';
   for (const p of matches) {
@@ -46,7 +58,7 @@ function renderList() {
     // opens the project (focusing the tab it already has), the + always opens
     // another tab on it — a second agent, or a second session of the same one.
     const row = document.createElement('div');
-    row.className = 'pk-row';
+    row.className = p.worktree ? 'pk-line pk-wt' : 'pk-line';
 
     const item = document.createElement('button');
     item.className = 'pk-item';

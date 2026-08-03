@@ -825,6 +825,24 @@ app.whenReady().then(async () => {
 
   // ---- Terminal lifecycle over IPC ----
 
+  // Git worktrees of a project, by the one-branch-one-worktree convention of
+  // keeping them in .worktrees/. They are branches of a project, not projects
+  // of their own, so they ride along on their project's entry rather than
+  // becoming rail tabs — the picker offers them, and an open one comes back
+  // through the tab registry.
+  const worktreesIn = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(path.join(dir, '.worktrees'), { withFileTypes: true }); } catch (_) { return []; }
+    const out = [];
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      const full = path.join(dir, '.worktrees', e.name);
+      try { if (!fs.statSync(full).isDirectory()) continue; } catch (_) { continue; }
+      out.push({ name: `${path.basename(dir)}/${e.name}`, path: full, model: model.getFor(full) });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  };
+
   // List project directories under PROJECTS_DIR, most-recently-modified first.
   // `closed` carries the user's × on that tab: the rail leaves those out, the
   // picker still offers them (see closedProjects below).
@@ -841,7 +859,11 @@ app.whenReady().then(async () => {
           let st;
           try { st = fs.statSync(full); } catch (_) { return null; } // dead link
           if (!st.isDirectory()) return null;
-          return { name: e.name, path: full, mtime: st.mtimeMs, model: model.getFor(full), closed: closed.has(full) };
+          return {
+            name: e.name, path: full, mtime: st.mtimeMs,
+            model: model.getFor(full), closed: closed.has(full),
+            worktrees: worktreesIn(full),
+          };
         })
         .filter(Boolean)
         .sort((a, b) => b.mtime - a.mtime);

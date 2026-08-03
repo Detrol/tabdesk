@@ -74,14 +74,18 @@
   border-radius: 8px;
 }
 
-/* Name and + sit side by side; the + only shows up once the row is pointed at,
+/* Name and + sit side by side; the + only shows up once the line is pointed at,
    so a list of projects doesn't read as a list of buttons. */
-.pk-row {
+.pk-line {
   display: flex;
   align-items: stretch;
   gap: 2px;
 }
-.pk-row .pk-item { flex: 1; min-width: 0; }
+.pk-line .pk-item { flex: 1; min-width: 0; }
+/* Worktrees sit under their project, indented, so the list reads as branches
+   of something rather than more projects. */
+.pk-wt { margin-left: 14px; }
+.pk-wt .pk-name { color: var(--muted, inherit); }
 .pk-plus {
   flex: 0 0 auto;
   width: 28px;
@@ -95,7 +99,7 @@
   opacity: 0;
   cursor: pointer;
 }
-.pk-row:hover .pk-plus,
+.pk-line:hover .pk-plus,
 .pk-plus:focus-visible { opacity: 1; }
 .pk-plus:hover,
 .pk-plus:focus-visible {
