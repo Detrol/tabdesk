@@ -13,12 +13,23 @@
 
 ## Fork notes (misty-moon)
 
-This fork runs every agent tab inside a named tmux session
-(`td-<agent>-<dir>`), so agents survive TabDesk quitting, crashing, or the X
-session restarting — reopening a tab reattaches. The × on a tab ends its
-session for real (that click is the "I'm done" signal), which also means a
-per-project model change is just close + reopen. No tmux command is ever
-required.
+Every agent and shell tab runs inside a named tmux session
+(`td-<agent>-<project-path>`), so work survives TabDesk quitting, crashing, or
+the X session restarting — the tabs come back at the next start and reattach,
+scrollback and all. The × on a tab ends its session for real (that click is
+the "I'm done" signal), and quitting the agent inside a tab ends it too. No
+tmux command is ever required.
+
+- **A project can have several tabs** — the `+` beside a picker row always
+  opens another one, for a second agent or a second session of the same one.
+  Extra tabs are numbered (`myproj ·2`) and carry their own session.
+- **Worktrees** under `<project>/.worktrees/` appear indented under their
+  project in the picker; searching a branch name finds them.
+- **Finished tabs show how long they have waited**, so a rail of green dots
+  can be worked oldest-first.
+- Only one TabDesk runs at a time; `extras/tabdesk-autostart.desktop` starts
+  `extras/tabdesk-guard.sh`, which brings it back after a crash.
+
 Other deltas: in-app xterm.js terminals (no xterm/xdotool needed), Claude tabs
 start with `--dangerously-skip-permissions`, symlinked projects show in the
 rail and dot-dirs don't, Laravel previews run `php artisan serve`, and the
