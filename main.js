@@ -17,6 +17,7 @@ const settings = require('./settings');
 const model = require('./model');
 const agents = require('./agents');
 const history = require('./history');
+const projectsRoot = require('./projects-root');
 const portable = require('./portable');
 const updater = require('./updater');
 const usageLimits = require('./usage-limits');
@@ -851,6 +852,21 @@ app.whenReady().then(async () => {
   // record claims — a session started before the registry existed, or one
   // whose record was lost. Sorted so the unsuffixed session is offered first
   // and adopts the project's own rail tab, leaving -2 to become an extra.
+  // tmux reports each session's path physically, but the rail knows a
+  // symlinked project by its spelling under the projects folder — adopting the
+  // physical spelling would grow a second rail row for the same project.
+  const projectSpellings = () => {
+    const out = [];
+    try {
+      for (const name of fs.readdirSync(PROJECTS_DIR)) {
+        if (name.startsWith('.')) continue;
+        const full = path.join(PROJECTS_DIR, name);
+        try { out.push({ path: full, real: fs.realpathSync(full) }); } catch (_) { /* dead link */ }
+      }
+    } catch (_) { /* no projects dir — nothing to map against */ }
+    return out;
+  };
+
   ipcMain.handle('tabs:restore', () => new Promise((resolve) => {
     const records = openTabs().filter((r) => r.cwd && fs.existsSync(r.cwd));
     const claimed = new Set(records.map((r) => r.session));
@@ -872,15 +888,17 @@ app.whenReady().then(async () => {
         if (err && err.code === 'ENOENT') return done(records, []);
         const orphans = [];
         const live = new Set();
+        const spellings = projectSpellings();
         for (const line of String(stdout).split('\n')) {
           const gap = line.indexOf(' ');
           if (gap < 1) continue;
           const session = line.slice(0, gap);
-          const cwd = line.slice(gap + 1).trim();
+          const raw = line.slice(gap + 1).trim();
           if (!session.startsWith('td-')) continue;
           live.add(session);
           if (claimed.has(session)) continue;
-          if (!cwd || !fs.existsSync(cwd)) continue;
+          if (!raw || !fs.existsSync(raw)) continue;
+          const cwd = projectsRoot.logicalizeCwd(raw, spellings);
           orphans.push({ session, cwd, agent: null, name: path.basename(cwd) });
         }
         // A record whose session tmux no longer holds is not something to come

@@ -327,6 +327,21 @@ app.on('ready', async () => {
     codexViaLink.some((r) => r.id === 'ffffffff-6666-4666-8666-666666666666'),
     codexViaLink.map((r) => r.id).join(', '));
 
+  console.log('== fysisk cwd tillbaka till radens stavning ==');
+  const PR = require(path.join(ROOT, 'projects-root'));
+  const entries = [
+    { path: '/root/proj', real: '/ws/proj' },
+    { path: '/root/mp', real: '/ws/proj/.worktrees/mp' },
+    { path: '/root/vanlig', real: '/root/vanlig' },
+  ];
+  ok('exakt fysisk vag blir logisk', PR.logicalizeCwd('/ws/proj', entries) === '/root/proj');
+  ok('worktree under fysisk vag behaller suffixet',
+    PR.logicalizeCwd('/ws/proj/.worktrees/x', entries) === '/root/proj/.worktrees/x');
+  ok('mest specifika lanken vinner', PR.logicalizeCwd('/ws/proj/.worktrees/mp', entries) === '/root/mp');
+  ok('omappbar vag ror inte', PR.logicalizeCwd('/nagon/annanstans', entries) === '/nagon/annanstans');
+  ok('prefix utan avgransare mappas inte', PR.logicalizeCwd('/ws/projekt', entries) === '/ws/projekt');
+  ok('tom entrylista ror inget', PR.logicalizeCwd('/ws/proj', []) === '/ws/proj');
+
   try { fsx.rmSync(STORE, { recursive: true, force: true }); } catch (_) { /* gone */ }
   try { fsx.rmSync(symBase, { recursive: true, force: true }); } catch (_) { /* gone */ }
 
