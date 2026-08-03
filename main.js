@@ -784,7 +784,7 @@ app.whenReady().then(async () => {
   // `basePromised` is the renderer saying an unstarted tab will compute that
   // plain name for itself when it starts — only it knows its tabs, only we
   // know the name they resolve to.
-  ipcMain.handle('tabs:allocate', async (event, { cwd, agent, name, basePromised }) => {
+  async function allocateSession({ cwd, agent, name, basePromised }) {
     if (typeof cwd !== 'string' || !cwd || typeof agent !== 'string' || !agent) return null;
     const taken = await liveSessions();
     const base = `td-${agent}-${slugFor(cwd)}`;
@@ -798,6 +798,18 @@ app.whenReady().then(async () => {
     const session = `${base}-${suffix}`;
     rememberTab({ session, cwd, agent, name: `${label} ·${suffix}` });
     return { session, suffix };
+  }
+
+  // …and one at a time. Reading the taken names means asking tmux, and two
+  // clicks landing inside that round trip would both be told the same name was
+  // free — two tabs typing into one agent, and the × on either taking the
+  // session out from under the other. Queueing is what makes the reservation
+  // a reservation.
+  let allocations = Promise.resolve();
+  ipcMain.handle('tabs:allocate', (event, args) => {
+    const next = allocations.then(() => allocateSession(args || {}));
+    allocations = next.then(() => {}, () => {});
+    return next;
   });
 
   // What the rail should carry beyond the plain project list: the tabs that
@@ -819,9 +831,11 @@ app.whenReady().then(async () => {
       .map((r) => ({ ...r, primary: primary(r) })));
     try {
       execFile('tmux', ['ls', '-F', '#S #{session_path}'], (err, stdout) => {
-        // Nothing to check against: hand back what was written down rather than
-        // conclude from a failed command that every session is gone.
-        if (err || !stdout) return done(records, []);
+        // "No server running" is how tmux reports that every session is gone —
+        // which is exactly the state after a reboot, when the records are at
+        // their most misleading. Only tmux itself being unrunnable means we
+        // cannot tell, and then the records stand.
+        if (err && err.code === 'ENOENT') return done(records, []);
         const orphans = [];
         const live = new Set();
         for (const line of String(stdout).split('\n')) {
