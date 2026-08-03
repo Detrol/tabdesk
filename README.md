@@ -27,6 +27,9 @@ ends it too. No tmux command is ever required.
   (`claude --resume`, `codex resume`) in a session of its own. Sessions the SDK
   started — code reviews, subagents — are left out; they are jobs, not
   conversations.
+- **The projects folder itself is the rail's home row** (`⌂`, pinned on top) —
+  work that spans projects runs in the root, and its sessions and earlier
+  conversations live there like any project's.
 - **A project can run as many sessions as you like** — the strip's `+` opens
   another under any installed CLI, or in one of the project's worktrees.
   Numbering is per runtime (`Codex ·2`), and a worktree session hangs under the

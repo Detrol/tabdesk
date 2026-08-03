@@ -498,6 +498,14 @@ html, body {
 /* Nothing open in it: the dot is there to keep the row aligned, not to say
    anything, so it recedes. */
 .tab.project.idle .dot { background: var(--faint); box-shadow: none; }
+/* The projects folder itself — the rail's fixed home row, where work that
+   spans projects lives. A rule under it separates home from the tree. */
+.tab.project.root {
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 8px 8px 0 0;
+  margin-bottom: 8px;
+}
+.tab.project.root .label::before { content: '⌂ '; color: var(--accent-soft); }
 .tab .pin {
   flex: 0 0 auto;
   border: 0;

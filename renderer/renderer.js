@@ -155,7 +155,16 @@ function clearTabFlag(t) {
 // cursor. The rail is the long list that needs the finished work brought up.
 function hoistOnDone(t) {
   const p = projects.get(t.projectCwd);
-  if (p && railList.firstElementChild !== p.el) railList.prepend(p.el);
+  if (!p) return;
+  // The projects-folder row is the rail's fixed home and keeps the top spot;
+  // finished projects surface right under it.
+  const first = railList.firstElementChild;
+  if (first === p.el) return;
+  if (first && first.classList.contains('root') && !p.el.classList.contains('root')) {
+    first.after(p.el);
+  } else {
+    railList.prepend(p.el);
+  }
 }
 
 // Called on every chunk of pty output (xterm.js backend) or whenever the
@@ -770,7 +779,7 @@ addBtn.addEventListener('click', async () => {
 
 function buildProject(p, { atTop } = {}) {
   const el = document.createElement('li');
-  el.className = 'tab project';
+  el.className = 'tab project' + (p.root ? ' root' : '');
   el.title = p.path;
   el.innerHTML = `
     <span class="dot"></span>

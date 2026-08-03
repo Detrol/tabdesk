@@ -47,6 +47,9 @@ function slugFor(cwd) {
   if (cwd.startsWith(root)) {
     return cwd.slice(root.length).replace(/[^A-Za-z0-9_-]/g, '-');
   }
+  // Everything else — the projects folder itself included — is named by
+  // basename plus a hash of the full path: a sanitised basename alone could
+  // collide with a project that happens to carry the same name.
   const hash = crypto.createHash('sha256').update(cwd).digest('hex').slice(0, 6);
   return `${path.basename(cwd).replace(/[^A-Za-z0-9_-]/g, '-')}-${hash}`;
 }
@@ -902,13 +905,22 @@ app.whenReady().then(async () => {
   // List project directories under PROJECTS_DIR, most-recently-modified first.
   // `closed` carries the user's × on that tab: the rail leaves those out, the
   // picker still offers them (see closedProjects below).
+  //
+  // The projects folder itself leads the list: work that spans projects — an
+  // agent asked about the whole tree — runs in the root, and those sessions
+  // and conversations need a row to live under just like any project's do.
   ipcMain.handle('projects:list', () => {
     try {
       const closed = new Set(closedProjects());
+      const root = {
+        name: path.basename(PROJECTS_DIR), path: PROJECTS_DIR, root: true,
+        model: model.getFor(PROJECTS_DIR, agents.getFor(PROJECTS_DIR)),
+        closed: false, worktrees: [],
+      };
       // stat rather than the Dirent: a symlinked project is still a project
       // (isDirectory() is false for the link itself), and dot-dirs (.git,
       // .trash, editor state) are bookkeeping, not projects.
-      return fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
+      const dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
         .filter((e) => !e.name.startsWith('.'))
         .map((e) => {
           const full = path.join(PROJECTS_DIR, e.name);
@@ -923,6 +935,7 @@ app.whenReady().then(async () => {
         })
         .filter(Boolean)
         .sort((a, b) => b.mtime - a.mtime);
+      return [root, ...dirs];
     } catch (_) {
       return [];
     }
