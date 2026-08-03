@@ -1,7 +1,8 @@
 const { Terminal } = window;          // xterm global
 const { FitAddon } = window.FitAddon; // fit addon global
 
-const tabList = document.getElementById('tab-list');
+const railList = document.getElementById('tab-list');
+const strip = document.getElementById('strip');
 const panels = document.getElementById('panels');
 const emptyState = document.getElementById('empty-state');
 
@@ -15,18 +16,45 @@ const emptyState = document.getElementById('empty-state');
 const EMBED_NATIVE = false;
 
 let seq = 0;
+
+// Two levels, the way a project actually works: the rail picks a project, the
+// strip above the terminals picks one of that project's sessions. `activeCwd`
+// is the project in front of you and is set as soon as one is chosen;
+// `activeId` is the session in front of you, and is null while the project's
+// overview is showing instead.
 let activeId = null;
-let gridSize = 1;        // how many panels to show at once (1–6)
-const visible = [];      // materialized ids currently shown, oldest→newest
-const tabs = new Map();  // id -> tab record
+let activeCwd = null;
+const projects = new Map();  // project path -> row record
+const tabs = new Map();      // id -> session record
+
+// Panels held on screen by the ▦ button, whatever the rail points at now. The
+// session in focus is shown beside them, so pinning nothing still shows one.
+const pinned = new Set();
+const MAX_PANELS = 6;
 
 // How long a background tab must stay silent before we call its command "done".
 // Claude's spinner streams output while it works; a static TUI (finished, or
 // waiting for input) stops emitting, so a quiet gap means "your turn".
 const IDLE_MS = 1500;
 
-// A tab is "watched" while it's visible in the grid — no need to flag it.
-function isWatched(id) { return visible.includes(id); }
+// A session is "watched" while it has a panel on screen — no need to flag it.
+function isWatched(id) { return pinned.has(id) || id === activeId; }
+
+// The sessions belonging to a project, in the order they were opened. A
+// worktree session belongs to the project it branches from, not to a rail row
+// of its own.
+function sessionsOf(cwd) {
+  return [...tabs.values()].filter((t) => t.projectCwd === cwd);
+}
+
+// The project's own first tab: what it has running and what it has run before.
+// It is a panel rather than a screen of its own so that it can share the grid
+// with the sessions you pinned — reading the summary shouldn't hide the work.
+const overviewEl = document.createElement('div');
+overviewEl.className = 'panel overview';
+panels.appendChild(overviewEl);
+let overviewCwd = null;      // the project the overview is showing, if any
+let stripOverview = null;    // its tab in the strip, while one is rendered
 
 // ---- System tray mirror ----------------------------------------------------
 // The tray menu in the main process is a mirror of the rail. Push a snapshot on
@@ -46,7 +74,7 @@ function syncTray() {
       activeId,
       tabs: [...tabs.values()].map((t) => ({
         id: t.id,
-        name: t.name,
+        name: fullName(t),
         cwd: t.cwd || null,
         busy: !!t.busy,
       })),
@@ -64,16 +92,40 @@ function waitLabel(since) {
   return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}m`;
 }
 
-function renderWait(t) {
-  const el = t.tabEl.querySelector('.wait');
+function renderWaitEl(el, since) {
   if (!el) return;
-  const text = t.doneAt ? waitLabel(t.doneAt) : '';
+  const text = since ? waitLabel(since) : '';
   if (el.textContent === text) return;   // one DOM write a minute, not one a second
   el.textContent = text;
   el.title = text ? window.t('tab.waiting', { time: text }) : '';
 }
 
-// Clear any busy/done flags on a tab (called when the user looks at it).
+function renderWait(t) {
+  renderWaitEl(t.tabEl.querySelector('.wait'), t.doneAt);
+}
+
+// A project row says what its sessions are doing, since they are only listed
+// once the project is selected. The worst state wins — a dead session is worth
+// knowing about even while another one works — and the wait badge counts from
+// whichever session has been waiting longest, which is the one the rotation is
+// deciding about.
+function renderProject(cwd) {
+  const p = projects.get(cwd);
+  if (!p) return;
+  const mine = sessionsOf(cwd);
+  const el = p.el;
+  el.classList.toggle('dead', mine.some((t) => t.dead));
+  el.classList.toggle('done', mine.some((t) => t.doneAt));
+  el.classList.toggle('busy', mine.some((t) => t.busy));
+  el.classList.toggle('idle', mine.length === 0);
+  const waits = mine.map((t) => t.doneAt).filter(Boolean);
+  renderWaitEl(el.querySelector('.wait'), waits.length ? Math.min(...waits) : 0);
+  const count = el.querySelector('.count');
+  count.textContent = mine.length ? String(mine.length) : '';
+  count.title = mine.length ? window.t('rail.sessions', { n: mine.length }) : '';
+}
+
+// Clear any busy/done flags on a session (called when the user looks at it).
 function clearTabFlag(t) {
   clearTimeout(t.idleTimer);
   const wasBusy = t.busy;
@@ -81,6 +133,7 @@ function clearTabFlag(t) {
   t.doneAt = 0;
   t.tabEl.classList.remove('busy', 'done');
   renderWait(t);
+  renderProject(t.projectCwd);
   if (wasBusy) syncTray();
 }
 
@@ -97,8 +150,12 @@ function clearTabFlag(t) {
 // Tying it to "done" makes position mean something, and it can only fire for
 // background tabs (a watched tab never goes green), so the rail is guaranteed
 // to hold still while you are looking at it.
+// It is the project row that moves, not the session tab: the strip is a fixed
+// list you read left to right, and reordering it would shuffle tabs under the
+// cursor. The rail is the long list that needs the finished work brought up.
 function hoistOnDone(t) {
-  if (tabList.firstElementChild !== t.tabEl) tabList.prepend(t.tabEl);
+  const p = projects.get(t.projectCwd);
+  if (p && railList.firstElementChild !== p.el) railList.prepend(p.el);
 }
 
 // Called on every chunk of pty output (xterm.js backend) or whenever the
@@ -106,7 +163,7 @@ function hoistOnDone(t) {
 // green ("done") once they fall silent.
 function markActivity(id) {
   const t = tabs.get(id);
-  if (!t || t.tabEl.classList.contains('dead')) return;
+  if (!t || t.dead) return;
 
   // Output while it streams only ever changes a tab's colour. The move comes
   // later, when it stops — see hoistOnDone().
@@ -118,6 +175,7 @@ function markActivity(id) {
   t.tabEl.classList.add('busy');
   t.tabEl.classList.remove('done');
   renderWait(t);
+  renderProject(t.projectCwd);
   if (!wasBusy) syncTray();
   clearTimeout(t.idleTimer);
   t.idleTimer = setTimeout(() => {
@@ -131,28 +189,37 @@ function markActivity(id) {
       t.doneAt = Date.now();
       hoistOnDone(t);
     }
+    renderProject(t.projectCwd);
     syncTray();
   }, IDLE_MS);
+}
+
+// What the panel area holds: everything pinned to the grid, plus the session
+// in focus. Pinning nothing therefore still shows the one you are working in.
+function shownIds() {
+  const ids = [...pinned].filter((id) => tabs.has(id)).slice(0, MAX_PANELS);
+  if (activeId && tabs.has(activeId) && !ids.includes(activeId)) ids.push(activeId);
+  return ids;
 }
 
 function setActive(id) {
   const t = tabs.get(id);
   if (!t) return;
+  // A session names its own project: reaching one from the tray, or from a
+  // strip the rail has not caught up with, has to move the rail too.
+  if (activeCwd !== t.projectCwd) selectProject(t.projectCwd, { open: false });
+  overviewCwd = null;
   if (!t.materialized) materialize(t);
 
   // Opening a tab means you're now watching it — drop the "done" flag. It keeps
   // whatever place in the rail it earned; clearing the flag is not a demotion.
   clearTabFlag(t);
 
-  // Move id to the front of the visible set, trimmed to gridSize.
-  const i = visible.indexOf(id);
-  if (i !== -1) visible.splice(i, 1);
-  visible.push(id);
-  while (visible.length > gridSize) visible.shift();
-
   activeId = id;
+  const p = projects.get(t.projectCwd);
+  if (p) p.lastId = id;                  // where this project reopens next time
   applyLayout();
-  for (const vid of visible) fitSoon(vid);
+  for (const vid of shownIds()) fitSoon(vid);
   scheduleSync();
   // The dock is fixed and does not belong to any one tab, so switching projects
   // is the moment it can start lying about which one it holds.
@@ -261,8 +328,8 @@ window.api.onTerminalDeclined(({ id }) => {
   if (t.cleanup) { try { t.cleanup(); } catch (_) { /* already gone */ } }
   if (t.panelEl) t.panelEl.remove();
   Object.assign(t, { materialized: false, embed: false, panelEl: null, term: null, cleanup: null });
-  const i = visible.indexOf(id);
-  if (i !== -1) visible.splice(i, 1);
+  pinned.delete(id);
+  if (activeId === id) activeId = null;
   applyLayout();
   toast(window.t('trust.declined'));
 });
@@ -278,10 +345,12 @@ if (EMBED_NATIVE) {
   window.api.onEmbedActivity((id) => markActivity(id));
 }
 
-// Lay out the visible panels in a grid and highlight the focused one.
+// Lay out the panels on screen in a grid and highlight the focused one. The
+// overview is a panel like any other, so a project's summary can sit beside the
+// sessions you pinned rather than replacing them.
 function applyLayout() {
-  const ids = visible.slice(-gridSize);
-  const n = ids.length;
+  const ids = shownIds();
+  const n = ids.length + (overviewCwd ? 1 : 0);
   emptyState.classList.toggle('hidden', n > 0);
 
   const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
@@ -289,18 +358,29 @@ function applyLayout() {
   panels.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   panels.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
 
+  overviewEl.classList.toggle('shown', !!overviewCwd);
+  overviewEl.classList.toggle('focused', !!overviewCwd && n > 1);
+
   for (const [tid, tt] of tabs) {
     const shown = ids.includes(tid);
     tt.tabEl.classList.toggle('active', shown);
     tt.tabEl.classList.toggle('focused', tid === activeId);
+    tt.tabEl.classList.toggle('pinned', pinned.has(tid));
     if (tt.panelEl) {
       tt.panelEl.classList.toggle('shown', shown);
       tt.panelEl.classList.toggle('focused', tid === activeId && n > 1);
+      tt.panelEl.classList.toggle('pinned', pinned.has(tid));
     }
   }
-  // The model and the agent belong to the focused project, so both follow it.
+  for (const [cwd, p] of projects) {
+    p.el.classList.toggle('selected', cwd === activeCwd);
+    p.el.classList.toggle('pinned', sessionsOf(cwd).some((t) => pinned.has(t.id)));
+  }
+  if (stripOverview) stripOverview.classList.toggle('focused', !!overviewCwd);
+  // The model and the agent belong to the session in focus, so both follow it.
   renderModelBtn();
   renderAgentBtn();
+  syncGridBtn();
   scheduleSync();
 }
 
@@ -359,11 +439,27 @@ function startCmdFor(t) {
   const spec = agentList.find((a) => a.id === agentFor(t));
   // No command is the plain-shell choice, not a failure.
   if (!spec || !spec.command) return null;
-  // Only Claude Code takes TabDesk's model flag; see agents.js.
+
+  // Picking an earlier conversation up again. No model flag goes with it: the
+  // conversation already has one, and overriding it here would silently change
+  // what the user is resuming.
+  if (t.resume) {
+    const args = t.resume.id
+      ? (spec.resumeArgs && SAFE_ID.test(t.resume.id)
+        ? spec.resumeArgs.replace('{id}', t.resume.id) : null)
+      : spec.continueArgs;
+    if (args) return `${spec.command} ${args}`;
+  }
+
   const flag = spec.takesModel && t.model && t.model !== 'default'
     ? ` --model '${t.model}'` : '';
   return spec.command + flag;
 }
+
+// Ids come from history.js, which only emits ones that cannot be read as a
+// flag or a quote. Checked again here because this is where one becomes part
+// of a command line.
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 // Which CLI a tab starts. The tab owns the answer — two tabs on one project
 // can run different agents, so the project's stored pick is only the seed a
@@ -387,46 +483,69 @@ function tmuxAgentFor(t) {
   return (!t.startCmd && t.cwd) ? agentFor(t) : null;
 }
 
-// Build only the tab row in the rail. The terminal/pty is created lazily.
+// Build a session's tab in the strip. The terminal/pty is created lazily, and
+// the element only enters the DOM while its project is the one selected —
+// renderStrip() hangs it there, so a session keeps its flags and its wait
+// badge while you work in another project.
 //
-// `atTop` is for tabs the user just created by hand — those go straight to the
-// top so a new project isn't born at the bottom of a rail that no longer
-// reshuffles to bring it up. It is placement, not a hoist: the boot loop that
-// lists every known project leaves it off and keeps the order it was given.
-function buildTab({ name, cwd, model, agent, startCmd, atTop }) {
+// `projectCwd` is the rail row this session belongs under: its own directory
+// for a project session, the parent project for a worktree, the project you
+// were in for a loose terminal.
+function buildTab({ name, cwd, projectCwd, model, agent, startCmd, resume }) {
   const id = `t${++seq}`;
-  const tabEl = document.createElement('li');
-  tabEl.className = 'tab';
+  const tabEl = document.createElement('div');
+  tabEl.className = 'stab';
   tabEl.title = cwd || name;
   tabEl.innerHTML = `
     <span class="dot"></span>
     <span class="label"></span>
     <span class="wait"></span>
+    <button class="pin" title="${t('rail.pin')}">▦</button>
     <button class="close" title="${t('tab.close')}">×</button>`;
   tabEl.querySelector('.label').textContent = name;
   tabEl.addEventListener('click', (e) => {
-    if (e.target.classList.contains('close')) return;
+    if (e.target.closest('.close') || e.target.closest('.pin')) return;
     setActive(id);
   });
   tabEl.querySelector('.close').addEventListener('click', (e) => {
     e.stopPropagation();
     closeTab(id);
   });
-  if (atTop) tabList.prepend(tabEl);
-  else tabList.appendChild(tabEl);
+  tabEl.querySelector('.pin').addEventListener('click', (e) => {
+    e.stopPropagation();
+    pinSession(id);
+  });
 
   // The agent is pinned onto the tab at birth — from an explicit pick, else
   // from what this project was last opened with. Pinning it now, rather than
   // resolving it at start time, is what stops a later pick elsewhere from
   // changing what this tab was going to run.
   const rec = {
-    id, name, cwd, model: model || 'default', startCmd, tabEl, materialized: false,
-    agent: agent || undefined,
+    id, name, cwd, projectCwd: projectCwd || cwd || activeCwd,
+    model: model || 'default', startCmd, resume: resume || null,
+    tabEl, materialized: false, agent: agent || undefined,
   };
   if (cwd) rec.agent = agentFor(rec);
   tabs.set(id, rec);
+  if (rec.projectCwd === activeCwd) renderStrip();
+  renderProject(rec.projectCwd);
   syncTray();
   return id;
+}
+
+// A session's name in the strip says which CLI it runs (the rail already said
+// which project), and a worktree session says which branch directory instead —
+// that is what distinguishes it from the project's own sessions.
+function sessionLabel(cwd, agent, projectCwd) {
+  if (projectCwd && cwd && cwd !== projectCwd) return `⑂ ${cwd.split('/').pop()}`;
+  return agentLabel(agent);
+}
+
+// For anywhere outside the strip — the tray, a screenshot filename, a toast —
+// where the project name isn't already on screen next to it.
+function fullName(t) {
+  const p = projects.get(t.projectCwd);
+  return p ? `${p.name} · ${t.name}` : t.name;
 }
 
 // Create the actual xterm instance + backing pty for a tab on first use.
@@ -445,13 +564,15 @@ function materialize(t) {
   termEl.className = 'term';
   panelEl.appendChild(termEl);
 
-  // Per-panel close button (appears on hover) so you can close a pane directly.
+  // Per-panel button, on the panes you pinned: it takes the pane out of the
+  // grid and leaves the session running. Ending a session is the strip's ×,
+  // where the tab you are ending is the thing you are clicking.
   const panelClose = document.createElement('button');
   panelClose.className = 'panel-close';
-  panelClose.title = window.t('panel.close');
+  panelClose.title = window.t('panel.unpin');
   panelClose.textContent = '×';
   panelClose.addEventListener('mousedown', (e) => e.stopPropagation());
-  panelClose.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); });
+  panelClose.addEventListener('click', (e) => { e.stopPropagation(); pinSession(id); });
   panelEl.appendChild(panelClose);
 
   panels.appendChild(panelEl);
@@ -508,7 +629,10 @@ function materialize(t) {
     if (firstData) { firstData = false; fitSoon(id); }
   });
   const offExit = window.api.onExit(id, () => {
+    t.dead = true;
     t.tabEl.classList.add('dead');
+    renderProject(t.projectCwd);
+    if (overviewCwd === t.projectCwd) renderOverview(t.projectCwd);
     term.write(`\r\n\x1b[31m${window.t('panel.exited')}\x1b[0m\r\n`);
   });
 
@@ -521,12 +645,6 @@ function materialize(t) {
 function closeTab(id) {
   const t = tabs.get(id);
   if (!t) return;
-  // The rail is rebuilt from the projects on disk at every start, so closing a
-  // project tab has to be written down or it is back tomorrow. Reopening it
-  // from the picker clears the mark. Only the project's *last* tab writes it —
-  // closing one of several says nothing about wanting the project gone.
-  const siblings = [...tabs.values()].filter((x) => x.cwd === t.cwd).length;
-  if (t.cwd && siblings === 1) window.api.setProjectClosed(t.cwd, true);
   if (t.materialized) {
     if (t.embed) {
       window.api.killEmbedTerminal(id);
@@ -544,25 +662,64 @@ function closeTab(id) {
   }
   t.tabEl.remove();
   tabs.delete(id);
+  pinned.delete(id);
+  const owner = t.projectCwd;
+  const p = projects.get(owner);
+  if (p && p.lastId === id) p.lastId = null;
+  renderProject(owner);
+  if (activeCwd === owner) renderStrip();
 
-  const vi = visible.indexOf(id);
-  if (vi !== -1) visible.splice(vi, 1);
-
+  // Closing the session you were in lands on a sibling if the project has one,
+  // and on the project's own overview if it doesn't — never on some other
+  // project's terminal, which is not where you were.
   if (activeId === id) {
-    activeId = visible[visible.length - 1] || null;
-    if (!activeId) {
-      const fallback = [...tabs.values()].find((x) => x.materialized);
-      if (fallback) { setActive(fallback.id); return; }
-    }
+    activeId = null;
+    const left = sessionsOf(owner);
+    if (left.length) { setActive(left[left.length - 1].id); return; }
+    if (p) { showOverview(owner); return; }
   }
   applyLayout();
   syncTray();
-  if (visible.length === 0 && tabs.size === 0) emptyState.classList.remove('hidden');
+  if (!tabs.size && !overviewCwd) emptyState.classList.remove('hidden');
 }
 
-// "+" opens the project picker: a new tab belongs to a project by default, so
-// the choice is made up front rather than left as a shell in the home dir.
-// A plain terminal is still one click away, inside the picker.
+// ---- Starting a session ----------------------------------------------------
+
+// A worktree is a branch of a project, not a project: it belongs under the row
+// its checkout came from, by the one-directory-per-branch convention.
+function ownerOf(cwd) {
+  const i = String(cwd).indexOf('/.worktrees/');
+  return i > 0 ? cwd.slice(0, i) : cwd;
+}
+
+// Open another session in a project. The session name is reserved by main so
+// two quick clicks can't pick the same one, and numbering is per agent: the
+// first Codex session beside a Claude one is nobody's second session, so it
+// stays unnumbered — unless a session that hasn't started yet is already
+// promised that plain name, which only main can tell once it knows the slug.
+async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
+  const owner = projectCwd || ownerOf(cwd);
+  const agent = agentFor({ cwd, agent: agentId });
+  const siblings = sessionsOf(owner).filter((x) => x.cwd === cwd);
+  const basePromised = siblings.some(
+    (x) => !x.session && !x.materialized && agentFor(x) === agent);
+  const base = sessionLabel(cwd, agent, owner);
+  const alloc = await window.api.allocateSession(cwd, agent, base, basePromised);
+
+  let name = base;
+  if (alloc && alloc.session && alloc.suffix) name = `${base} ·${alloc.suffix}`;
+
+  // Models don't cross between agents, so ask for this agent's pick rather
+  // than reusing whatever the project's default agent is set to.
+  const model = await window.api.getModel(cwd, agent);
+  const id = buildTab({ name, cwd, projectCwd: owner, model, agent, resume });
+  if (alloc && alloc.session) tabs.get(id).session = alloc.session;
+  setActive(id);
+  return id;
+}
+
+// "+" in the rail is for a project the rail doesn't already carry: one outside
+// the projects folder, a new one, or a plain terminal.
 let adHoc = 0;
 const addBtn = document.getElementById('add-terminal');
 addBtn.addEventListener('click', async () => {
@@ -576,7 +733,9 @@ addBtn.addEventListener('click', async () => {
   if (!choice) return;
 
   if (choice.kind === 'shell') {
-    setActive(buildTab({ name: `Terminal ${++adHoc}`, cwd: null, atTop: true }));
+    // A loose terminal is the shell of the project you are in, not a project
+    // of its own — it opens in that project's strip and is gone when closed.
+    setActive(buildTab({ name: `Terminal ${++adHoc}`, cwd: null, projectCwd: activeCwd }));
     return;
   }
 
@@ -588,62 +747,302 @@ addBtn.addEventListener('click', async () => {
     if (res && res.ok) agentByProject[choice.path] = res.agent;
   }
 
-  // A project already in the rail gets focused rather than opened twice —
-  // unless the + was used, which is the ask for another tab on it.
-  const existing = choice.newTab
-    ? null
-    : [...tabs.values()].find((x) => x.cwd === choice.path);
-  if (existing) {
-    // Focusing a tab is not the place to restart it under another CLI: an
-    // unstarted tab takes the pick, a running one keeps what it is running.
-    if (choice.agent) {
-      if (existing.materialized) {
-        toast(window.t('toast.agentLater',
-          { project: existing.name, agent: agentLabel(choice.agent) }));
-      } else {
-        existing.agent = choice.agent;
-      }
-    }
-    setActive(existing.id);
-    return;
-  }
-
-  // Opening it is the undo for having closed it: it belongs in the rail again
-  // at the next start.
+  // Picking it is the undo for a project an earlier version hid: it belongs in
+  // the rail again at the next start.
   window.api.setProjectClosed(choice.path, false);
 
-  // Another tab on the project needs its own session, reserved by main so two
-  // quick clicks can't pick the same name. Numbering is per agent: the first
-  // Codex tab beside a Claude one is nobody's second tab, so it stays unnumbered
-  // — unless a tab that hasn't started yet is already promised that same plain
-  // name, which only main can tell once it knows the project's session slug.
-  const agent = agentFor({ cwd: choice.path, agent: choice.agent });
-  const siblings = [...tabs.values()].filter((x) => x.cwd === choice.path);
-  const basePromised = siblings.some(
-    (x) => !x.session && !x.materialized && agentFor(x) === agent);
-  // Two tabs on one project reading the same in the rail is no good. When the
-  // project is running more than one CLI, say which this tab is; when they all
-  // run the same one, the number alone tells them apart.
-  const base = siblings.some((x) => agentFor(x) !== agent)
-    ? `${choice.name} · ${agentLabel(agent)}`
-    : choice.name;
-  const alloc = await window.api.allocateSession(choice.path, agent, base, basePromised);
+  const owner = ownerOf(choice.path);
+  if (!projects.has(owner)) {
+    buildProject({ name: owner.split('/').pop(), path: owner, worktrees: [] }, { atTop: true });
+  }
+  selectProject(owner, { open: false });
 
-  let session = null;
-  let name = base;
-  if (alloc && alloc.session) {
-    session = alloc.session;
-    if (alloc.suffix) name = `${base} ·${alloc.suffix}`;
+  // A named runtime, or a worktree, is an ask to start something; a project on
+  // its own is an ask to look at it.
+  if (choice.agent || choice.path !== owner) {
+    await newSession(choice.path, choice.agent, { projectCwd: owner });
+  } else {
+    selectProject(owner);
+  }
+});
+
+// ---- The rail: projects ----------------------------------------------------
+
+function buildProject(p, { atTop } = {}) {
+  const el = document.createElement('li');
+  el.className = 'tab project';
+  el.title = p.path;
+  el.innerHTML = `
+    <span class="dot"></span>
+    <span class="label"></span>
+    <span class="wait"></span>
+    <span class="count"></span>
+    <button class="pin" title="${t('rail.pin')}">▦</button>`;
+  el.querySelector('.label').textContent = p.name;
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('.pin')) return;
+    selectProject(p.path);
+  });
+  el.querySelector('.pin').addEventListener('click', (e) => {
+    e.stopPropagation();
+    pinProject(p.path);
+  });
+  if (atTop) railList.prepend(el);
+  else railList.appendChild(el);
+
+  const rec = {
+    name: p.name, path: p.path, worktrees: p.worktrees || [], el, lastId: null,
+  };
+  projects.set(p.path, rec);
+  renderProject(p.path);
+  return rec;
+}
+
+// Clicking a project shows what it has. Something running is what you meant to
+// get back to — the session you were last in — and nothing running means the
+// overview, which is where one is started or an earlier one picked up.
+function selectProject(cwd, { open = true } = {}) {
+  if (!projects.has(cwd)) return;
+  activeCwd = cwd;
+  renderStrip();
+  if (!open) { applyLayout(); return; }
+  const p = projects.get(cwd);
+  const mine = sessionsOf(cwd);
+  const last = p.lastId && tabs.has(p.lastId)
+    ? p.lastId
+    : (mine.length ? mine[mine.length - 1].id : null);
+  if (last) setActive(last);
+  else showOverview(cwd);
+}
+
+function showOverview(cwd) {
+  if (!projects.has(cwd)) return;
+  activeCwd = cwd;
+  overviewCwd = cwd;
+  activeId = null;
+  renderStrip();
+  renderOverview(cwd);
+  applyLayout();
+  syncTray();
+}
+
+// ---- The strip: the selected project's sessions -----------------------------
+
+function renderStrip() {
+  const p = projects.get(activeCwd);
+  const mine = sessionsOf(activeCwd);
+  strip.textContent = '';
+  stripOverview = null;
+  strip.classList.toggle('hidden', !p && !mine.length);
+
+  if (p) {
+    const ov = document.createElement('button');
+    ov.className = 'stab ov';
+    ov.textContent = `▣ ${t('strip.overview')}`;
+    ov.title = t('strip.overview.title', { project: p.name });
+    ov.addEventListener('click', () => showOverview(p.path));
+    strip.appendChild(ov);
+    stripOverview = ov;
+    if (overviewCwd === p.path) ov.classList.add('focused');
   }
 
-  // The picker listed the project's model for the agent it opens with by
-  // default; this tab may be starting a different one, and models don't cross
-  // between agents.
-  const model = await window.api.getModel(choice.path, agent);
-  const id = buildTab({ name, cwd: choice.path, model, agent, atTop: true });
-  if (session) tabs.get(id).session = session;
-  setActive(id);
-});
+  for (const s of mine) strip.appendChild(s.tabEl);
+
+  if (p) {
+    const add = document.createElement('button');
+    add.className = 'stab add';
+    add.textContent = '+';
+    add.title = t('strip.new');
+    add.addEventListener('click', (e) => { e.stopPropagation(); openStripMenu(add, p); });
+    strip.appendChild(add);
+  }
+}
+
+// "+" in the strip: another session in this project — under a runtime of your
+// choosing, or in one of its worktrees.
+const stripMenu = document.getElementById('strip-menu');
+
+function closeStripMenu() { stripMenu.classList.add('hidden'); }
+
+function openStripMenu(anchor, p) {
+  stripMenu.textContent = '';
+  const add = (label, hint, run) => {
+    const item = document.createElement('button');
+    item.className = 'menu-item';
+    item.setAttribute('role', 'menuitem');
+    const l = document.createElement('span');
+    l.className = 'mi-label';
+    l.textContent = label;
+    const h = document.createElement('span');
+    h.className = 'mi-hint';
+    h.textContent = hint;
+    item.append(l, h);
+    item.addEventListener('click', (e) => { e.stopPropagation(); closeStripMenu(); run(); });
+    stripMenu.appendChild(item);
+  };
+
+  for (const a of agentList) {
+    add(a.label, a.hint ? t(a.hint) : (a.command || ''), () => newSession(p.path, a.id));
+  }
+  for (const w of p.worktrees) {
+    add(`⑂ ${w.name.split('/').pop()}`, t('strip.worktree'),
+      () => newSession(w.path, null, { projectCwd: p.path }));
+  }
+
+  const r = anchor.getBoundingClientRect();
+  stripMenu.style.left = `${Math.round(r.left)}px`;
+  stripMenu.style.top = `${Math.round(r.bottom + 4)}px`;
+  stripMenu.classList.remove('hidden');
+}
+document.addEventListener('click', closeStripMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeStripMenu(); });
+
+// ---- The grid: panels you asked to keep on screen ---------------------------
+
+function pinSession(id) {
+  const s = tabs.get(id);
+  if (!s) return;
+  if (pinned.has(id)) { pinned.delete(id); applyLayout(); return; }
+  if (pinned.size >= MAX_PANELS) { toast(t('toast.gridFull', { n: MAX_PANELS })); return; }
+  if (!s.materialized) materialize(s);
+  pinned.add(id);
+  applyLayout();
+  fitSoon(id);
+}
+
+// ▦ on a project row means the project: the session it would open if you
+// clicked it, started for the occasion if it has none.
+async function pinProject(cwd) {
+  const mine = sessionsOf(cwd);
+  const already = mine.find((s) => pinned.has(s.id));
+  if (already) { pinned.delete(already.id); applyLayout(); return; }
+  const p = projects.get(cwd);
+  const target = p && p.lastId && tabs.has(p.lastId)
+    ? p.lastId
+    : (mine.length ? mine[mine.length - 1].id : null);
+  if (target) { pinSession(target); return; }
+  const id = await newSession(cwd, null);
+  if (id) pinSession(id);
+}
+
+// ---- The overview: a project's first tab ------------------------------------
+
+function whenLabel(at) {
+  const mins = Math.floor((Date.now() - at) / 60000);
+  if (mins < 1) return t('overview.now');
+  if (mins < 60) return `${mins}m`;
+  if (mins < 60 * 20) return `${Math.floor(mins / 60)}h`;
+  return new Date(at).toLocaleString(undefined,
+    { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function sessionState(s) {
+  if (s.dead) return t('overview.state.dead');
+  if (s.busy) return t('overview.state.busy');
+  if (s.doneAt) return t('overview.state.waiting', { time: waitLabel(s.doneAt) || '0m' });
+  if (!s.materialized) return t('overview.state.idle');
+  return t('overview.state.open');
+}
+
+const newEl = (tag, cls, text) => {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text != null) el.textContent = text;
+  return el;
+};
+
+function section(title) {
+  const sec = newEl('div', 'ov-sec');
+  sec.appendChild(newEl('h3', null, title));
+  return sec;
+}
+
+// Rebuilt rather than patched: it is a summary of state that several other
+// things already own, and re-deriving it is cheaper than keeping a second copy
+// of that state in sync.
+let overviewSeq = 0;
+async function renderOverview(cwd) {
+  const p = projects.get(cwd);
+  if (!p) return;
+  const seq = ++overviewSeq;
+  overviewEl.textContent = '';
+
+  const head = newEl('div', 'ov-head');
+  head.append(newEl('h2', null, p.name), newEl('span', 'ov-path', p.path));
+  overviewEl.appendChild(head);
+
+  // What it is running now.
+  const live = section(t('overview.active'));
+  const mine = sessionsOf(cwd);
+  if (!mine.length) live.appendChild(newEl('p', 'ov-empty', t('overview.none')));
+  for (const s of mine) {
+    const row = newEl('button', 'ov-row');
+    const dot = newEl('span', 'dot');
+    if (s.dead) dot.classList.add('dead');
+    else if (s.busy) dot.classList.add('busy');
+    else if (s.doneAt) dot.classList.add('done');
+    row.append(dot, newEl('span', 'ov-name', s.name), newEl('span', 'ov-state', sessionState(s)));
+    if (s.model && s.model !== 'default') row.appendChild(newEl('span', 'ov-model', s.model));
+    row.addEventListener('click', () => setActive(s.id));
+    live.appendChild(row);
+  }
+  overviewEl.appendChild(live);
+
+  // How to start another one. A runtime that can be told "the latest" offers
+  // that beside it — it is the one resume that needs no list at all.
+  const start = section(t('overview.start'));
+  const chips = newEl('div', 'ov-chips');
+  for (const a of agentList) {
+    const chip = newEl('button', 'ov-chip', `${a.id === 'shell' ? '⌨' : '🤖'} ${a.label}`);
+    chip.title = a.hint ? t(a.hint) : (a.command || '');
+    chip.addEventListener('click', () => newSession(cwd, a.id));
+    chips.appendChild(chip);
+    if (!a.continueArgs) continue;
+    const last = newEl('button', 'ov-chip thin', '↺');
+    last.title = t('overview.continue.title', { agent: a.label });
+    last.addEventListener('click', () => newSession(cwd, a.id, { resume: {} }));
+    chips.appendChild(last);
+  }
+  for (const w of p.worktrees) {
+    const chip = newEl('button', 'ov-chip wt', `⑂ ${w.name.split('/').pop()}`);
+    chip.title = w.path;
+    chip.addEventListener('click', () => newSession(w.path, null, { projectCwd: cwd }));
+    chips.appendChild(chip);
+  }
+  start.appendChild(chips);
+  overviewEl.appendChild(start);
+
+  // And what it ran before. This is the agents' own memory, so it lists the
+  // conversations they can genuinely pick up again — nothing TabDesk invented.
+  const past = section(t('overview.previous'));
+  const loading = newEl('p', 'ov-empty', t('overview.loading'));
+  past.appendChild(loading);
+  overviewEl.appendChild(past);
+
+  let rows = [];
+  try { rows = await window.api.previousSessions(cwd); } catch (_) { rows = []; }
+  if (seq !== overviewSeq || overviewCwd !== cwd) return;   // moved on while reading
+  loading.remove();
+  if (!rows.length) {
+    past.appendChild(newEl('p', 'ov-empty', t('overview.noHistory')));
+    return;
+  }
+  let group = null;
+  for (const r of rows.slice().sort((a, b) => (a.agent === b.agent ? b.at - a.at : a.agent.localeCompare(b.agent)))) {
+    if (group !== r.agent) {
+      group = r.agent;
+      past.appendChild(newEl('h4', 'ov-group', agentLabel(r.agent)));
+    }
+    const row = newEl('button', 'ov-row past');
+    row.append(
+      newEl('span', 'ov-name', r.title || t('overview.untitled')),
+      newEl('span', 'ov-when', whenLabel(r.at)),
+    );
+    row.title = t('overview.resume', { id: r.id });
+    row.addEventListener('click', () => newSession(cwd, r.agent, { resume: { id: r.id } }));
+    past.appendChild(row);
+  }
+}
 
 document.getElementById('fullscreen-btn').addEventListener('click', () => window.api.toggleFullscreen());
 document.getElementById('settings-btn').addEventListener('click', () => window.api.openSettings());
@@ -668,22 +1067,27 @@ window.api.onUpdateAvailable((state) => {
 // The update window couldn't get a polkit prompt, so the install command comes
 // back here to run in a real terminal where a password can be typed.
 window.api.onUpdateTerminal(({ command }) => {
-  setActive(buildTab({ name: window.t('update.tabName'), cwd: null, startCmd: command, atTop: true }));
+  setActive(buildTab({
+    name: window.t('update.tabName'), cwd: null, projectCwd: activeCwd, startCmd: command,
+  }));
 });
-window.addEventListener('resize', () => { for (const vid of visible) fitTerm(vid); scheduleSync(); });
+window.addEventListener('resize', () => { for (const vid of shownIds()) fitTerm(vid); scheduleSync(); });
 
-// Grid button: cycle 1 → 6 → 1 panels shown at once.
+// The grid is composed, not cycled: ▦ beside a project or a session adds that
+// panel, and this button says how many are held and empties the grid again.
 const gridBtn = document.getElementById('grid-btn');
-function updateGridBtn() { gridBtn.textContent = t('rail.grid', { n: gridSize }); }
+function syncGridBtn() {
+  gridBtn.textContent = t('rail.grid', { n: pinned.size });
+  gridBtn.disabled = pinned.size === 0;
+  gridBtn.title = t(pinned.size ? 'rail.grid.clear' : 'rail.grid.title');
+}
 gridBtn.addEventListener('click', () => {
-  gridSize = gridSize >= 6 ? 1 : gridSize + 1;
-  updateGridBtn();
-  // Re-show the most recent up to gridSize; trim if shrinking.
-  while (visible.length > gridSize) visible.shift();
+  if (!pinned.size) return;
+  pinned.clear();
   applyLayout();
-  for (const vid of visible) fitSoon(vid);
+  for (const vid of shownIds()) fitSoon(vid);
 });
-updateGridBtn();
+syncGridBtn();
 
 // Toast helper for transient confirmations.
 const toastEl = document.getElementById('toast');
@@ -703,7 +1107,7 @@ document.getElementById('shot-btn').addEventListener('click', async () => {
   const r = el.getBoundingClientRect();
   const res = await window.api.captureTerminal(
     { x: r.x, y: r.y, width: r.width, height: r.height },
-    t.name,
+    fullName(t),
     !!t.embed,
   );
   toast(res && res.ok
@@ -878,8 +1282,8 @@ let previewSyncSeq = 0;
 async function syncPreviewToActive() {
   const seq = ++previewSyncSeq;
   if (previewMode === 'idle') return;      // nothing running, nothing to be stale about
-  const t = tabs.get(activeId);
-  if (!t || !t.cwd || t.cwd === previewCwd) { clearPreviewStale(); return; }
+  const t = focusCwd();
+  if (!t || t.cwd === previewCwd) { clearPreviewStale(); return; }
 
   const info = await window.api.previewKind(t.cwd);
   if (seq !== previewSyncSeq) return;      // a later switch already decided
@@ -904,8 +1308,8 @@ previewEmpty.addEventListener('click', (e) => {
 // `external: true` means the caller only wants the URL (to hand to the desktop
 // browser), so we start the process without unfolding the dock over the panels.
 async function openPreview({ external = false } = {}) {
-  const t = tabs.get(activeId);
-  if (!t || !t.cwd) { toast(window.t('toast.openProject')); return; }
+  const t = focusCwd();
+  if (!t) { toast(window.t('toast.openProject')); return; }
   if (!external) preview.classList.remove('collapsed');
 
   const view = await ensureWebview();
@@ -989,16 +1393,26 @@ const runBtn = document.getElementById('run-btn');
 const runMenu = document.getElementById('run-menu');
 const runningApps = new Set();  // project paths currently running
 
+// What "run it" and the preview dock act on: the session in front of you when
+// there is one — a worktree session is its own checkout, with its own code to
+// run — and otherwise the project the rail has selected.
+function focusCwd() {
+  const s = tabs.get(activeId);
+  if (s && s.cwd) return { cwd: s.cwd, name: s.name };
+  const p = projects.get(activeCwd);
+  return p ? { cwd: p.path, name: p.name } : null;
+}
+
 function activeProject() {
-  const t = tabs.get(activeId);
-  if (!t || !t.cwd) { toast(window.t('toast.openProject')); return null; }
+  const t = focusCwd();
+  if (!t) { toast(window.t('toast.openProject')); return null; }
   return t;
 }
 
 // The first menu item doubles as the stop switch once the app is up.
 function syncRunUI() {
-  const t = tabs.get(activeId);
-  const on = !!(t && t.cwd && runningApps.has(t.cwd));
+  const t = focusCwd();
+  const on = !!(t && runningApps.has(t.cwd));
   runBtn.classList.toggle('running', on);
   runMenu.querySelector('[data-run="app"] .mi-label').textContent =
     window.t(on ? 'run.stopApp' : 'run.startApp');
@@ -1249,37 +1663,39 @@ document.getElementById('by-link').addEventListener('click', () => {
   window.api.openExternal('https://www.thern.io');
 });
 
-// Populate the rail with all projects, most-recently-used first. A project
-// whose tab was closed with the × stays out until it is picked again.
+// Fill the rail with the projects on disk, most recently touched first, and
+// then take back the sessions that outlived the last run — each one hung under
+// the project it belongs to, a worktree session under the project it branches
+// from. A session whose project isn't in the rail (a folder elsewhere) brings
+// its own row with it, or there would be nowhere to click to reach it.
 //
-// Then take back the sessions that outlived the last run. A session whose
-// project already has a rail tab attaches to it — clicking that tab lands in
-// the running agent instead of starting a second one — and anything left over
-// (a second tab on one project, a worktree, a folder that isn't in the rail)
-// becomes a tab of its own. Restore runs after the rail so adoption has
-// something to adopt.
-window.api.listProjects().then((projects) => {
-  for (const p of projects) {
+// Nothing is started here: the strip shows what was running, and a click is
+// what reattaches to it.
+window.api.listProjects().then((list) => {
+  for (const p of list) {
     if (p.closed) continue;
-    buildTab({ name: p.name, cwd: p.path, model: p.model });
+    buildProject(p);
   }
   return window.api.restoreTabs();
 }).then((records) => {
   for (const rec of records || []) {
-    // Only the project's own session slots into the rail tab it already has;
-    // a numbered one is an extra tab and keeps its own name.
-    const free = rec.primary
-      ? [...tabs.values()].find((t) => t.cwd === rec.cwd && !t.session && !t.materialized)
-      : null;
-    if (free) {
-      free.session = rec.session;
-      if (rec.agent) free.agent = rec.agent;
-      continue;
+    const owner = ownerOf(rec.cwd);
+    if (!projects.has(owner)) {
+      buildProject({ name: owner.split('/').pop(), path: owner, worktrees: [] });
     }
-    const id = buildTab({ name: rec.name, cwd: rec.cwd, agent: rec.agent || undefined });
+    const agent = rec.agent || undefined;
+    const name = rec.name || sessionLabel(rec.cwd, agentFor({ cwd: rec.cwd, agent }), owner);
+    const id = buildTab({ name, cwd: rec.cwd, projectCwd: owner, agent });
     tabs.get(id).session = rec.session;
   }
-}).catch(() => { /* a rail without restored tabs still works */ });
+  // Land on something rather than an empty window: the project with a session
+  // waiting for you, else the first one in the rail.
+  if (!activeCwd) {
+    const first = [...projects.keys()].find((cwd) => sessionsOf(cwd).length)
+      || [...projects.keys()][0];
+    if (first) selectProject(first, { open: false });
+  }
+}).catch(() => { /* a rail without restored sessions still works */ });
 
 // ---- Model picker (bottom system bar) ----
 // The model belongs to the tab's project and its agent, not to the app: the bar
@@ -1624,7 +2040,15 @@ function tickClock() {
   document.getElementById('m-clock').textContent =
     `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   tickResets();
-  for (const t of tabs.values()) if (t.doneAt) renderWait(t);
+  // Only the rows that are counting need redrawing, and renderWaitEl writes to
+  // the DOM once a minute rather than once a second.
+  const waiting = new Set();
+  for (const t of tabs.values()) {
+    if (!t.doneAt) continue;
+    renderWait(t);
+    waiting.add(t.projectCwd);
+  }
+  for (const cwd of waiting) renderProject(cwd);
 }
 
 // Strings and colours baked into JS (button labels, live xterm palettes) don't
@@ -1632,16 +2056,23 @@ function tickClock() {
 // the desktop's theme or language changes under us.
 window.ui.onChange((kind, payload) => {
   if (kind === 'language') {
-    updateGridBtn();
+    syncGridBtn();
     renderModelBtn();
     if (!modelMenu.classList.contains('hidden')) renderModelMenu();
     for (const t of tabs.values()) {
       t.tabEl.querySelector('.close').title = window.t('tab.close');
+      t.tabEl.querySelector('.pin').title = window.t('rail.pin');
       if (t.panelEl) {
         const pc = t.panelEl.querySelector('.panel-close');
-        if (pc) pc.title = window.t('panel.close');
+        if (pc) pc.title = window.t('panel.unpin');
       }
     }
+    for (const cwd of projects.keys()) {
+      projects.get(cwd).el.querySelector('.pin').title = window.t('rail.pin');
+      renderProject(cwd);
+    }
+    renderStrip();
+    if (overviewCwd) renderOverview(overviewCwd);
   } else if (kind === 'theme' && payload.terminal) {
     for (const t of tabs.values()) {
       if (t.term) t.term.options.theme = payload.terminal;

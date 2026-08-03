@@ -47,8 +47,11 @@
       </div>
     </aside>
 
-    <!-- Middle area: terminals. Flexes to fill space left by rail + preview. -->
+    <!-- Middle area: terminals. Flexes to fill space left by rail + preview.
+         The strip on top holds the selected project's sessions — the rail
+         chooses a project, this chooses which of its sessions you are in. -->
     <main id="content">
+      <div id="strip" class="hidden"></div>
       <div id="empty-state">
         <p data-i18n-html="empty.select">Select a <strong>project</strong> on the left to open a terminal.</p>
         <p data-i18n-html="empty.grid">Use <strong>▦ Grid</strong> to show 1–6 at once.</p>
@@ -158,6 +161,11 @@
        rail, which is ordinary DOM: over the panels it would be hidden behind
        the embedded terminals (native X windows stacked above the page). -->
   <div id="model-menu" class="menu hidden" role="menu"></div>
+
+  <!-- What the strip's + offers: the agent CLIs installed, and the project's
+       worktrees. Placed on the window rather than in the strip so it isn't
+       clipped by the strip's own horizontal scroll. -->
+  <div id="strip-menu" class="menu hidden" role="menu"></div>
   </div>
 
   <!-- Bugs & Feedback. Ordinary DOM over the page, like the model menu — but

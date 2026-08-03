@@ -353,6 +353,9 @@ html, body {
   transition: opacity .15s, color .15s, border-color .15s, box-shadow .15s;
   z-index: 20;
 }
+/* Only a pinned pane has a button here, and it unpins rather than closes: the
+   session it holds is ended from its tab in the strip, not from the grid. */
+.panel:not(.pinned) .panel-close { display: none; }
 .panel:hover .panel-close { opacity: 1; }
 .panel-close:hover {
   color: var(--danger);
@@ -393,6 +396,211 @@ html, body {
   border-color: var(--accent-2);
   box-shadow: var(--shadow-panel-focus);
 }
+
+/* ---- Session strip: the selected project's sessions, above the panels ---- */
+#strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line-soft);
+  background: linear-gradient(180deg, var(--tint), transparent);
+  overflow-x: auto;
+  overflow-y: hidden;
+  z-index: 30;
+}
+#strip.hidden { display: none; }
+/* The panels start below the strip whenever there is one. */
+#content:has(#strip:not(.hidden)) #panels { top: 38px; }
+
+.stab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--tint);
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.stab:hover { background: var(--tint-strong); color: var(--text); }
+.stab.active { border-color: var(--accent); color: var(--text); }
+.stab.focused {
+  border-color: var(--accent-2);
+  color: var(--text);
+  box-shadow: var(--glow-accent-2);
+}
+.stab .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  box-shadow: var(--glow-accent-2);
+  flex: 0 0 auto;
+}
+.stab.busy .dot {
+  background: var(--accent);
+  box-shadow: var(--glow-accent);
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+.stab.done .dot { background: var(--ok); box-shadow: var(--glow-ok); animation: none; }
+.stab.dead .dot { background: var(--danger); box-shadow: var(--glow-danger); animation: none; }
+.stab .wait { font-size: 10px; font-variant-numeric: tabular-nums; color: var(--faint); }
+.stab.done .wait { color: var(--ok, var(--faint)); }
+.stab .pin,
+.stab .close {
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 1px;
+  opacity: 0;
+  transition: opacity .12s, color .12s;
+}
+.stab:hover .pin,
+.stab:hover .close,
+.stab.pinned .pin { opacity: 1; }
+.stab .close:hover { color: var(--danger); text-shadow: var(--glow-danger); }
+.stab .pin:hover,
+.stab.pinned .pin { color: var(--accent-2); }
+.stab.ov, .stab.add { color: var(--accent-soft); }
+.stab.add { padding: 0 11px; font-size: 15px; }
+
+#strip-menu { position: absolute; width: 210px; z-index: 70; }
+
+/* ---- Rail rows are projects: their state is the sum of their sessions ---- */
+.tab.project .count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+.tab.project.selected {
+  background: linear-gradient(90deg, var(--tint-strong), var(--tint-2));
+  border-color: var(--accent);
+  color: var(--text);
+}
+/* Nothing open in it: the dot is there to keep the row aligned, not to say
+   anything, so it recedes. */
+.tab.project.idle .dot { background: var(--faint); box-shadow: none; }
+.tab .pin {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0;
+  transition: opacity .12s, color .12s;
+}
+.tab:hover .pin, .tab.pinned .pin { opacity: 1; }
+.tab .pin:hover, .tab.pinned .pin { color: var(--accent-2); }
+
+/* ---- Overview: a project's own first tab ---- */
+.panel.overview {
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+  padding: 18px 20px 24px;
+}
+.panel.overview.focused {
+  border-color: var(--accent-2);
+  box-shadow: var(--shadow-panel-focus);
+}
+.ov-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ov-head h2 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+.ov-path { font-size: 11px; color: var(--faint); }
+.ov-sec { margin-top: 18px; }
+.ov-sec h3 {
+  margin: 0 0 8px;
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--accent-soft);
+}
+.ov-group {
+  margin: 12px 0 5px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .5px;
+  color: var(--dim);
+}
+.ov-empty { margin: 0; font-size: 12px; color: var(--faint); }
+.ov-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  margin-bottom: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--tint);
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.ov-row:hover { background: var(--tint-strong); border-color: var(--accent); color: var(--text); }
+.ov-row .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: 0 0 auto;
+}
+.ov-row .dot.busy { background: var(--accent); box-shadow: var(--glow-accent); }
+.ov-row .dot.done { background: var(--ok); box-shadow: var(--glow-ok); }
+.ov-row .dot.dead { background: var(--danger); box-shadow: var(--glow-danger); }
+.ov-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-state, .ov-when, .ov-model {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.ov-model { color: var(--accent-soft); }
+.ov-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ov-chip {
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--tint);
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.ov-chip:hover { background: var(--tint-strong); border-color: var(--accent); color: var(--text); }
+.ov-chip.thin { padding: 6px 9px; margin-left: -4px; }
+.ov-chip.wt { border-style: dashed; }
 
 /* ---- Fixed preview dock: 20% of the app on the right ---- */
 #preview {
