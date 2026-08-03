@@ -115,6 +115,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('tabs:allocate', { cwd, agent, name, basePromised }),
   restoreTabs: () => ipcRenderer.invoke('tabs:restore'),
   releaseSession: (session) => ipcRenderer.send('tabs:release', { session }),
+  // The conversations the installed agents can still resume in this project.
+  previousSessions: (cwd) => ipcRenderer.invoke('sessions:previous', cwd),
 
   // Embedded native terminal (xterm as a real X11 window reparented into a panel).
   createEmbedTerminal: (id, cwd, startCmd, agent, session, name) =>

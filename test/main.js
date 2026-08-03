@@ -40,7 +40,7 @@ const throws = (n, fn, code) => {
   }
 };
 
-app.on('ready', () => {
+app.on('ready', async () => {
   const C = require(path.join(ROOT, 'sync/crypto'));
   const K = require(path.join(ROOT, 'sync/keys'));
   const settings = require(path.join(ROOT, 'settings'));
@@ -186,7 +186,105 @@ app.on('ready', () => {
   settings.set('sync', Object.assign({}, cfg, { groupKey: Buffer.from('skrap').toString('base64') }));
   throws('oppningsbar blob som inte gar att dekryptera', () => K.get(), 'key-lost');
 
-  
+
+  }
+  {
+
+
+  // Earlier conversations are read out of the agents' own stores, so the tests
+  // build a store of their own rather than depending on whatever happens to be
+  // in ~/.claude and ~/.codex on the machine running them.
+  const H = require(path.join(ROOT, 'history'));
+  const STORE = fsx.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-hist-'));
+  const CWD = '/srv/dev/nagot-projekt';
+  const line = (o) => JSON.stringify(o) + '\n';
+  const write = (file, text, when) => {
+    fsx.mkdirSync(path.dirname(file), { recursive: true });
+    fsx.writeFileSync(file, text);
+    if (when) fsx.utimesSync(file, when / 1000, when / 1000);
+  };
+
+  console.log('== claudes sessionslager ==');
+  ok('katalognamn ur sokvag', H.claudeDirFor(CWD) === '-srv-dev-nagot-projekt');
+  ok('punkter blir bindestreck', H.claudeDirFor('/a/.worktrees/b') === '-a--worktrees-b');
+  ok('titel: sista ai-title vinner',
+    H.claudeTitle(line({ type: 'ai-title', aiTitle: 'forst' }) + line({ type: 'ai-title', aiTitle: 'sist' })) === 'sist');
+  ok('titel: faller tillbaka pa senaste prompt',
+    H.claudeTitle(line({ type: 'last-prompt', lastPrompt: 'vad hande?' })) === 'vad hande?');
+  ok('titel: tom nar inget finns', H.claudeTitle(line({ type: 'user' })) === null);
+
+  const cdir = path.join(STORE, 'claude', H.claudeDirFor(CWD));
+  write(path.join(cdir, '11111111-1111-1111-1111-111111111111.jsonl'),
+    line({ type: 'user', cwd: CWD }) + line({ type: 'ai-title', aiTitle: 'Aldre samtal' }), 1000000);
+  write(path.join(cdir, '22222222-2222-2222-2222-222222222222.jsonl'),
+    line({ type: 'user', cwd: CWD }) + line({ type: 'last-prompt', lastPrompt: 'senaste  raden' }), 2000000);
+  // Started by the SDK (a code review, a subagent) — a job, not a conversation.
+  write(path.join(cdir, '44444444-4444-4444-4444-444444444444.jsonl'),
+    line({ type: 'user', cwd: CWD, entrypoint: 'sdk-py' }) + line({ type: 'ai-title', aiTitle: 'Granskning' }), 2500000);
+  const claudeRows = await H.claudeSessions(CWD, path.join(STORE, 'claude'));
+  ok('sdk-sessioner listas inte', !claudeRows.some((r) => r.id.startsWith('4444')));
+  ok('bada sessionerna listas', claudeRows.length === 2, String(claudeRows.length));
+  ok('nyast forst', claudeRows[0].id === '22222222-2222-2222-2222-222222222222');
+  ok('id ar filnamnet utan andelse', claudeRows[1].id === '11111111-1111-1111-1111-111111111111');
+  ok('titel foljer med', claudeRows[1].title === 'Aldre samtal', String(claudeRows[1].title));
+  ok('blanktecken normaliseras', claudeRows[0].title === 'senaste raden', String(claudeRows[0].title));
+  ok('agenten ar utsatt', claudeRows.every((r) => r.agent === 'claude'));
+  ok('okand katalog ger tom lista',
+    (await H.claudeSessions('/finns/inte', path.join(STORE, 'claude'))).length === 0);
+
+  // Two different paths can sanitise to the same directory name; the files say
+  // which path they were written for, and a mismatch must list nothing.
+  const clash = path.join(STORE, 'claude', H.claudeDirFor('/srv/dev/annat'));
+  write(path.join(clash, '33333333-3333-3333-3333-333333333333.jsonl'),
+    line({ type: 'user', cwd: '/srv/dev/nagon-annanstans' }), 3000000);
+  ok('fel cwd i filen listar inget',
+    (await H.claudeSessions('/srv/dev/annat', path.join(STORE, 'claude'))).length === 0);
+
+  console.log('== codex rollout-lager ==');
+  const meta = H.codexMeta(JSON.stringify({ type: 'session_meta', payload: { cwd: CWD, originator: 'codex_cli_rs' } }));
+  ok('meta ger cwd', meta && meta.cwd === CWD);
+  ok('meta ger originator', meta && meta.originator === 'codex_cli_rs');
+  ok('interaktiv session behalls', meta && !meta.skip);
+  ok('codex exec hoppas over',
+    H.codexMeta(JSON.stringify({ payload: { cwd: CWD, originator: 'codex_exec' } })).skip);
+  ok('underagent hoppas over',
+    H.codexMeta(JSON.stringify({ payload: { cwd: CWD, thread_source: 'subagent' } })).skip);
+  ok('rad utan cwd ar inte meta', H.codexMeta('{"type":"event_msg"}') === null);
+  ok('titel ur user_message',
+    H.codexTitle(line({ type: 'event_msg', payload: { type: 'user_message', message: 'Fixa bygget' } })) === 'Fixa bygget');
+  ok('utvecklarpreambel blir ingen titel',
+    H.codexTitle(line({ payload: { type: 'message', role: 'developer', content: [{ text: 'hej' }] } })) === null);
+
+  const croot = path.join(STORE, 'codex');
+  const rollout = (day, id, payload, body, when) => write(
+    path.join(croot, day, `rollout-2026-08-0${day.slice(-1)}T10-00-00-${id}.jsonl`),
+    line({ type: 'session_meta', payload }) + (body || ''), when);
+  rollout('2026/08/01', 'aaaaaaaa-1111-4111-8111-111111111111', { cwd: CWD, originator: 'codex_cli_rs' },
+    line({ type: 'event_msg', payload: { type: 'user_message', message: 'Gammalt arende' } }), 1000000);
+  rollout('2026/08/03', 'bbbbbbbb-2222-4222-8222-222222222222', { cwd: CWD, originator: 'codex_chatgpt_android_remote' },
+    line({ type: 'event_msg', payload: { type: 'user_message', message: 'Fran telefonen' } }), 3000000);
+  rollout('2026/08/03', 'cccccccc-3333-4333-8333-333333333333', { cwd: CWD, originator: 'codex_exec' }, '', 3500000);
+  rollout('2026/08/03', 'dddddddd-4444-4444-8444-444444444444', { cwd: CWD, thread_source: 'subagent' }, '', 3600000);
+  rollout('2026/08/03', 'eeeeeeee-5555-4555-8555-555555555555', { cwd: '/nagon/annan', originator: 'codex_cli_rs' }, '', 3700000);
+  const codexRows = await H.codexSessions(CWD, croot);
+  ok('bara projektets egna interaktiva sessioner', codexRows.length === 2,
+    codexRows.map((r) => r.id).join(', '));
+  ok('nyast forst har ocksa', codexRows[0].id === 'bbbbbbbb-2222-4222-8222-222222222222');
+  ok('telefonsessioner raknas med', codexRows[0].title === 'Fran telefonen');
+  ok('aldre dag hittas', codexRows[1].title === 'Gammalt arende');
+  ok('agenten ar utsatt', codexRows.every((r) => r.agent === 'codex'));
+
+  console.log('== sammanslagen lista ==');
+  const where = { claude: path.join(STORE, 'claude'), codex: croot };
+  const merged = await H.previousSessions(CWD, ['claude', 'codex'], where);
+  ok('bada agenterna kommer med', merged.length === 4, String(merged.length));
+  ok('sorterad pa tid', merged.every((r, i) => i === 0 || merged[i - 1].at >= r.at));
+  ok('ingen agent utan lasare', (await H.previousSessions(CWD, ['aider'], where)).length === 0);
+  ok('tom sokvag ger tom lista', (await H.previousSessions('', ['claude'], where)).length === 0);
+
+  try { fsx.rmSync(STORE, { recursive: true, force: true }); } catch (_) { /* gone */ }
+
+
   }
 
   console.log('');

@@ -16,6 +16,7 @@ const i18n = require('./i18n');
 const settings = require('./settings');
 const model = require('./model');
 const agents = require('./agents');
+const history = require('./history');
 const portable = require('./portable');
 const updater = require('./updater');
 const usageLimits = require('./usage-limits');
@@ -833,6 +834,15 @@ app.whenReady().then(async () => {
       });
     } catch (_) { done([]); }
   }));
+
+  // What the project's overview lists under "earlier": the conversations the
+  // installed agents can still resume, read out of their own stores. Nothing
+  // is asked of an agent that isn't installed, so an uninstalled codex costs
+  // no walk of its rollout directory.
+  ipcMain.handle('sessions:previous', (event, cwd) => {
+    if (typeof cwd !== 'string' || !cwd || !fs.existsSync(cwd)) return [];
+    return history.previousSessions(cwd, agents.list().map((a) => a.id));
+  });
 
   // A tab closed before it ever started its terminal still owns a reservation
   // (and possibly a restored session) that nothing else would clean up.
