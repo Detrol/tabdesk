@@ -673,12 +673,45 @@ function materialize(t) {
   term.open(termEl);
 
   // ---- Clipboard ----
-  // tmux runs with the mouse on, so a plain drag belongs to the pane and
-  // Shift+drag is xterm's own escape hatch that selects in the terminal
-  // instead. A selection then copies itself (CLIPBOARD, and PRIMARY on X11),
-  // so select-then-paste needs no chord in between; Ctrl+Shift+C copies
-  // explicitly and Ctrl+Shift+V pastes, while plain Ctrl+C/V stay with the
-  // program inside, which owns them (SIGINT, verbatim insert).
+  // A plain drag selects, without holding anything down. xterm only does that
+  // when no program inside is tracking the mouse — and tmux (and Claude's TUI)
+  // always is, which leaves Shift+drag as the escape hatch. Shift is a poor
+  // deal here: you cannot scroll mid-selection with it, so anything taller
+  // than the window is unselectable. Forcing the escape hatch permanently open
+  // is the same trade every terminal makes while Shift is held, made
+  // unconditional.
+  //
+  // The cost is that button presses no longer reach the program inside —
+  // clicking inside a TUI does nothing. The wheel is a separate path and still
+  // scrolls tmux. Private API, so a version bump could quietly drop it back to
+  // Shift-only rather than break: that is why it is guarded rather than
+  // asserted.
+  try { term._core._selectionService.shouldForceSelection = () => true; } catch (_) { /* Shift still works */ }
+
+  // OSC 52 is how a program inside says "put this on the clipboard" — tmux
+  // relays it for its own copy-mode when set-clipboard is on, and some TUIs
+  // send it directly. xterm.js implements no handler for it, so without this
+  // those copies vanish.
+  term.parser.registerOscHandler(52, (data) => {
+    // "<targets>;<base64>" — targets says clipboard/primary/…, and "?" is a
+    // read request, which is deliberately not answered: a page that can ask
+    // for the clipboard back is a leak, not a feature.
+    const semi = String(data).indexOf(';');
+    if (semi < 0) return true;
+    const payload = String(data).slice(semi + 1);
+    if (!payload || payload === '?') return true;
+    try {
+      const text = atob(payload);
+      if (text) window.api.copySelection(text);
+    } catch (_) { /* not valid base64 — nothing to copy */ }
+    return true;
+  });
+
+  // A selection copies itself (CLIPBOARD, and PRIMARY on X11), so
+  // select-then-paste needs no chord in between; right-click pastes.
+  // Ctrl+Shift+C/V remain as the conventional explicit pair, while plain
+  // Ctrl+C/V stay with the program inside, which owns them (SIGINT, verbatim
+  // insert).
   //
   // Copying rides on the mouseup, in the CAPTURE phase — before any of
   // xterm's own listeners. Under a mouse-tracking app (Claude's TUI) the
