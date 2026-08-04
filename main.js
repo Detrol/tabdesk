@@ -15,6 +15,7 @@ const theme = require('./theme');
 const i18n = require('./i18n');
 const settings = require('./settings');
 const model = require('./model');
+const effort = require('./effort');
 const agents = require('./agents');
 const history = require('./history');
 const projectsRoot = require('./projects-root');
@@ -779,6 +780,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('model:global', (event, agent) => model.globalDefault(agent));
   ipcMain.handle('model:get', (event, { path: projectPath, agent }) => model.getFor(projectPath, agent));
   ipcMain.handle('model:set', (event, { path: projectPath, agent, id }) => model.setFor(projectPath, agent, id));
+
+  // How hard that agent thinks — the same three questions, for the CLIs that
+  // have a reasoning-effort setting at all.
+  ipcMain.handle('effort:list', (event, agent) => ({
+    list: effort.list(agent),
+    global: effort.globalDefault(agent),
+  }));
+  ipcMain.handle('effort:get', (event, { path: projectPath, agent }) => effort.getFor(projectPath, agent));
+  ipcMain.handle('effort:set', (event, { path: projectPath, agent, id }) => effort.setFor(projectPath, agent, id));
 
   // ---- Which CLI a project starts (Claude Code, another agent, plain shell) ----
   // The list is re-read rather than cached in the renderer: an agent installed

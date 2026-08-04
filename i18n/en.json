@@ -377,5 +377,13 @@
   "overview.state.idle": "not started",
   "overview.state.dead": "ended",
   "toast.gridFull": "The grid holds {n} panels.",
-  "overview.state.detached": "running, not open here"
+  "overview.state.detached": "running, not open here",
+  "bar.effort": "Effort",
+  "bar.effort.auto": "Auto",
+  "bar.effort.title": "How hard {agent} thinks in this project",
+  "bar.effort.follows": "Follows {agent} · {effort}",
+  "bar.effort.pending": "Terminal started on {effort} — the pick applies when it restarts",
+  "toast.effortSet": "{project} thinks at {effort}",
+  "toast.effortLater": "{project}: {effort} applies when the terminal restarts",
+  "toast.effortFailed": "Could not save the effort level. {error}"
 }

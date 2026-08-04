@@ -31,6 +31,9 @@ contextBridge.exposeInMainWorld('api', {
   getGlobalModel: () => ipcRenderer.invoke('model:global'),
   getModel: (projectPath, agent) => ipcRenderer.invoke('model:get', { path: projectPath, agent }),
   setModel: (projectPath, agent, id) => ipcRenderer.invoke('model:set', { path: projectPath, agent, id }),
+  listEfforts: (agent) => ipcRenderer.invoke('effort:list', agent),
+  getEffort: (projectPath, agent) => ipcRenderer.invoke('effort:get', { path: projectPath, agent }),
+  setEffort: (projectPath, agent, id) => ipcRenderer.invoke('effort:set', { path: projectPath, agent, id }),
 
   // Which CLI a project's terminal starts. listAgents() returns only what is
   // actually installed, each with the command line it starts — those strings

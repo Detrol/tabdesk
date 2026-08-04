@@ -386,8 +386,10 @@ function applyLayout() {
     p.el.classList.toggle('pinned', sessionsOf(cwd).some((t) => pinned.has(t.id)));
   }
   if (stripOverview) stripOverview.classList.toggle('focused', !!overviewCwd);
-  // The model and the agent belong to the session in focus, so both follow it.
+  // The model, the effort and the agent belong to the session in focus, so
+  // all three follow it.
   renderModelBtn();
+  renderEffortBtn();
   renderAgentBtn();
   syncGridBtn();
   scheduleSync();
@@ -465,7 +467,21 @@ function startCmdFor(t) {
 
   const flag = spec.takesModel && t.model && t.model !== 'default'
     ? ` --model '${t.model}'` : '';
-  return spec.command + flag;
+  return spec.command + flag + effortFlag(agentFor(t), t.effort);
+}
+
+// Reasoning effort, in each CLI's own syntax. Mirrors effort.js in main; the
+// level is checked against that agent's own list rather than escaped, so
+// nothing but a known word ever reaches the command line.
+const EFFORT_LEVELS = {
+  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  codex: ['minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'],
+};
+function effortSupported(agent) { return Boolean(EFFORT_LEVELS[agent]); }
+function effortFlag(agent, level) {
+  if (!level || level === 'default' || !effortSupported(agent)) return '';
+  if (!EFFORT_LEVELS[agent].includes(level)) return '';
+  return agent === 'claude' ? ` --effort ${level}` : ` -c model_reasoning_effort=${level}`;
 }
 
 // Ids come from history.js, which only emits ones that cannot be read as a
@@ -503,7 +519,7 @@ function tmuxAgentFor(t) {
 // `projectCwd` is the rail row this session belongs under: its own directory
 // for a project session, the parent project for a worktree, the project you
 // were in for a loose terminal.
-function buildTab({ name, cwd, projectCwd, model, agent, startCmd, resume }) {
+function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resume }) {
   const id = `t${++seq}`;
   const tabEl = document.createElement('div');
   tabEl.className = 'stab';
@@ -541,7 +557,8 @@ function buildTab({ name, cwd, projectCwd, model, agent, startCmd, resume }) {
   // changing what this tab was going to run.
   const rec = {
     id, name, cwd, projectCwd: projectCwd || cwd || activeCwd,
-    model: model || 'default', startCmd, resume: resume || null,
+    model: model || 'default', effort: effort || 'default',
+    startCmd, resume: resume || null,
     tabEl, materialized: false, agent: agent || undefined,
   };
   if (cwd) rec.agent = agentFor(rec);
@@ -598,6 +615,7 @@ function materialize(t) {
   // The model this terminal is actually launching with — a later pick can't
   // reach the running process, so the bar compares against this.
   t.runningModel = t.model;
+  t.runningEffort = t.effort;
   // Same for the agent: once this tab is running one, that is what it is,
   // whatever the project is set to open next.
   t.agent = agentFor(t);
@@ -808,9 +826,13 @@ async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
   if (alloc && alloc.session && alloc.suffix) name = `${base} ·${alloc.suffix}`;
 
   // Models don't cross between agents, so ask for this agent's pick rather
-  // than reusing whatever the project's default agent is set to.
-  const model = await window.api.getModel(cwd, agent);
-  const id = buildTab({ name, cwd, projectCwd: owner, model, agent, resume });
+  // than reusing whatever the project's default agent is set to. Effort is
+  // stored the same way and asked for alongside it.
+  const [model, effort] = await Promise.all([
+    window.api.getModel(cwd, agent),
+    window.api.getEffort(cwd, agent),
+  ]);
+  const id = buildTab({ name, cwd, projectCwd: owner, model, effort, agent, resume });
   const tab = tabs.get(id);
   if (alloc && alloc.session) tab.session = alloc.session;
   if (resume) {
@@ -1916,6 +1938,122 @@ modelMenu.addEventListener('click', async (e) => {
   toast(tab.materialized
     ? window.t('toast.modelLater', { project: tab.name, model: label })
     : window.t('toast.modelSet', { project: tab.name, model: label }));
+});
+
+// ---- Effort picker ----
+// The model picker's twin: same shape, same storage rules (per project, per
+// agent), the same "a live terminal keeps what it launched with". It hides
+// itself for agents that have no reasoning-effort setting at all rather than
+// showing a control that can't do anything.
+const effortBtn = document.getElementById('effort-btn');
+const effortMenu = document.getElementById('effort-menu');
+const effortStat = document.getElementById('m-effort');
+let effortList = [];
+let effortListAgent = null;
+let globalEffort = 'default';
+
+async function loadEfforts(agent) {
+  if (effortListAgent === agent) return;
+  const res = await window.api.listEfforts(agent);
+  if (!res || !Array.isArray(res.list)) return;
+  effortList = res.list;
+  globalEffort = res.global || 'default';
+  effortListAgent = agent;
+}
+
+function activeEffort() {
+  const tab = tabs.get(activeId);
+  return (tab && tab.effort) || 'default';
+}
+
+function effortBarLabel(id) {
+  if (id !== 'default') return id;
+  return globalEffort === 'default' ? t('bar.effort.auto') : globalEffort;
+}
+
+function renderEffortBtn() {
+  const tab = tabs.get(activeId);
+  const agent = activeAgent();
+  const show = Boolean(agent) && effortSupported(agent);
+  effortStat.classList.toggle('hidden', !show);
+  if (!show) return;
+  if (effortListAgent !== agent) {
+    loadEfforts(agent).then(() => { if (activeAgent() === agent) renderEffortBtn(); });
+  }
+  const id = activeEffort();
+  const pending = !!(tab && tab.materialized && tab.runningEffort !== tab.effort);
+  effortBtn.textContent = effortBarLabel(id) + (pending ? ' •' : '');
+  effortBtn.classList.toggle('picked', id !== 'default' && !pending);
+  effortBtn.classList.toggle('pending', pending);
+  effortBtn.title = pending
+    ? t('bar.effort.pending', { effort: effortBarLabel(tab.runningEffort) })
+    : t('bar.effort.title', { agent: agentLabel(agent) });
+}
+
+function renderEffortMenu() {
+  const id = activeEffort();
+  effortMenu.innerHTML = '';
+  for (const e of effortList) {
+    const item = document.createElement('button');
+    item.className = 'menu-item' + (e.id === id ? ' current' : '');
+    item.setAttribute('role', 'menuitem');
+    item.dataset.effort = e.id;
+    const label = document.createElement('span');
+    label.className = 'mi-label';
+    label.textContent = (e.id === id ? '✓ ' : '') + e.label;
+    const hint = document.createElement('span');
+    hint.className = 'mi-hint';
+    hint.textContent = e.id === 'default'
+      ? t('bar.effort.follows', { agent: agentLabel(activeAgent() || 'claude'), effort: effortBarLabel('default') })
+      : '';
+    item.append(label, hint);
+    effortMenu.appendChild(item);
+  }
+}
+
+function closeEffortMenu() {
+  effortMenu.classList.add('hidden');
+  effortBtn.setAttribute('aria-expanded', 'false');
+}
+
+effortBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  const open = effortMenu.classList.contains('hidden');
+  if (open) {
+    const agent = activeAgent();
+    if (agent) { effortListAgent = null; await loadEfforts(agent); }
+    renderEffortMenu();
+  }
+  effortMenu.classList.toggle('hidden', !open);
+  effortBtn.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', closeEffortMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeEffortMenu(); });
+
+effortMenu.addEventListener('click', async (e) => {
+  const item = e.target.closest('.menu-item');
+  if (!item) return;
+  e.stopPropagation();
+  closeEffortMenu();
+  const tab = tabs.get(activeId);
+  if (!tab || !tab.cwd) return;
+  const id = item.dataset.effort;
+  if (id === tab.effort) return;
+
+  const agent = agentFor(tab);
+  const res = await window.api.setEffort(tab.cwd, agent, id);
+  if (!res || !res.ok) {
+    toast(window.t('toast.effortFailed', { error: (res && res.error) || '' }));
+    return;
+  }
+  for (const other of tabs.values()) {
+    if (other.cwd === tab.cwd && agentFor(other) === agent) other.effort = res.effort;
+  }
+  renderEffortBtn();
+  const label = effortBarLabel(tab.effort);
+  toast(tab.materialized
+    ? window.t('toast.effortLater', { project: tab.name, effort: label })
+    : window.t('toast.effortSet', { project: tab.name, effort: label }));
 });
 
 // What "Default" resolves to can change under us (an editor, claude config).

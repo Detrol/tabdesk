@@ -374,6 +374,23 @@ app.on('ready', async () => {
   ok('text utan snapshot ger null', CX.parseRateLimits('inga granser har', NOW) === null);
   ok('trasig snapshot ger null', CX.parseRateLimits('"rate_limits":{oparsbar', NOW) === null);
 
+  console.log('== ansträngningsnivåer per agent ==');
+  const EF = require(path.join(ROOT, 'effort'));
+  ok('claude har egna nivaer', EF.list('claude').map((r) => r.id).join(',') === 'default,low,medium,high,xhigh,max');
+  ok('codex har sina', EF.list('codex').map((r) => r.id).join(',') === 'default,minimal,low,medium,high,xhigh,ultra');
+  ok('agent utan installning far inga rader', EF.list('gemini').length === 0 && !EF.supports('gemini'));
+  ok('claude-flaggan', EF.flagFor('claude', 'xhigh') === ' --effort xhigh');
+  ok('codex-flaggan ar en config-override', EF.flagFor('codex', 'ultra') === ' -c model_reasoning_effort=ultra');
+  ok('default ger ingen flagga', EF.flagFor('claude', 'default') === '');
+  ok('nivan maste finnas hos agenten', EF.flagFor('claude', 'ultra') === '' && EF.flagFor('codex', 'max') === '');
+  ok('agent utan installning ger ingen flagga', EF.flagFor('gemini', 'high') === '');
+  const EFPROJ = '/tmp/tabdesk-effort-proj';
+  ok('okand niva avvisas', EF.setFor(EFPROJ, 'codex', 'turbo').ok === false);
+  ok('giltig niva sparas per agent', EF.setFor(EFPROJ, 'codex', 'ultra').ok === true
+    && EF.getFor(EFPROJ, 'codex') === 'ultra' && EF.getFor(EFPROJ, 'claude') === 'default');
+  ok('default tar bort posten', EF.setFor(EFPROJ, 'codex', 'default').ok === true
+    && EF.getFor(EFPROJ, 'codex') === 'default');
+
   console.log('== codex-modeller ur rollouttext ==');
   const MD = require(path.join(ROOT, 'model'));
   const mtext = '{"model":"gpt-5.6-sol"}\n{"model":"gpt-5.6-terra"}\n{"model":"gpt-5.6-sol"}\n{"model":"bad;rm"}';

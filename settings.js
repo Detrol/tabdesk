@@ -10,7 +10,7 @@ const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
-const DEFAULTS = { theme: 'system', glow: true, projectsDir: null, language: 'system', projectModels: {}, closedProjects: [], openTabs: [] };
+const DEFAULTS = { theme: 'system', glow: true, projectsDir: null, language: 'system', projectModels: {}, projectEfforts: {}, closedProjects: [], openTabs: [] };
 
 let cache = null;
 const file = () => path.join(app.getPath('userData'), 'settings.json');

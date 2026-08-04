@@ -117,6 +117,15 @@
       <button id="model-btn" aria-haspopup="menu" aria-expanded="false">–</button>
     </div>
 
+    <!-- How hard that agent thinks. Beside the model because it is the same
+         kind of choice about the same session; hidden entirely for agents
+         with no such setting. Its menu, like the model's, lives outside the
+         bar so it isn't clipped. -->
+    <div class="stat hidden" id="m-effort">
+      <span class="m-label" data-i18n="bar.effort">Effort</span>
+      <button id="effort-btn" aria-haspopup="menu" aria-expanded="false">–</button>
+    </div>
+
     <!-- The plan's own limit windows, the same three /usage reports. Labels are
          set from JS: if the account's quota can't be read these fall back to
          the local token estimate and rename themselves accordingly. -->
@@ -169,6 +178,7 @@
        rail, which is ordinary DOM: over the panels it would be hidden behind
        the embedded terminals (native X windows stacked above the page). -->
   <div id="model-menu" class="menu hidden" role="menu"></div>
+  <div id="effort-menu" class="menu hidden" role="menu"></div>
 
   <!-- What the strip's + offers: the agent CLIs installed, and the project's
        worktrees. Placed on the window rather than in the strip so it isn't

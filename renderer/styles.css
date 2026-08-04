@@ -927,7 +927,38 @@ html, body {
 }
 .sb-link:hover { color: var(--accent-2); border-color: var(--accent-2); }
 
-/* ---- Model picker ---- */
+/* ---- Model and effort pickers ---- */
+/* The effort control is the model control in a quieter key: same shape and
+   caret, but the neutral line colour, because it qualifies the model rather
+   than competing with it. Hidden outright for agents with no such setting. */
+#m-effort.hidden { display: none; }
+#effort-btn {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  letter-spacing: .5px;
+  cursor: pointer;
+}
+#effort-btn::after { content: "▾"; margin-left: 6px; opacity: .75; }
+#effort-btn[aria-expanded="true"]::after { content: "▴"; }
+#effort-btn:hover:not(:disabled) { background: var(--tint); color: var(--text); }
+#effort-btn[aria-expanded="true"] { background: var(--tint); color: var(--text); }
+/* Picked for this project rather than inherited — same accent the model button
+   uses to say "this is a choice you made". */
+#effort-btn.picked { border-color: var(--accent-2); color: var(--accent-2); }
+#effort-btn.pending { border-color: var(--warn); color: var(--warn); }
+#effort-menu {
+  position: absolute;
+  left: 10px;
+  bottom: 52px;
+  width: 136px;
+  z-index: 60;
+}
+#effort-menu .menu-item.current .mi-label { color: var(--accent-2); }
+
 #model-btn {
   padding: 3px 9px;
   border: 1px solid var(--accent-2);

@@ -377,5 +377,13 @@
   "overview.state.idle": "inte startad",
   "overview.state.dead": "avslutad",
   "toast.gridFull": "Rutnätet rymmer {n} rutor.",
-  "overview.state.detached": "kör, inte öppnad här"
+  "overview.state.detached": "kör, inte öppnad här",
+  "bar.effort": "Ansträngning",
+  "bar.effort.auto": "Auto",
+  "bar.effort.title": "Hur hårt {agent} tänker i det här projektet",
+  "bar.effort.follows": "Följer {agent} · {effort}",
+  "bar.effort.pending": "Terminalen startade på {effort} — valet gäller vid omstart",
+  "toast.effortSet": "{project} tänker på {effort}",
+  "toast.effortLater": "{project}: {effort} gäller när terminalen startas om",
+  "toast.effortFailed": "Kunde inte spara ansträngningsnivån. {error}"
 }
