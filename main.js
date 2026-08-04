@@ -803,6 +803,19 @@ app.whenReady().then(async () => {
     return true;
   });
 
+  // A terminal selection copies itself: to CLIPBOARD so Ctrl+Shift+V and any
+  // other program see it, and on X11 to PRIMARY as well, because middle-click
+  // paste is how a selection is expected to travel there.
+  ipcMain.on('clipboard:copy-selection', (event, text) => {
+    if (typeof text !== 'string' || !text) return;
+    clipboard.writeText(text);
+    if (process.platform === 'linux') clipboard.writeText(text, 'selection');
+  });
+
+  // Pasting into a terminal reads through main for the same file:// reason
+  // clipboard:write writes through it.
+  ipcMain.handle('clipboard:read', () => clipboard.readText());
+
   ipcMain.handle('theme:list', () => theme.list());
   ipcMain.handle('theme:set', async (event, id) => {
     settings.set('theme', id);

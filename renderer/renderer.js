@@ -654,6 +654,36 @@ function materialize(t) {
   term.loadAddon(fit);
   term.open(termEl);
 
+  // ---- Clipboard ----
+  // tmux runs with the mouse on, so a plain drag belongs to the pane and
+  // Shift+drag is xterm's own escape hatch that selects in the terminal
+  // instead. A selection then copies itself (CLIPBOARD, and PRIMARY on X11),
+  // so select-then-paste needs no chord in between; Ctrl+Shift+C copies
+  // explicitly and Ctrl+Shift+V pastes, while plain Ctrl+C/V stay with the
+  // program inside, which owns them (SIGINT, verbatim insert).
+  let copyTimer = null;
+  const offSelect = term.onSelectionChange(() => {
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => {
+      const sel = term.getSelection();
+      if (sel) window.api.copySelection(sel);
+    }, 150);
+  });
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown' || !e.ctrlKey || !e.shiftKey) return true;
+    if (e.code === 'KeyC') {
+      const sel = term.getSelection();
+      if (!sel) return true;        // nothing selected — the program's key
+      window.api.copySelection(sel);
+      return false;
+    }
+    if (e.code === 'KeyV') {
+      window.api.readClipboard().then((text) => { if (text) term.paste(text); });
+      return false;
+    }
+    return true;
+  });
+
   const ro = new ResizeObserver(() => fitTerm(id));
   ro.observe(panelEl);
 
@@ -685,7 +715,7 @@ function materialize(t) {
 
   Object.assign(t, {
     materialized: true, term, fit, panelEl,
-    cleanup: () => { offData(); offExit(); ro.disconnect(); },
+    cleanup: () => { offData(); offExit(); offSelect.dispose(); clearTimeout(copyTimer); ro.disconnect(); },
   });
 }
 
