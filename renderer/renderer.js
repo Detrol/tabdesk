@@ -683,6 +683,20 @@ function materialize(t) {
     }
     return true;
   });
+  // Right-click pastes, the classic X-terminal way. Captured on the ancestor
+  // so the press never reaches xterm's mouse forwarding — otherwise tmux
+  // (mouse on) pops its own menu over the pane.
+  const rightPaste = (e) => {
+    if (e.button !== 2) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === 'mousedown') {
+      window.api.readClipboard().then((text) => { if (text) term.paste(text); });
+    }
+  };
+  termEl.addEventListener('mousedown', rightPaste, true);
+  termEl.addEventListener('mouseup', rightPaste, true);
+  termEl.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); }, true);
 
   const ro = new ResizeObserver(() => fitTerm(id));
   ro.observe(panelEl);
