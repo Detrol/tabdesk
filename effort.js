@@ -23,10 +23,19 @@ const CODEX_CONFIG = path.join(os.homedir(), '.codex', 'config.toml');
 
 const DEFAULT_ROW = { id: 'default', label: 'Default' };
 
-// Ordered weakest to strongest, as each CLI names them.
+// Ordered weakest to strongest, as each CLI names them. Claude's list ends
+// with one that isn't a rung on the same ladder: `ultracode` is xhigh plus
+// standing workflow orchestration, and it is accepted by --effort like any
+// level (verified against the CLI, which reports the mode active for it and
+// inactive for a plain xhigh). Its own /effort spells the set the same way.
 const LEVELS = {
-  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   codex: ['minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'],
+};
+
+// Shown beside a level that needs saying what it is. Keys into i18n.
+const HINTS = {
+  claude: { ultracode: 'bar.effort.hint.ultracode' },
 };
 
 const SAFE_LEVEL = /^[a-z]+$/;
@@ -58,7 +67,8 @@ function globalDefault(agent = 'claude') {
 function list(agent = 'claude') {
   const levels = LEVELS[agent];
   if (!levels) return [];
-  return [DEFAULT_ROW, ...levels.map((id) => ({ id, label: id }))];
+  const hints = HINTS[agent] || {};
+  return [DEFAULT_ROW, ...levels.map((id) => ({ id, label: id, hint: hints[id] || null }))];
 }
 
 function supports(agent) { return Boolean(LEVELS[agent]); }

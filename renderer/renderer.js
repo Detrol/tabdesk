@@ -474,7 +474,7 @@ function startCmdFor(t) {
 // level is checked against that agent's own list rather than escaped, so
 // nothing but a known word ever reaches the command line.
 const EFFORT_LEVELS = {
-  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   codex: ['minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'],
 };
 function effortSupported(agent) { return Boolean(EFFORT_LEVELS[agent]); }
@@ -2005,7 +2005,7 @@ function renderEffortMenu() {
     hint.className = 'mi-hint';
     hint.textContent = e.id === 'default'
       ? t('bar.effort.follows', { agent: agentLabel(activeAgent() || 'claude'), effort: effortBarLabel('default') })
-      : '';
+      : (e.hint ? t(e.hint) : '');
     item.append(label, hint);
     effortMenu.appendChild(item);
   }

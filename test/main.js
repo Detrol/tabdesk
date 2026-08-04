@@ -376,10 +376,14 @@ app.on('ready', async () => {
 
   console.log('== ansträngningsnivåer per agent ==');
   const EF = require(path.join(ROOT, 'effort'));
-  ok('claude har egna nivaer', EF.list('claude').map((r) => r.id).join(',') === 'default,low,medium,high,xhigh,max');
+  ok('claude har egna nivaer', EF.list('claude').map((r) => r.id).join(',') === 'default,low,medium,high,xhigh,max,ultracode');
   ok('codex har sina', EF.list('codex').map((r) => r.id).join(',') === 'default,minimal,low,medium,high,xhigh,ultra');
   ok('agent utan installning far inga rader', EF.list('gemini').length === 0 && !EF.supports('gemini'));
   ok('claude-flaggan', EF.flagFor('claude', 'xhigh') === ' --effort xhigh');
+  ok('ultracode ar ett eget lage, inte en niva hos codex',
+    EF.flagFor('claude', 'ultracode') === ' --effort ultracode' && EF.flagFor('codex', 'ultracode') === '');
+  ok('ultracode forklarar sig i menyn',
+    (EF.list('claude').find((r) => r.id === 'ultracode') || {}).hint === 'bar.effort.hint.ultracode');
   ok('codex-flaggan ar en config-override', EF.flagFor('codex', 'ultra') === ' -c model_reasoning_effort=ultra');
   ok('default ger ingen flagga', EF.flagFor('claude', 'default') === '');
   ok('nivan maste finnas hos agenten', EF.flagFor('claude', 'ultra') === '' && EF.flagFor('codex', 'max') === '');

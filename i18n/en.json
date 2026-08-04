@@ -385,5 +385,6 @@
   "bar.effort.pending": "Terminal started on {effort} — the pick applies when it restarts",
   "toast.effortSet": "{project} thinks at {effort}",
   "toast.effortLater": "{project}: {effort} applies when the terminal restarts",
-  "toast.effortFailed": "Could not save the effort level. {error}"
+  "toast.effortFailed": "Could not save the effort level. {error}",
+  "bar.effort.hint.ultracode": "xhigh + workflow orchestration"
 }
