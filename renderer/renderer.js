@@ -661,14 +661,21 @@ function materialize(t) {
   // so select-then-paste needs no chord in between; Ctrl+Shift+C copies
   // explicitly and Ctrl+Shift+V pastes, while plain Ctrl+C/V stay with the
   // program inside, which owns them (SIGINT, verbatim insert).
-  let copyTimer = null;
-  const offSelect = term.onSelectionChange(() => {
-    clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => {
-      const sel = term.getSelection();
-      if (sel) window.api.copySelection(sel);
-    }, 150);
-  });
+  //
+  // Copying rides on the mouseup, in the CAPTURE phase — before any of
+  // xterm's own listeners. Under a mouse-tracking app (Claude's TUI) the
+  // release of a forced drag is reported as input, input clears the
+  // selection, and only then does xterm fire its public selection event —
+  // which therefore always reads empty for exactly the drags that matter.
+  // Mid-drag the model is live, so the capture handler still sees the text.
+  const copyNow = () => {
+    const sel = term.getSelection();
+    if (sel) window.api.copySelection(sel);
+  };
+  termEl.addEventListener('mouseup', (e) => { if (e.button === 0) copyNow(); }, true);
+  // Selections made without a drag (double-click word select, select-all)
+  // still announce themselves here.
+  const offSelect = term.onSelectionChange(copyNow);
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown' || !e.ctrlKey || !e.shiftKey) return true;
     if (e.code === 'KeyC') {
@@ -729,7 +736,7 @@ function materialize(t) {
 
   Object.assign(t, {
     materialized: true, term, fit, panelEl,
-    cleanup: () => { offData(); offExit(); offSelect.dispose(); clearTimeout(copyTimer); ro.disconnect(); },
+    cleanup: () => { offData(); offExit(); offSelect.dispose(); ro.disconnect(); },
   });
 }
 
