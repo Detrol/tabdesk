@@ -519,6 +519,13 @@ function buildTab({ name, cwd, projectCwd, model, agent, startCmd, resume }) {
     if (e.target.closest('.close') || e.target.closest('.pin')) return;
     setActive(id);
   });
+  // Middle-click closes the tab, the way browser tabs do. Same path as the ×,
+  // so it carries the same weight: the session ends, it doesn't hide.
+  tabEl.addEventListener('auxclick', (e) => {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    closeTab(id);
+  });
   tabEl.querySelector('.close').addEventListener('click', (e) => {
     e.stopPropagation();
     closeTab(id);
