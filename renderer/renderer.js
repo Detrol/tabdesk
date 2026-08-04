@@ -553,6 +553,31 @@ function sessionLabel(cwd, agent, projectCwd) {
   return agentLabel(agent);
 }
 
+// A conversation's own name, dressed for the strip: shortened, and keeping
+// the worktree marker — the branch itself is still in the tab's tooltip.
+function titledName(title, cwd, projectCwd) {
+  const one = String(title).replace(/\s+/g, ' ').trim();
+  const short = one.length > 60 ? `${one.slice(0, 59)}…` : one;
+  if (!short) return null;
+  return projectCwd && cwd && cwd !== projectCwd ? `⑂ ${short}` : short;
+}
+
+// Renames follow the runtime's own store, so this runs repeatedly for a tab —
+// everything showing the old name repaints, and the record keeps the new one
+// so a restart restores the tab as what it was about, not what CLI it ran.
+function renameTab(id, name) {
+  const t = tabs.get(id);
+  if (!t || !name || t.name === name) return;
+  t.name = name;
+  if (t.tabEl) {
+    t.tabEl.querySelector('.label').textContent = name;
+    t.tabEl.title = t.cwd ? `${name}\n${t.cwd}` : name;
+  }
+  if (t.session) window.api.renameTab(t.session, name, t.agentSession || null);
+  if (overviewCwd === t.projectCwd) renderOverview(t.projectCwd);
+  syncTray();
+}
+
 // For anywhere outside the strip — the tray, a screenshot filename, a toast —
 // where the project name isn't already on screen next to it.
 function fullName(t) {
@@ -569,6 +594,9 @@ function materialize(t) {
   // Same for the agent: once this tab is running one, that is what it is,
   // whatever the project is set to open next.
   t.agent = agentFor(t);
+  // When this tab's terminal started — what its conversation's store file is
+  // matched against when no id is known yet (refreshTitles).
+  t.bornAt = Date.now();
 
   const panelEl = document.createElement('div');
   panelEl.className = 'panel';
@@ -725,7 +753,16 @@ async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
   // than reusing whatever the project's default agent is set to.
   const model = await window.api.getModel(cwd, agent);
   const id = buildTab({ name, cwd, projectCwd: owner, model, agent, resume });
-  if (alloc && alloc.session) tabs.get(id).session = alloc.session;
+  const tab = tabs.get(id);
+  if (alloc && alloc.session) tab.session = alloc.session;
+  if (resume) {
+    // Codex picks the conversation back up under the same id; Claude forks a
+    // fresh id on resume, so the fork is matched up by birth time later
+    // (refreshTitles) rather than pinned to the id that stays behind.
+    if (agent === 'codex' && resume.id) tab.agentSession = resume.id;
+    const titled = resume.title && titledName(resume.title, cwd, owner);
+    if (titled) renameTab(id, titled);
+  }
   setActive(id);
   return id;
 }
@@ -1054,7 +1091,7 @@ async function renderOverview(cwd) {
       newEl('span', 'ov-when', whenLabel(r.at)),
     );
     row.title = t('overview.resume', { id: r.id });
-    row.addEventListener('click', () => newSession(cwd, r.agent, { resume: { id: r.id } }));
+    row.addEventListener('click', () => newSession(cwd, r.agent, { resume: { id: r.id, title: r.title } }));
     past.appendChild(row);
   }
 }
@@ -1653,6 +1690,7 @@ window.api.listProjects().then((list) => {
     const name = rec.name || sessionLabel(rec.cwd, agentFor({ cwd: rec.cwd, agent }), owner);
     const id = buildTab({ name, cwd: rec.cwd, projectCwd: owner, agent });
     tabs.get(id).session = rec.session;
+    if (rec.agentSession) tabs.get(id).agentSession = rec.agentSession;
   }
   // Land on something rather than an empty window: the overview of the project
   // with sessions waiting for you, else of the first one in the rail. The
@@ -2110,4 +2148,53 @@ syncTray();   // seed the menu with the empty state before the first tab opens
 setInterval(refreshSystem, 2000);
 setInterval(tickClock, 1000);
 setInterval(refreshLimits, 60000);  // plan quota: the number that actually moves
+
+// ---- Session names from the runtimes' own stores ----
+// A tab is born under its agent's label; the conversation inside soon has a
+// name of its own — Claude rewrites a summary every turn, Codex files the
+// opening message as the thread's title. The Earlier list already reads those
+// stores (sessions:previous, cached a minute in main); this loop matches the
+// rows to the live tabs and lifts the names onto them.
+//
+// Matching: a resumed Codex tab knows its conversation id up front; Claude
+// forks a fresh id on resume, and a brand-new session's id exists only on
+// disk. Both are matched by birth — the store file born right after the tab
+// started is that tab's conversation, and with two fresh tabs on one project
+// the oldest tab claims the earliest birth. Once matched the id sticks and is
+// persisted on the record, so later rounds (and restarts) just follow renames.
+const TITLED_AGENTS = new Set(['claude', 'codex']);
+
+async function refreshTitles() {
+  const eligible = [...tabs.values()].filter((t) =>
+    t.session && t.cwd && !t.startCmd && t.materialized && TITLED_AGENTS.has(agentFor(t)));
+  const byCwd = new Map();
+  for (const t of eligible) {
+    if (!byCwd.has(t.cwd)) byCwd.set(t.cwd, []);
+    byCwd.get(t.cwd).push(t);
+  }
+  for (const [cwd, group] of byCwd) {
+    let rows;
+    try { rows = await window.api.previousSessions(cwd); } catch (_) { continue; }
+    if (!Array.isArray(rows) || !rows.length) continue;
+    const claimed = new Set([...tabs.values()].map((x) => x.agentSession).filter(Boolean));
+    for (const tab of group.slice().sort((a, b) => (a.bornAt || 0) - (b.bornAt || 0))) {
+      let row = tab.agentSession ? rows.find((r) => r.id === tab.agentSession) : null;
+      if (!row && !tab.agentSession && tab.bornAt) {
+        row = rows
+          .filter((r) => r.agent === agentFor(tab) && !claimed.has(r.id)
+            && r.born && r.born >= tab.bornAt - 5000)
+          .sort((a, b) => a.born - b.born)[0] || null;
+        if (row) {
+          tab.agentSession = row.id;
+          claimed.add(row.id);
+          // Persist the match now: the title can arrive after a restart.
+          if (tab.session) window.api.renameTab(tab.session, tab.name, row.id);
+        }
+      }
+      if (row && row.title) renameTab(tab.id, titledName(row.title, tab.cwd, tab.projectCwd));
+    }
+  }
+}
+setInterval(refreshTitles, 45000);
+setTimeout(refreshTitles, 8000);   // a resumed strip shouldn't wait a minute
 setInterval(refreshUsage, 300000);  // re-scan transcripts every 5 min

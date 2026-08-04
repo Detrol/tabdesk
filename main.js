@@ -992,6 +992,20 @@ app.whenReady().then(async () => {
     try { execFile('tmux', ['kill-session', '-t', '=' + session], () => {}); } catch (_) {}
   });
 
+  // A tab adopting its session's own generated name (and remembering which
+  // agent conversation it is) writes both through to the record, so a restart
+  // restores the tab under the name it had — and can keep following the same
+  // conversation's renames instead of matching it up from scratch.
+  ipcMain.on('tabs:rename', (event, { session, name, agentSession }) => {
+    if (typeof session !== 'string' || !/^td-[A-Za-z0-9_-]+$/.test(session)) return;
+    if (typeof name !== 'string' || !name || name.length > 200) return;
+    const rec = openTabs().find((r) => r.session === session);
+    if (!rec) return;
+    const next = { ...rec, name };
+    if (typeof agentSession === 'string' && agentSession) next.agentSession = agentSession;
+    rememberTab(next);
+  });
+
   // ---- Terminal lifecycle over IPC ----
 
   // Git worktrees of a project, by the one-branch-one-worktree convention of

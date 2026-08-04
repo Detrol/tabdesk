@@ -467,6 +467,7 @@ html, body {
   align-items: center;
   gap: 7px;
   flex: 0 0 auto;
+  max-width: 240px;   /* conversation names can be long — the tooltip has it all */
   height: 26px;
   padding: 0 9px;
   border: 1px solid transparent;
@@ -494,6 +495,11 @@ html, body {
   background: var(--accent-2);
   box-shadow: var(--glow-accent-2);
   flex: 0 0 auto;
+}
+.stab .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .stab.busy .dot {
   background: var(--accent);

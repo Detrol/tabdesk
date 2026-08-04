@@ -283,6 +283,11 @@ app.on('ready', async () => {
   const merged = await H.previousSessions(CWD, ['claude', 'codex'], where);
   ok('bada agenterna kommer med', merged.length === 4, String(merged.length));
   ok('sorterad pa tid', merged.every((r, i) => i === 0 || merged[i - 1].at >= r.at));
+  // Live tabs match a fresh conversation on when its store file was born, so
+  // every row must say — mtime moves with each turn and can't tell fresh from
+  // freshly-resumed.
+  ok('varje rad bar sin fodselsetid', merged.every((r) => typeof r.born === 'number' && r.born > 0),
+    merged.map((r) => `${r.agent}:${r.born}`).join(', '));
   ok('ingen agent utan lasare', (await H.previousSessions(CWD, ['aider'], where)).length === 0);
   ok('tom sokvag ger tom lista', (await H.previousSessions('', ['claude'], where)).length === 0);
 

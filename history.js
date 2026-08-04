@@ -130,7 +130,10 @@ async function claudeSessions(cwd, root) {
     for (const name of names.filter((n) => n.endsWith('.jsonl') && SAFE_ID.test(n.slice(0, -6)))) {
       try {
         const st = await fsp.stat(path.join(dir, name));
-        stats.push({ dir, name, at: st.mtimeMs });
+        // born is when the session began (the file appears with it) — what a
+        // live tab matches its own start time against, since mtime moves with
+        // every turn and an old session picked up again looks brand new by it.
+        stats.push({ dir, name, at: st.mtimeMs, born: st.birthtimeMs });
       } catch (_) { /* raced away */ }
     }
   }
@@ -139,7 +142,7 @@ async function claudeSessions(cwd, root) {
   const out = [];
   const seen = new Set();
   let opened = 0;
-  for (const { dir, name, at } of newest) {
+  for (const { dir, name, at, born } of newest) {
     if (out.length >= MAX_PER_AGENT || opened >= CLAUDE_MAX_FILES) break;
     const id = name.replace(/\.jsonl$/, '');
     if (seen.has(id)) continue;      // same session mirrored under both spellings
@@ -173,6 +176,7 @@ async function claudeSessions(cwd, root) {
       id,
       title: title ? clip(title) : null,
       at,
+      born,
     });
   }
   return out;
@@ -250,6 +254,7 @@ async function codexSessions(cwd, root) {
         id: CODEX_ID.exec(name)[1],
         title: codexTitle(body),
         at: st ? st.mtimeMs : 0,
+        born: st ? st.birthtimeMs : 0,
       });
     }
   }

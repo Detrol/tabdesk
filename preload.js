@@ -116,6 +116,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('tabs:allocate', { cwd, agent, name, basePromised }),
   restoreTabs: () => ipcRenderer.invoke('tabs:restore'),
   releaseSession: (session) => ipcRenderer.send('tabs:release', { session }),
+  renameTab: (session, name, agentSession) => ipcRenderer.send('tabs:rename', { session, name, agentSession }),
   // The conversations the installed agents can still resume in this project.
   previousSessions: (cwd) => ipcRenderer.invoke('sessions:previous', cwd),
 
