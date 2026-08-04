@@ -202,7 +202,7 @@
   "bar.model.agentOnly": "{agent} picks its model itself — use /model inside it",
   "bar.model.pending": "Terminal started on {model} — the pick applies when it restarts (or use /model)",
   "bar.model.auto": "Auto",
-  "model.hint.default": "Follows Claude Code · {model}",
+  "model.hint.default": "Follows {agent} · {model}",
   "model.hint.opus": "Most capable",
   "model.hint.opus1m": "Opus · 1M context",
   "model.hint.sonnet": "Fast and balanced",

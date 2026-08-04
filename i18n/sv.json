@@ -202,7 +202,7 @@
   "bar.model.agentOnly": "{agent} väljer modell själv — använd /model där inne",
   "bar.model.pending": "Terminalen startade på {model} — valet gäller vid omstart (eller kör /model)",
   "bar.model.auto": "Auto",
-  "model.hint.default": "Följer Claude Code · {model}",
+  "model.hint.default": "Följer {agent} · {model}",
   "model.hint.opus": "Mest kapabel",
   "model.hint.opus1m": "Opus · 1M kontext",
   "model.hint.sonnet": "Snabb och balanserad",

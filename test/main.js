@@ -374,6 +374,14 @@ app.on('ready', async () => {
   ok('text utan snapshot ger null', CX.parseRateLimits('inga granser har', NOW) === null);
   ok('trasig snapshot ger null', CX.parseRateLimits('"rate_limits":{oparsbar', NOW) === null);
 
+  console.log('== codex-modeller ur rollouttext ==');
+  const MD = require(path.join(ROOT, 'model'));
+  const mtext = '{"model":"gpt-5.6-sol"}\n{"model":"gpt-5.6-terra"}\n{"model":"gpt-5.6-sol"}\n{"model":"bad;rm"}';
+  const mids = MD.codexModelsFromText(mtext);
+  ok('distinkta modeller utan dubbletter', mids.length === 2 && mids.includes('gpt-5.6-sol') && mids.includes('gpt-5.6-terra'), mids.join(','));
+  ok('osakra id avvisas', !mids.some((x) => x.includes(';')));
+  ok('tom text ger tom lista', MD.codexModelsFromText('inget har').length === 0);
+
   console.log('== nyaste rollout over dagkataloger ==');
   const CODEXROOT = fsx.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-cx-'));
   const dayOld = path.join(CODEXROOT, '2026', '08', '01');

@@ -1857,9 +1857,9 @@ function renderModelMenu() {
     label.textContent = (m.id === id ? '✓ ' : '') + m.label;
     const hint = document.createElement('span');
     hint.className = 'mi-hint';
-    // The "Default" row spells out what following Claude Code means today.
+    // The "Default" row spells out what following the agent means today.
     hint.textContent = m.id === 'default'
-      ? t('model.hint.default', { model: barLabel('default') })
+      ? t('model.hint.default', { agent: agentLabel(activeAgent() || 'claude'), model: barLabel('default') })
       : (m.hint ? t(m.hint) : m.id);
     item.append(label, hint);
     modelMenu.appendChild(item);

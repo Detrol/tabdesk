@@ -9,9 +9,16 @@
 // Where the choices come from, per agent:
 //   claude    the alias list below (TabDesk's own, and stable across releases)
 //   opencode  `opencode models`, which the CLI answers from its own providers
+//   codex     the models this machine has actually run, read out of the recent
+//             rollouts (plus the config default). Codex has no list command
+//             and bakes its /model choices into the binary — but every session
+//             stamps its model into the rollout, so the set maintains itself:
+//             try a model once in Codex and it appears here. A model never
+//             used on this machine is the one thing this cannot offer.
 //   others    nothing to list — the CLI is the only place that knows, so the
 //             picker shows what that agent is configured with and says to use
-//             its own /model command.
+//             its own /model command. (Gemini stays here: its CLI cannot even
+//             authenticate on this tier any more, so a model list is moot.)
 // "Default" always means: pass no flag, let the agent use its own setting. We
 // read those settings to show what that resolves to, and never write them.
 
@@ -77,6 +84,98 @@ function globalDefault(agent = 'claude') {
 const LIST_TTL_MS = 5 * 60 * 1000;
 const listCache = new Map();   // agent -> { at, models }
 
+// ---- Codex: models this machine has run ----
+const CODEX_SESSIONS = path.join(os.homedir(), '.codex', 'sessions');
+const CODEX_DAY_DIRS = 14;
+// Dozens of sessions land per day here, so a small cap would only ever see
+// today — the point is to reach models used earlier in the window too.
+const CODEX_MAX_FILES = 80;
+// The first turn_context carries the model, but it sits AFTER the
+// session_meta line whose embedded instructions run to ~100 KB — no fixed
+// head or tail hits it reliably. Chunk forward and stop at the first match.
+const CODEX_SCAN_CAP = 512 * 1024;
+
+// Every distinct "model":"..." in the text. Exported for tests.
+function codexModelsFromText(text) {
+  const out = new Set();
+  const re = /"model":"([^"]+)"/g;
+  let m;
+  while ((m = re.exec(text))) {
+    if (SAFE_ID.test(m[1])) out.add(m[1]);
+  }
+  return [...out];
+}
+
+function codexRolloutFiles() {
+  const dirs = [];
+  let years;
+  try { years = fs.readdirSync(CODEX_SESSIONS).filter((d) => /^\d{4}$/.test(d)).sort().reverse(); }
+  catch (_) { return []; }
+  for (const y of years) {
+    let months;
+    try { months = fs.readdirSync(path.join(CODEX_SESSIONS, y)).filter((d) => /^\d{2}$/.test(d)).sort().reverse(); }
+    catch (_) { continue; }
+    for (const mo of months) {
+      let days;
+      try { days = fs.readdirSync(path.join(CODEX_SESSIONS, y, mo)).filter((d) => /^\d{2}$/.test(d)).sort().reverse(); }
+      catch (_) { continue; }
+      for (const d of days) {
+        dirs.push(path.join(CODEX_SESSIONS, y, mo, d));
+        if (dirs.length >= CODEX_DAY_DIRS) break;
+      }
+      if (dirs.length >= CODEX_DAY_DIRS) break;
+    }
+    if (dirs.length >= CODEX_DAY_DIRS) break;
+  }
+  const files = [];
+  for (const dir of dirs) {
+    let names;
+    try { names = fs.readdirSync(dir); } catch (_) { continue; }
+    for (const n of names) {
+      if (n.startsWith('rollout-') && n.endsWith('.jsonl')) files.push(path.join(dir, n));
+    }
+  }
+  return files.slice(0, CODEX_MAX_FILES);
+}
+
+function modelsFromRollout(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(32 * 1024);
+    let pos = 0;
+    let carry = '';
+    while (pos < CODEX_SCAN_CAP) {
+      const n = fs.readSync(fd, buf, 0, buf.length, pos);
+      if (n <= 0) break;
+      const text = carry + buf.toString('utf8', 0, n);
+      const ids = codexModelsFromText(text);
+      if (ids.length) return ids;
+      carry = text.slice(-64);   // a match split across the chunk boundary
+      pos += n;
+    }
+    return [];
+  } catch (_) {
+    return [];
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch (_) { /* closed */ }
+  }
+}
+
+function listFromCodexRollouts() {
+  const hit = listCache.get('codex');
+  if (hit && Date.now() - hit.at < LIST_TTL_MS) return Promise.resolve(hit.models);
+  const seen = new Set();
+  const configured = globalDefault('codex');
+  if (configured !== 'default') seen.add(configured);
+  for (const file of codexRolloutFiles()) {
+    for (const id of modelsFromRollout(file)) seen.add(id);
+  }
+  const models = [...seen].sort().map((id) => ({ id, label: id, hint: null }));
+  listCache.set('codex', { at: Date.now(), models });
+  return Promise.resolve(models);
+}
+
 function listFromCommand(agent, bin, args) {
   const hit = listCache.get(agent);
   if (hit && Date.now() - hit.at < LIST_TTL_MS) return Promise.resolve(hit.models);
@@ -110,6 +209,9 @@ function list(agent = 'claude') {
   if (agent === 'opencode') {
     return listFromCommand('opencode', 'opencode', ['models'])
       .then((models) => [DEFAULT_ROW, ...models]);
+  }
+  if (agent === 'codex') {
+    return listFromCodexRollouts().then((models) => [DEFAULT_ROW, ...models]);
   }
   return Promise.resolve([DEFAULT_ROW]);
 }
@@ -176,4 +278,4 @@ function watchGlobal(onChange) {
 // re-read them all at once after an import rewrote them.
 function allFor() { return { ...storedModels() }; }
 
-module.exports = { list, globalDefault, getFor, setFor, allFor, flagFor, keyFor, watchGlobal };
+module.exports = { list, globalDefault, getFor, setFor, allFor, flagFor, keyFor, watchGlobal, codexModelsFromText };
