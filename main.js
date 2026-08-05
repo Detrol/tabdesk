@@ -22,7 +22,12 @@ const projectsRoot = require('./projects-root');
 const portable = require('./portable');
 const updater = require('./updater');
 const usageLimits = require('./usage-limits');
+const transcript = require('./transcript');
 const codexLimits = require('./codex-limits');
+const kimiLimits = require('./kimi-limits');
+const activity = require('./activity');
+const asking = require('./asking');
+const instructions = require('./instructions');
 const tray = require('./tray');
 const syncConfig = require('./sync/config');
 const syncTransport = require('./sync/transport-sftp');
@@ -98,6 +103,12 @@ function wrapStartCmd(startCmd, cwd, agent, session) {
 // Which tmux session each terminal id attached, so the × can take the session
 // with it. App quit and crashes never consult this — those sessions live on.
 const tmuxSessions = new Map();
+
+// The last activity map sent to the renderer, serialised. Most polls find
+// nothing changed, and the renderer only ever acts on differences, so an
+// identical map is not worth an IPC message. Cleared when the page navigates:
+// a freshly loaded renderer holds no baseline and needs the next poll in full.
+let lastActivity = '';
 
 // The tab registry: what should come back next time TabDesk starts. A session
 // that ends while the app runs (agent quit, × on the tab) drops out; app quit
@@ -291,6 +302,7 @@ function createWindow() {
     if (!details.isMainFrame || details.isSameDocument) return;
     termEmbed.killAll();
     tmuxSessions.clear();
+    lastActivity = '';
     for (const term of terminals.values()) {
       try { term.kill(); } catch (_) { /* already gone */ }
     }
@@ -1009,6 +1021,48 @@ app.whenReady().then(async () => {
 
   // A tab closed before it ever started its terminal still owns a reservation
   // (and possibly a restored session) that nothing else would clean up.
+  // A session's output, history and all, as plain text. The terminal itself
+  // cannot offer this: tmux keeps the history and redraws the pane, so what
+  // the terminal holds is one screen and nothing above it — which is why a
+  // selection can never be dragged past the top. tmux will hand over the lot.
+  const SCROLLBACK_MAX = 4 * 1024 * 1024;
+  ipcMain.handle('term:scrollback', async (event, { id, cwd, agentSession } = {}) => {
+    // Fullscreen TUI tabs keep scrollback to themselves — tmux only sees the
+    // current pane. Claude and opencode both store the real conversation in
+    // their own session stores; try those first.
+    if (cwd && agentSession) {
+      try {
+        const text = await transcript.read(cwd, agentSession);
+        if (text) return { ok: true, text, source: 'transcript' };
+      } catch (_) { /* fall through to tmux */ }
+    }
+    const session = tmuxSessions.get(id);
+    if (!session || !/^td-[A-Za-z0-9_-]+$/.test(session)) {
+      return { ok: false, reason: 'no-session' };
+    }
+    // -p prints to stdout, -J unwraps lines the pane had to break, -S - starts
+    // at the oldest line tmux still has. The target needs the trailing colon:
+    // capture-pane wants a pane, and a bare `=name` is a session, which it
+    // refuses outright ("can't find pane").
+    return new Promise((resolve) => {
+      execFile('tmux', ['capture-pane', '-p', '-J', '-S', '-', '-t', '=' + session + ':'],
+        { maxBuffer: SCROLLBACK_MAX },
+        (err, stdout) => {
+          if (err) return resolve({ ok: false, reason: 'capture-failed' });
+          resolve({ ok: true, text: String(stdout).replace(/\s+$/, ''), source: 'tmux' });
+        });
+    });
+  });
+
+  // Quiet, but finished or waiting for an answer? Only the screen knows — see
+  // asking.js. Asked once, when a session falls silent, and the verdict is all
+  // that comes back: the pane text stays here.
+  ipcMain.handle('session:asking', (event, { session } = {}) => new Promise((resolve) => {
+    if (typeof session !== 'string' || !/^td-[A-Za-z0-9_-]+$/.test(session)) return resolve(false);
+    execFile('tmux', ['capture-pane', '-p', '-t', '=' + session + ':'], { maxBuffer: 1024 * 1024 },
+      (err, stdout) => resolve(!err && asking.isAsking(stdout)));
+  }));
+
   ipcMain.on('tabs:release', (event, { session }) => {
     if (typeof session !== 'string' || !/^td-[A-Za-z0-9_-]+$/.test(session)) return;
     forgetTab(session);
@@ -1030,6 +1084,38 @@ app.whenReady().then(async () => {
   });
 
   // ---- Terminal lifecycle over IPC ----
+
+  // Current branch of a checkout, from .git/HEAD (or a linked worktree's
+  // gitdir). No git binary — one or two small reads — so the status bar can
+  // ask on every tab switch without spawning anything. Detached HEAD shortens
+  // to 7 hex; anything unreadable is null and the bar shows project only.
+  const branchOf = (cwd) => {
+    if (typeof cwd !== 'string' || !cwd) return null;
+    try {
+      const gitPath = path.join(cwd, '.git');
+      const st = fs.lstatSync(gitPath);
+      let headFile;
+      if (st.isFile()) {
+        const text = fs.readFileSync(gitPath, 'utf8').trim();
+        const m = /^gitdir:\s*(.+)$/i.exec(text);
+        if (!m) return null;
+        const gitdir = path.isAbsolute(m[1]) ? m[1] : path.resolve(cwd, m[1]);
+        headFile = path.join(gitdir, 'HEAD');
+      } else if (st.isDirectory()) {
+        headFile = path.join(gitPath, 'HEAD');
+      } else {
+        return null;
+      }
+      const head = fs.readFileSync(headFile, 'utf8').trim();
+      const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+      if (ref) return ref[1];
+      if (/^[0-9a-f]{7,40}$/i.test(head)) return head.slice(0, 7);
+      return null;
+    } catch (_) {
+      return null;
+    }
+  };
+  ipcMain.handle('git:branch', (_event, cwd) => branchOf(cwd));
 
   // Git worktrees of a project, by the one-branch-one-worktree convention of
   // keeping them in .worktrees/. They are branches of a project, not projects
@@ -1515,6 +1601,48 @@ app.whenReady().then(async () => {
   const recheck = setInterval(() => checkForUpdate(win), updater.CHECK_INTERVAL_MS);
   app.on('will-quit', () => { clearTimeout(firstCheck); clearInterval(recheck); });
 
+  // Sessions the renderer has not opened have no pty to speak for them, so
+  // tmux is asked on their behalf — see activity.js. The renderer decides what
+  // a moved stamp means; this only carries the numbers.
+  const readActivity = () => new Promise((resolve) => {
+    execFile('tmux', activity.ARGS, (err, stdout) => {
+      // No tmux binary at all: nothing here will ever answer.
+      if (err && err.code === 'ENOENT') return resolve(null);
+      // Any other failure is "no server running", which is a true answer —
+      // every session is gone — and not an error to swallow.
+      if (err) return resolve({});
+      // The title is read here and reduced to a verdict: the renderer needs to
+      // know that a session is waiting for an answer, not what it is called.
+      const out = {};
+      for (const [name, rec] of Object.entries(activity.parse(stdout))) {
+        out[name] = { at: rec.at, asking: asking.fromTitle(rec.title) };
+      }
+      resolve(out);
+    });
+  });
+
+  const pollActivity = () => readActivity().then((map) => {
+    if (!map) { clearInterval(activityTimer); return; }
+    const json = JSON.stringify(map);
+    if (json === lastActivity) return;
+    lastActivity = json;
+    if (!win.isDestroyed()) win.webContents.send('sessions:activity', map);
+  });
+
+  // The renderer asking for it directly, which it does once its restored tabs
+  // exist. Pushes only carry changes, and a tab built after the last change
+  // would otherwise wait for an unrelated session to do something before it
+  // learned anything about its own.
+  ipcMain.handle('sessions:activity-now', () => readActivity().then((m) => m || {}));
+  const activityTimer = setInterval(pollActivity, activity.POLL_MS);
+  app.on('will-quit', () => clearInterval(activityTimer));
+  // A page that has just loaded holds no baseline, and only differences are
+  // sent — so without this the first change after a load is spent becoming the
+  // baseline instead of being reported. Every load, not just the first: a root
+  // change reloads the window.
+  win.webContents.on('did-finish-load', () => { lastActivity = ''; pollActivity(); });
+  pollActivity();
+
   ipcMain.handle('usage:stats', () => scanUsage());
 
   // Plan limits (what /usage shows). Separate from usage:stats: that one is a
@@ -1524,7 +1652,10 @@ app.whenReady().then(async () => {
   // gets an honest refusal rather than another runtime's numbers.
   ipcMain.handle('usage:limits', (_event, agent) => {
     if (agent === 'codex') return codexLimits.getLimits();
+    if (agent === 'kimi') return kimiLimits.getLimits();
     if (!agent || agent === 'claude' || agent === 'shell') return usageLimits.getLimits();
+    // opencode (and anything else without a plan endpoint): honest refusal.
+    // The renderer hides the plan meters rather than inventing local spend bars.
     return { ok: false, reason: 'unsupported' };
   });
 
@@ -1657,6 +1788,16 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('app:version', () => app.getVersion());
+
+  // ---- Instruction files (CLAUDE.md, AGENTS.md, …) --------------------------
+  //
+  // The settings window edits them, but never names a path: it sends
+  // (agent, scope, project) and instructions.js resolves and validates.
+  ipcMain.handle('instructions:list', (event, projectPath) => instructions.list(projectPath));
+  ipcMain.handle('instructions:read', (event, { agent, scope, projectPath } = {}) =>
+    instructions.read(agent, scope, projectPath));
+  ipcMain.handle('instructions:write', (event, { agent, scope, projectPath, content } = {}) =>
+    instructions.write(agent, scope, projectPath, content));
 
   ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd, agent, session, name }) => {
     if (terminals.has(id)) return;

@@ -44,6 +44,11 @@ contextBridge.exposeInMainWorld('api', {
   pickKeyFile: () => ipcRenderer.invoke('sync:pick-key'),
 
   // ---- project files ----
+  // ---- instruction files (CLAUDE.md, AGENTS.md, …) ----
+  // The renderer picks (project, agent, scope); main resolves the path.
+  instructionsList: (projectPath) => ipcRenderer.invoke('instructions:list', projectPath),
+  instructionsRead: (args) => ipcRenderer.invoke('instructions:read', args),
+  instructionsWrite: (args) => ipcRenderer.invoke('instructions:write', args),
   // ---- statistics & about ----
   // Same handlers the status bar used before these numbers moved in here; the
   // scan behind usage:stats is cached in main, so opening this pane repeatedly

@@ -106,6 +106,8 @@ contextBridge.exposeInMainWorld('api', {
   getUsageStats: () => ipcRenderer.invoke('usage:stats'),
   getUsageLimits: (agent) => ipcRenderer.invoke('usage:limits', agent),
   getSystemStats: () => ipcRenderer.invoke('system:stats'),
+  // Branch of a checkout (.git/HEAD). Null when cwd is not a git work tree.
+  gitBranch: (cwd) => ipcRenderer.invoke('git:branch', cwd),
   // `embed` picks the capture path in main: a native terminal window isn't part
   // of the app's own surface, so it has to be cut out of the screen instead.
   captureTerminal: (rect, name, embed) =>
@@ -121,6 +123,7 @@ contextBridge.exposeInMainWorld('api', {
   releaseSession: (session) => ipcRenderer.send('tabs:release', { session }),
   renameTab: (session, name, agentSession) => ipcRenderer.send('tabs:rename', { session, name, agentSession }),
   copySelection: (text) => ipcRenderer.send('clipboard:copy-selection', text),
+  scrollback: (args) => ipcRenderer.invoke('term:scrollback', args),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
   // The conversations the installed agents can still resume in this project.
   previousSessions: (cwd) => ipcRenderer.invoke('sessions:previous', cwd),
@@ -155,6 +158,19 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('embed:ready', listener);
     return () => ipcRenderer.removeListener('embed:ready', listener);
   },
+  // Has this session put a question on the screen, or did it just stop? See
+  // asking.js — the screen is read and judged in main.
+  sessionAsking: (session) => ipcRenderer.invoke('session:asking', { session }),
+
+  // tmux's own view of every session, polled in main: the only news a tab
+  // without a terminal of its own can bring. See activity.js.
+  activityNow: () => ipcRenderer.invoke('sessions:activity-now'),
+  onSessionActivity: (cb) => {
+    const listener = (_event, map) => cb(map);
+    ipcRenderer.on('sessions:activity', listener);
+    return () => ipcRenderer.removeListener('sessions:activity', listener);
+  },
+
   // The embedded terminal wrote something — the stand-in for the pty data
   // stream the xterm.js backend gets.
   onEmbedActivity: (cb) => {

@@ -142,16 +142,6 @@ html, body {
   transition: background .15s, border-color .15s, color .15s;
 }
 .tab:hover { background: var(--tint); color: var(--text); }
-.tab.active {
-  background: linear-gradient(90deg, var(--tint-strong), var(--tint-2));
-  border-color: var(--accent);
-  color: var(--text);
-  box-shadow: var(--glow-accent);
-}
-.tab.focused {
-  border-color: var(--accent-2);
-  box-shadow: var(--glow-accent-2);
-}
 
 .tab .dot {
   width: 8px;
@@ -161,11 +151,11 @@ html, body {
   box-shadow: var(--glow-accent-2);
   flex: 0 0 auto;
 }
-/* Command running in a background tab: blue, gently pulsing. */
+/* Command running in a background tab: blue. */
 .tab.busy .dot {
   background: var(--accent);
   box-shadow: var(--glow-accent);
-  animation: dot-pulse 1s ease-in-out infinite;
+  animation: none;
 }
 /* Command finished in a tab you haven't looked at yet: solid green. */
 .tab.done .dot {
@@ -175,8 +165,30 @@ html, body {
 }
 @keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 
-/* A dead process wins over every other state. */
+/* Quiet because it asked you something. Silence alone can't tell "finished"
+   from "waiting for an answer" — the screen can, and does (see asking.js). */
+.tab.asking .dot { background: var(--warn); box-shadow: var(--glow-warn); animation: none; }
+.tab.asking .wait { color: var(--warn); }
+
+/* A question is a different kind of wait, so it gets a mark of its own rather
+   than only a colour: colour says how urgent, the speech bubble says what for.
+   It takes no room until there is one. */
+.ask {
+  flex: 0 0 auto;
+  display: none;
+  font-size: 11px;
+  line-height: 1;
+}
+.asking .ask { display: inline-block; }
+
+/* A session that ended. */
 .tab.dead .dot { background: var(--danger); box-shadow: var(--glow-danger); animation: none; }
+
+/* Motion means "working right now", whatever the colour above says: a project
+   row stands for several sessions, and one of them being finished (green) must
+   not hide that another is still running. Last on purpose — same specificity as
+   the colour rules, which all switch the animation off. */
+.tab.working .dot { animation: dot-pulse 1s ease-in-out infinite; }
 
 .tab .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -356,7 +368,9 @@ html, body {
   opacity: 0;
   pointer-events: none;
   transition: opacity .25s ease, transform .25s ease;
-  z-index: 50;
+  /* Above the output overlay (80): a copy made in there has to be able to say
+     so, and that is the one place a toast is most likely to be needed. */
+  z-index: 90;
   max-width: 80%;
   white-space: nowrap;
   overflow: hidden;
@@ -507,9 +521,11 @@ html, body {
   animation: dot-pulse 1s ease-in-out infinite;
 }
 .stab.done .dot { background: var(--ok); box-shadow: var(--glow-ok); animation: none; }
+.stab.asking .dot { background: var(--warn); box-shadow: var(--glow-warn); animation: none; }
 .stab.dead .dot { background: var(--danger); box-shadow: var(--glow-danger); animation: none; }
 .stab .wait { font-size: 10px; font-variant-numeric: tabular-nums; color: var(--faint); }
 .stab.done .wait { color: var(--ok, var(--faint)); }
+.stab.asking .wait { color: var(--warn, var(--faint)); }
 .stab .pin,
 .stab .close {
   border: 0;
@@ -635,6 +651,7 @@ html, body {
 }
 .ov-row .dot.busy { background: var(--accent); box-shadow: var(--glow-accent); }
 .ov-row .dot.done { background: var(--ok); box-shadow: var(--glow-ok); }
+.ov-row .dot.asking { background: var(--warn); box-shadow: var(--glow-warn); }
 .ov-row .dot.dead { background: var(--danger); box-shadow: var(--glow-danger); }
 .ov-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-state, .ov-when, .ov-model {
@@ -838,6 +855,17 @@ html, body {
   text-shadow: var(--glow-accent-2);
 }
 
+/* Project / worktree beside the brand. Caps width so a long branch name cannot
+   shove CPU/clock off the bar; tooltip still holds the full path. */
+#m-place.hidden { display: none; }
+#m-place .m-val {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: normal;
+}
+
 .sb-spacer { flex: 1 1 auto; }
 
 .meter {
@@ -896,6 +924,11 @@ html, body {
 }
 @media (max-width: 1400px) {
   #m-session .m-track, #m-week .m-track, #m-scoped .m-track { width: 64px; }
+  #m-place .m-label { display: none; }
+  #m-place .m-val { max-width: 160px; }
+}
+@media (max-width: 1100px) {
+  #m-place .m-val { max-width: 110px; }
 }
 /* Both links fit at the 1280 default now that Total and Msgs-today have moved
    out, so these sit well below where those two used to drop. The byline goes
@@ -1026,4 +1059,81 @@ html, body {
   font-variant-numeric: tabular-nums;
   letter-spacing: 1px;
   text-shadow: var(--glow-accent);
+}
+
+/* ---- Session output: the whole history, as selectable text ----
+   A terminal under tmux shows one screen and keeps nothing above it, so a
+   selection can never be dragged past the top. This is the way out: the same
+   text as an ordinary scrollable block, where selecting across pages is just
+   what a browser does. Sits over the panels because that is what it replaces
+   while it is open. */
+#history {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* The session stays visible around it: this is a window onto the same
+     thing, not a different place. Clicking the dimmed part closes it. */
+  background: rgba(0, 0, 0, .45);
+}
+#history.hidden { display: none; }
+#history-box {
+  width: 75%;
+  height: 75%;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--accent-2);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-panel-focus);
+  overflow: hidden;
+}
+#history-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--tint), transparent);
+}
+#history-title {
+  color: var(--text);
+  font-size: 12px;
+  letter-spacing: .5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#history-hint { font-size: 11px; color: var(--faint); flex: 1 1 auto; }
+.history-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.history-actions button {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.history-actions button:hover { color: var(--text); border-color: var(--accent-2); }
+#history-body {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 18px 22px;
+  overflow: auto;
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: Menlo, "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* The whole point: this text is selectable, unlike the terminal's. */
+  user-select: text;
+  cursor: text;
 }

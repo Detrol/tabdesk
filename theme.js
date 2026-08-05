@@ -160,6 +160,7 @@ function buildTokens(p, glowOn = true) {
     'glow-accent': glow(accent, 0.55, 0.35),
     'glow-accent-2': glow(accent2, 0.7, 0.45),
     'glow-ok': glow(p.ok, 0.9, 0.5),
+    'glow-warn': glow(p.warn, 0.9, 0.5),
     'glow-danger': glow(p.danger, 0.8, 0.4),
     'glow-text': g ? `0 0 6px ${rgba(accent2, 0.4)}` : 'none',
 
@@ -249,7 +250,7 @@ function loadPresets() {
 // The tokens that carry glow. With glow off these must come from the derived
 // (flat) set even when a preset overrides them — neon.json carries its glow
 // hardcoded, and spreading those overrides back in would defeat the switch.
-const GLOW_KEYS = ['glow-accent', 'glow-accent-2', 'glow-ok', 'glow-danger', 'glow-text',
+const GLOW_KEYS = ['glow-accent', 'glow-accent-2', 'glow-ok', 'glow-warn', 'glow-danger', 'glow-text',
   'shadow-rail', 'shadow-dock', 'shadow-bar', 'shadow-panel', 'shadow-panel-focus', 'meter-glow'];
 
 function materialize(def, glowOn = true) {

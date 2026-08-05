@@ -278,10 +278,78 @@ app.on('ready', async () => {
   ok('aldre dag hittas', codexRows[1].title === 'Gammalt arende');
   ok('agenten ar utsatt', codexRows.every((r) => r.agent === 'codex'));
 
+  console.log('== opencode sessionslager ==');
+  // opencode keeps everything in one SQLite file. The fixture is a minimal
+  // schema the real CLI would write — enough for history, transcript and
+  // usage to exercise their queries without depending on a live install.
+  const { execFileSync } = require('child_process');
+  const ocdb = path.join(STORE, 'opencode.db');
+  const ocSql = (sql) => execFileSync('sqlite3', [ocdb, sql], { encoding: 'utf8' });
+  ocSql(`
+    CREATE TABLE session (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL DEFAULT 'p',
+      parent_id TEXT,
+      slug TEXT NOT NULL DEFAULT 's',
+      directory TEXT NOT NULL,
+      title TEXT NOT NULL,
+      version TEXT NOT NULL DEFAULT '1',
+      time_created INTEGER NOT NULL,
+      time_updated INTEGER NOT NULL,
+      time_archived INTEGER,
+      cost REAL DEFAULT 0 NOT NULL,
+      tokens_input INTEGER DEFAULT 0 NOT NULL,
+      tokens_output INTEGER DEFAULT 0 NOT NULL,
+      tokens_reasoning INTEGER DEFAULT 0 NOT NULL,
+      tokens_cache_read INTEGER DEFAULT 0 NOT NULL,
+      tokens_cache_write INTEGER DEFAULT 0 NOT NULL
+    );
+    CREATE TABLE message (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      time_created INTEGER NOT NULL,
+      time_updated INTEGER NOT NULL,
+      data TEXT NOT NULL
+    );
+    CREATE TABLE part (
+      id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      time_created INTEGER NOT NULL,
+      time_updated INTEGER NOT NULL,
+      data TEXT NOT NULL
+    );
+  `);
+  const ocIns = (id, dir, title, created, updated, extra = {}) => {
+    const parent = extra.parent == null ? 'NULL' : `'${extra.parent}'`;
+    const archived = extra.archived == null ? 'NULL' : String(extra.archived);
+    const ti = extra.ti || 0, to = extra.to || 0, cost = extra.cost || 0;
+    ocSql(`INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_archived,
+      cost, tokens_input, tokens_output) VALUES
+      ('${id}', ${parent}, '${dir}', '${title.replace(/'/g, "''")}', ${created}, ${updated}, ${archived},
+       ${cost}, ${ti}, ${to});`);
+  };
+  ocIns('ses_aaaaaaaaaaaaaaaaaaaaaa01', CWD, 'Forsta opencode', 1000000, 1500000, { ti: 100, to: 50, cost: 0.1 });
+  ocIns('ses_bbbbbbbbbbbbbbbbbbbbbb02', CWD, 'Nyare opencode', 2000000, 3500000, { ti: 200, to: 100, cost: 0.2 });
+  ocIns('ses_cccccccccccccccchild003', CWD, 'Subagent job', 3000000, 3600000, { parent: 'ses_bbbbbbbbbbbbbbbbbbbbbb02' });
+  ocIns('ses_dddddddddddddddddddddd04', CWD, 'Arkiverad', 4000000, 4500000, { archived: 4600000 });
+  ocIns('ses_eeeeeeeeeeeeeeeeeeeeee05', '/nagon/annan', 'Annat projekt', 5000000, 5500000);
+  ocIns('--bad-id-as-flag-------------', CWD, 'Osakert id', 6000000, 6500000);
+
+  const ocRows = await H.opencodeSessions(CWD, ocdb);
+  ok('bara projektets egna toppsessioner', ocRows.length === 2, ocRows.map((r) => r.id).join(', '));
+  ok('nyast forst opencode', ocRows[0].id === 'ses_bbbbbbbbbbbbbbbbbbbbbb02');
+  ok('titel foljer med', ocRows[0].title === 'Nyare opencode');
+  ok('subagent hoppas over', !ocRows.some((r) => r.id.includes('child')));
+  ok('arkiverad hoppas over', !ocRows.some((r) => r.id.includes('dddd')));
+  ok('agenten ar opencode', ocRows.every((r) => r.agent === 'opencode'));
+  ok('fodselsetid finns', ocRows.every((r) => r.born > 0 && r.at >= r.born));
+  ok('osakert id filtreras', !ocRows.some((r) => r.id.startsWith('-')));
+
   console.log('== sammanslagen lista ==');
-  const where = { claude: path.join(STORE, 'claude'), codex: croot };
-  const merged = await H.previousSessions(CWD, ['claude', 'codex'], where);
-  ok('bada agenterna kommer med', merged.length === 4, String(merged.length));
+  const where = { claude: path.join(STORE, 'claude'), codex: croot, opencode: ocdb };
+  const merged = await H.previousSessions(CWD, ['claude', 'codex', 'opencode'], where);
+  ok('tre agenter kommer med', merged.length === 6, String(merged.length));
   ok('sorterad pa tid', merged.every((r, i) => i === 0 || merged[i - 1].at >= r.at));
   // Live tabs match a fresh conversation on when its store file was born, so
   // every row must say — mtime moves with each turn and can't tell fresh from
@@ -332,6 +400,74 @@ app.on('ready', async () => {
     codexViaLink.some((r) => r.id === 'ffffffff-6666-4666-8666-666666666666'),
     codexViaLink.map((r) => r.id).join(', '));
 
+  ocIns('ses_ffffffffffffsymlink006', realPhys, 'Symlank opencode', 7000000, 7500000);
+  const ocViaLink = await H.opencodeSessions(link, ocdb);
+  ok('opencode-session med fysisk cwd hittas via symlanken',
+    ocViaLink.some((r) => r.id === 'ses_ffffffffffffsymlink006'),
+    ocViaLink.map((r) => r.id).join(', '));
+
+  console.log('== opencode transcript ==');
+  const TR = require(path.join(ROOT, 'transcript'));
+  const sid = 'ses_bbbbbbbbbbbbbbbbbbbbbb02';
+  ocSql(`
+    INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES
+      ('msg_u1', '${sid}', 2000001, 2000001, '{"role":"user","id":"msg_u1"}'),
+      ('msg_a1', '${sid}', 2000002, 2000002, '{"role":"assistant","id":"msg_a1"}');
+    INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES
+      ('prt_u1', 'msg_u1', '${sid}', 2000001, 2000001, '{"type":"text","text":"Hej opencode"}'),
+      ('prt_r1', 'msg_a1', '${sid}', 2000002, 2000002, '{"type":"reasoning","text":"hemlig tanke"}'),
+      ('prt_a1', 'msg_a1', '${sid}', 2000003, 2000003, '{"type":"text","text":"Hej tillbaka"}'),
+      ('prt_t1', 'msg_a1', '${sid}', 2000004, 2000004, '{"type":"tool","tool":"bash"}');
+  `);
+  const ocText = await TR.read(CWD, sid, { opencode: ocdb });
+  ok('opencode transcript lases', typeof ocText === 'string' && ocText.includes('Hej opencode'), ocText);
+  ok('assistant-text foljer med', ocText && ocText.includes('Hej tillbaka'));
+  ok('reasoning hoppas over', ocText && !ocText.includes('hemlig tanke'));
+  ok('tool namnges', ocText && ocText.includes('[bash]'));
+  ok('frammande cwd ger null', (await TR.read('/helt/annan', sid, { opencode: ocdb })) === null);
+
+  console.log('== kimi sessionslager ==');
+  const kimiHome = path.join(STORE, 'kimi-home');
+  const kimiSessA = path.join(kimiHome, 'sessions', 'wd_test', 'session_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  const kimiSessB = path.join(kimiHome, 'sessions', 'wd_test', 'session_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  const kimiOther = path.join(kimiHome, 'sessions', 'wd_other', 'session_cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+  fsx.mkdirSync(path.join(kimiSessA, 'agents', 'main'), { recursive: true });
+  fsx.mkdirSync(path.join(kimiSessB, 'agents', 'main'), { recursive: true });
+  fsx.mkdirSync(path.join(kimiOther, 'agents', 'main'), { recursive: true });
+  fsx.writeFileSync(path.join(kimiHome, 'session_index.jsonl'), [
+    JSON.stringify({ sessionId: 'session_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', sessionDir: kimiSessA, workDir: CWD }),
+    JSON.stringify({ sessionId: 'session_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', sessionDir: kimiSessB, workDir: CWD }),
+    JSON.stringify({ sessionId: 'session_cccccccc-cccc-4ccc-8ccc-cccccccccccc', sessionDir: kimiOther, workDir: '/helt/annan' }),
+    JSON.stringify({ sessionId: 'bad id!', sessionDir: kimiSessA, workDir: CWD }),
+  ].join('\n') + '\n');
+  fsx.writeFileSync(path.join(kimiSessA, 'state.json'), JSON.stringify({
+    title: 'Aldre kimi', createdAt: '2026-08-01T10:00:00.000Z', updatedAt: '2026-08-01T11:00:00.000Z', workDir: CWD,
+  }));
+  fsx.writeFileSync(path.join(kimiSessB, 'state.json'), JSON.stringify({
+    title: 'Nyare kimi', createdAt: '2026-08-04T10:00:00.000Z', updatedAt: '2026-08-05T12:00:00.000Z', workDir: CWD,
+  }));
+  const kimiRows = await H.kimiSessions(CWD, kimiHome);
+  ok('kimi hittar tva for cwd', kimiRows.length === 2, String(kimiRows.length));
+  ok('kimi nyast forst', kimiRows[0].id === 'session_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  ok('kimi titel foljer med', kimiRows[0].title === 'Nyare kimi');
+  ok('kimi agent-tag', kimiRows.every((r) => r.agent === 'kimi'));
+  ok('kimi hoppar over annan cwd och bad id', !kimiRows.some((r) => r.id.includes('cccc') || r.id.includes(' ')));
+
+  console.log('== kimi transcript ==');
+  const kSid = 'session_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  fsx.writeFileSync(path.join(kimiSessB, 'agents', 'main', 'wire.jsonl'), [
+    JSON.stringify({ type: 'turn.prompt', input: [{ type: 'text', text: 'Hej kimi' }] }),
+    JSON.stringify({ type: 'context.append_loop_event', event: { type: 'content.part', part: { type: 'think', think: 'hemlig' } } }),
+    JSON.stringify({ type: 'context.append_loop_event', event: { type: 'content.part', part: { type: 'text', text: 'Hej tillbaka kimi' } } }),
+    JSON.stringify({ type: 'context.append_loop_event', event: { type: 'tool.call', name: 'Bash' } }),
+  ].join('\n') + '\n');
+  const kText = await TR.read(CWD, kSid, { kimi: kimiHome });
+  ok('kimi transcript lases', typeof kText === 'string' && kText.includes('Hej kimi'), kText);
+  ok('kimi assistant-text', kText && kText.includes('Hej tillbaka kimi'));
+  ok('kimi think hoppas over', kText && !kText.includes('hemlig'));
+  ok('kimi tool namnges', kText && kText.includes('[Bash]'));
+  ok('kimi frammande cwd ger null', (await TR.read('/helt/annan', kSid, { kimi: kimiHome })) === null);
+
   console.log('== fysisk cwd tillbaka till radens stavning ==');
   const PR = require(path.join(ROOT, 'projects-root'));
   const entries = [
@@ -349,6 +485,25 @@ app.on('ready', async () => {
 
   try { fsx.rmSync(STORE, { recursive: true, force: true }); } catch (_) { /* gone */ }
   try { fsx.rmSync(symBase, { recursive: true, force: true }); } catch (_) { /* gone */ }
+
+  console.log('== kimi-kvot ur /usages-payload ==');
+  const KL = require(path.join(ROOT, 'kimi-limits'));
+  const kimiPayload = {
+    usage: { limit: '100', remaining: '40', resetTime: '2026-08-08T07:30:15.145199Z' },
+    limits: [{
+      window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' },
+      detail: { limit: '100', remaining: '75', resetTime: '2026-08-05T10:30:15.145199Z' },
+    }],
+  };
+  const kimiWin = KL.normalize(kimiPayload);
+  ok('kimi week fran usage', kimiWin && kimiWin.week && Math.round(kimiWin.week.pct) === 60, JSON.stringify(kimiWin && kimiWin.week));
+  ok('kimi session fran 5h-fonster', kimiWin && kimiWin.session && Math.round(kimiWin.session.pct) === 25, JSON.stringify(kimiWin && kimiWin.session));
+  ok('kimi resetTime blir ms', kimiWin && kimiWin.week.resetsAt === Date.parse('2026-08-08T07:30:15.145199Z'));
+  ok('kimi tom payload ger null', KL.normalize({}) === null);
+  ok('kimi effort-env-flag', (() => {
+    const E = require(path.join(ROOT, 'effort'));
+    return E.flagFor('kimi', 'high') === 'KIMI_MODEL_THINKING_EFFORT=high' && E.isEnvFlag(E.flagFor('kimi', 'high'));
+  })());
 
   console.log('== codex-kvot ur rollout ==');
   const CX = require(path.join(ROOT, 'codex-limits'));
@@ -373,6 +528,76 @@ app.on('ready', async () => {
     CX.parseRateLimits(snap({ primary: { ...week, resets_at: (NOW - 1000) / 1000 } }), NOW) === null);
   ok('text utan snapshot ger null', CX.parseRateLimits('inga granser har', NOW) === null);
   ok('trasig snapshot ger null', CX.parseRateLimits('"rate_limits":{oparsbar', NOW) === null);
+
+  console.log('== tmux-aktivitet for sessioner utan pty ==');
+  const AC = require(path.join(ROOT, 'activity'));
+  const acMap = AC.parse('td-claude-x 1785835133 ✳ Nagot\ntd-codex-y 1785835091 [ ! ] Action Required | pmsystem\n');
+  ok('varje session ger sin stampel',
+    acMap['td-claude-x'].at === 1785835133 && acMap['td-codex-y'].at === 1785835091);
+  ok('titeln foljer med hel, med mellanslag och rorstreck',
+    acMap['td-codex-y'].title === '[ ! ] Action Required | pmsystem');
+  ok('sessioner utanfor TabDesk ignoreras',
+    Object.keys(AC.parse('main 1785761003 x\nirc 12 y\ntd-claude-x 5 z')).join(',') === 'td-claude-x');
+  ok('rader utan stampel hoppas over',
+    Object.keys(AC.parse('td-claude-x\ntd-codex-y hej\ntd-shell-z 7 t')).join(',') === 'td-shell-z');
+  ok('tomt svar ger tom karta',
+    Object.keys(AC.parse('')).length === 0 && Object.keys(AC.parse(undefined)).length === 0);
+  ok('nyaste fonstret talar for sessionen',
+    AC.parse('td-claude-x 100 a\ntd-claude-x 400 b\ntd-claude-x 250 c')['td-claude-x'].at === 400);
+
+  console.log('== fragar runtimen, eller ar den bara tyst ==');
+  const AS = require(path.join(ROOT, 'asking'));
+  // Fangat ur Claude Code 2.1.221 i planlage.
+  const claudeAsk = [
+    'What one-line note should I add to note.txt?', '',
+    '❯ 1. You decide — brief, useful note',
+    '     Pick something short and practical',
+    '  2. I\'ll specify it', '  3. Type something.', '  4. Chat about this', '',
+    'Enter to select · ↑/↓ to navigate · Esc to cancel'].join('\n');
+  // Samma session efter ett avslutat svar: tyst, inga val.
+  const claudeIdle = [
+    '● note.txt has 1 line.', '', '✻ Cooked for 4s', '',
+    '───────────', '❯ ', '───────────',
+    '  Haiku 4.5 | ask-probe | 38k/200k (19%) | effort: med | v2.1.221',
+    '  ⏸ manual mode on · ← 1 agent'].join('\n');
+  const codexIdle = [
+    '• Ran wc -l note.txt', '  └ 1 note.txt', '',
+    '› Use /skills to list available skills',
+    '  gpt-5.6-sol xhigh · /srv/dev · Context 94% left · weekly 34% left'].join('\n');
+  const codexBusy = ['• Working (22s • esc to interrupt)', '› Explain this codebase'].join('\n');
+  ok('claudes fragemeny raknas som fraga', AS.isAsking(claudeAsk) === true);
+  ok('claude vid tom prompt fragar inte', AS.isAsking(claudeIdle) === false);
+  ok('codex vid tom prompt fragar inte', AS.isAsking(codexIdle) === false);
+  ok('codex mitt i arbetet fragar inte', AS.isAsking(codexBusy) === false);
+  ok('godkannanderuta utan siffror fangas pa ordalydelsen',
+    AS.isAsking('Bash(touch x)\n\nDo you want to proceed?\n  Yes\n  No') === true);
+  ok('codex godkannande fangas', AS.isAsking('Allow Codex to run `rm -rf /`?') === true);
+  ok('numrerad lista i prosa ar ingen fraga',
+    AS.isAsking('Har ar planen:\n1. Lasa filen\n2. Skriva testet\n3. Kora sviten') === false);
+  // Fangat ur samma probe: claude fragade i loptext, utan meny.
+  const claudeProse = [
+    '  ⎿  Invalid tool parameters',
+    '● note.txt doesn\'t exist yet. What line should I add to it?', '',
+    '✻ Brewed for 11s', '', '───────────', '❯ ', '───────────',
+    '  Haiku 4.5 | demo-proj | 40k/200k (20%) | effort: med | v2.1.221',
+    '  ⏸ plan mode on (shift+tab to cycle) · ← 1 agent'].join('\n');
+  ok('fraga i loptext raknas ocksa', AS.isAsking(claudeProse) === true);
+  ok('vanligt svar raknas inte', AS.isAsking(
+    ['● Fixat: tre tester till, alla grona.', '', '✻ Cooked for 9s', '❯ '].join('\n')) === false);
+  ok('radbruten fraga hittas i sista raden', AS.isAsking(
+    ['● Jag kan gora det pa tva satt, men det beror pa hur du vill',
+     '  ha felhanteringen. Vilken vag foredrar du?', '', '❯ '].join('\n')) === true);
+  ok('fragetecken i ett tidigare meddelande raknas inte', AS.isAsking(
+    ['● Ska jag fortsatta?', '  ⎿  Ja', '● Klart.', '', '❯ '].join('\n')) === false);
+  ok('tom skarm fragar inte', AS.isAsking('') === false && AS.isAsking(null) === false);
+  // Codex sager det i fonstertiteln, och blinkar mellan de tva formerna.
+  ok('codex titel sager att den vantar',
+    AS.fromTitle('[ ! ] Action Required | pmsystem') === true
+    && AS.fromTitle('[ . ] Action Required | pmsystem') === true);
+  ok('codex titel under arbete sager inget', AS.fromTitle('⠼ agent-workflow') === false);
+  ok('claudes titel ar ingen fragesignal',
+    AS.fromTitle('✳ Värvningsprogram för Facebook') === false);
+  ok('tom titel sager inget', AS.fromTitle('') === false && AS.fromTitle(null) === false);
 
   console.log('== ansträngningsnivåer per agent ==');
   const EF = require(path.join(ROOT, 'effort'));
@@ -425,8 +650,36 @@ app.on('ready', async () => {
 
   }
 
-  console.log('');
-  console.log(pass + ' passed, ' + fail + ' failed');
+  {
+  console.log('== instruktionsfiler ==');
+  // projects-root memoises resolve() on first call, so the env override must
+  // be set before instructions.js is required — nothing above has resolved it.
+  const INSROOT = fsx.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-ins-'));
+  const INSPROJ = path.join(INSROOT, 'projektet');
+  fsx.mkdirSync(INSPROJ, { recursive: true });
+  process.env.TABDESK_PROJECTS_DIR = INSROOT;
+  const INS = require(path.join(ROOT, 'instructions'));
+
+  ok('saknad fil lases som tom',
+    (() => { const r = INS.read('claude', 'project', INSPROJ); return r.ok && !r.exists && r.content === ''; })());
+  ok('okand agent avvisas', INS.read('nope', 'project', INSPROJ).ok === false);
+  ok('okand scope avvisas', INS.read('claude', 'bogus', INSPROJ).ok === false);
+  ok('aider har ingen global fil', INS.read('aider', 'global', INSPROJ).ok === false);
+  ok('projekt utanfor roten avvisas', INS.write('claude', 'project', '/etc', 'x').ok === false);
+  ok('traversal avvisas', INS.write('claude', 'project', path.join(INSROOT, '..', 'utanfor'), 'x').ok === false);
+  ok('icke-stranginnehall avvisas', INS.write('claude', 'project', INSPROJ, null).ok === false);
+
+  ok('skriv skapar projektfilen', INS.write('claude', 'project', INSPROJ, '# Regler\n').ok === true);
+  ok('innehallet landar pa disk',
+    fsx.readFileSync(path.join(INSPROJ, 'CLAUDE.md'), 'utf8') === '# Regler\n');
+  ok('omläsning ger samma innehall',
+    (() => { const r = INS.read('claude', 'project', INSPROJ); return r.ok && r.exists && r.content === '# Regler\n'; })());
+  ok('roten sjalv ar ett giltigt projekt', INS.write('codex', 'project', INSROOT, 'rot\n').ok === true);
+
+  try { fsx.rmSync(INSROOT, { recursive: true, force: true }); } catch (_) { /* gone */ }
+  }
+
+
   cleanup();
   app.exit(fail ? 1 : 0);
 });

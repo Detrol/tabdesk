@@ -101,37 +101,71 @@ function renderWaitEl(el, since) {
 }
 
 function renderWait(t) {
-  renderWaitEl(t.tabEl.querySelector('.wait'), t.doneAt);
+  renderWaitEl(t.tabEl.querySelector('.wait'), t.askingAt || t.doneAt);
 }
 
-// A project row says what its sessions are doing, since they are only listed
-// once the project is selected. The worst state wins — a dead session is worth
-// knowing about even while another one works — and the wait badge counts from
-// whichever session has been waiting longest, which is the one the rotation is
-// deciding about.
+// A project row stands for several sessions at once, so colour and motion
+// answer two different questions. The colour is the most actionable thing among
+// them; the pulse means one of them is producing output right now. Kept apart
+// deliberately: a project can hold a finished session and a running one at the
+// same time, and a single class could only ever say one of those.
+const ROW_STATES = ['asking', 'done', 'dead', 'busy', 'open', 'idle'];
+
+function projectState(mine) {
+  if (mine.some((t) => t.askingAt)) return 'asking'; // blocked on your answer
+  if (mine.some((t) => t.doneAt)) return 'done';     // finished, wants you
+  if (mine.some((t) => t.dead)) return 'dead';       // something ended
+  if (mine.some((t) => t.busy)) return 'busy';
+  return mine.length ? 'open' : 'idle';
+}
+
+// The row's tooltip carries what the single dot cannot: how many of the
+// project's sessions are in each state, above its path.
+function rowTitle(p, mine) {
+  if (!mine.length) return p.path;
+  const parts = [window.t('rail.sessions', { n: mine.length })];
+  const asking = mine.filter((x) => x.askingAt).length;
+  const waiting = mine.filter((x) => x.doneAt && !x.askingAt).length;
+  const working = mine.filter((x) => x.busy).length;
+  if (asking) parts.push(window.t('rail.state.asking', { n: asking }));
+  if (waiting) parts.push(window.t('rail.state.waiting', { n: waiting }));
+  if (working) parts.push(window.t('rail.state.working', { n: working }));
+  return `${parts.join(' · ')}\n${p.path}`;
+}
+
+// The wait badge counts from whichever session has been waiting longest, which
+// is the one a rotation is deciding about.
 function renderProject(cwd) {
   const p = projects.get(cwd);
   if (!p) return;
   const mine = sessionsOf(cwd);
   const el = p.el;
-  el.classList.toggle('dead', mine.some((t) => t.dead));
-  el.classList.toggle('done', mine.some((t) => t.doneAt));
-  el.classList.toggle('busy', mine.some((t) => t.busy));
-  el.classList.toggle('idle', mine.length === 0);
-  const waits = mine.map((t) => t.doneAt).filter(Boolean);
+  const state = projectState(mine);
+  for (const s of ROW_STATES) el.classList.toggle(s, s === state);
+  el.classList.toggle('working', mine.some((t) => t.busy));
+  const waits = mine.map((t) => t.askingAt || t.doneAt).filter(Boolean);
   renderWaitEl(el.querySelector('.wait'), waits.length ? Math.min(...waits) : 0);
   const count = el.querySelector('.count');
   count.textContent = mine.length ? String(mine.length) : '';
-  count.title = mine.length ? window.t('rail.sessions', { n: mine.length }) : '';
+  const title = rowTitle(p, mine);
+  el.title = title;
+  count.title = title;
+  // The project's own overview lists these same sessions, so it is stale the
+  // moment this changes.
+  renderLiveRows(cwd);
 }
 
-// Clear any busy/done flags on a session (called when the user looks at it).
+// Clear any busy/done/asking flags on a session (called when the user looks at
+// it). Looking at a question is not answering it, but the flag exists to get
+// you here — once you are, the screen itself is the notice.
 function clearTabFlag(t) {
   clearTimeout(t.idleTimer);
+  t.flagSeq = (t.flagSeq || 0) + 1;
   const wasBusy = t.busy;
   t.busy = false;
   t.doneAt = 0;
-  t.tabEl.classList.remove('busy', 'done');
+  t.askingAt = 0;
+  t.tabEl.classList.remove('busy', 'done', 'asking');
   renderWait(t);
   renderProject(t.projectCwd);
   if (wasBusy) syncTray();
@@ -167,10 +201,15 @@ function hoistOnDone(t) {
   }
 }
 
-// Called on every chunk of pty output (xterm.js backend) or whenever the
-// embedded terminal writes. Marks background tabs busy while output flows, then
-// green ("done") once they fall silent.
-function markActivity(id) {
+// Called on every chunk of pty output (xterm.js backend), whenever the
+// embedded terminal writes, and for tabs with no terminal of their own when
+// tmux reports that their session wrote something. Marks background tabs busy
+// while output flows, then green ("done") once they fall silent.
+//
+// `idleMs` is how long silence has to last to count as finished: a stream tells
+// us the moment it stops, a poll only knows what it saw last time, so the two
+// need different windows (see POLL_IDLE_MS).
+function markActivity(id, idleMs = IDLE_MS) {
   const t = tabs.get(id);
   if (!t || t.dead) return;
 
@@ -178,7 +217,14 @@ function markActivity(id) {
   // later, when it stops — see hoistOnDone().
   if (isWatched(id)) { clearTabFlag(t); return; }
 
+  // A session waiting for an answer goes on writing: Codex animates its prompt
+  // the whole time it stands there. Output is therefore no evidence that the
+  // question is gone — only the screen can say that (recheckAsking), or you
+  // opening the tab, which the line above already covers.
+  if (t.askingAt) return;
+
   const wasBusy = t.busy;
+  t.flagSeq = (t.flagSeq || 0) + 1;
   t.busy = true;
   t.doneAt = 0;
   t.tabEl.classList.add('busy');
@@ -197,11 +243,168 @@ function markActivity(id) {
       t.tabEl.classList.add('done');
       t.doneAt = Date.now();
       hoistOnDone(t);
+      checkAsking(t, t.doneAt);
     }
     renderProject(t.projectCwd);
     syncTray();
-  }, IDLE_MS);
+  }, idleMs);
 }
+
+// Quiet, but is it finished or is it waiting for an answer? Only the screen
+// says, and reading it costs a tmux capture — so it is asked once, when a
+// session falls silent, and never while output is still flowing. A question is
+// put on screen by writing it, so one that arrives later arrives with output,
+// which brings us back through here.
+//
+// It resolves after the dot has already gone green. That is the honest order:
+// green is what silence alone can tell us, amber is the upgrade when the screen
+// turns out to hold a question.
+//
+// `at` is when the question went up — the moment of silence for a session we
+// watched fall quiet, and the session's own last-write stamp for one that was
+// already asking before this window opened.
+function checkAsking(t, at) {
+  if (!t.session || !window.api.sessionAsking) return;
+  t.flagSeq = (t.flagSeq || 0) + 1;
+  const seq = t.flagSeq;
+  window.api.sessionAsking(t.session).then((yes) => {
+    // Anything that happened while we were reading wins: new output, the user
+    // opening the tab, the session ending.
+    if (!yes || t.flagSeq !== seq) return;
+    markAsking(t, at);
+  }).catch(() => { /* no answer is the same as "just quiet" */ });
+}
+
+// Still waiting, or did that get answered somewhere else? Only the screen can
+// say, since the session's own writing carries on either way.
+function recheckAsking(t) {
+  if (!t.session || !window.api.sessionAsking) return;
+  t.askedAt = Date.now();
+  const seq = t.flagSeq;
+  window.api.sessionAsking(t.session).then((yes) => {
+    if (yes || t.flagSeq !== seq || !t.askingAt) return;
+    t.askingAt = 0;
+    t.tabEl.classList.remove('asking');
+    renderWait(t);
+    renderProject(t.projectCwd);
+  }).catch(() => { /* leave it standing rather than guess */ });
+}
+
+// It is waiting for you. Lifted like a finished session, and for the same
+// reason: this is the state the rail exists to bring to the top.
+function markAsking(t, at) {
+  if (t.askingAt || t.dead) return;
+  t.askedAt = Date.now();
+  clearTimeout(t.idleTimer);
+  t.flagSeq = (t.flagSeq || 0) + 1;
+  t.busy = false;
+  t.doneAt = 0;
+  t.askingAt = at || Date.now();
+  t.tabEl.classList.remove('busy', 'done');
+  t.tabEl.classList.add('asking');
+  renderWait(t);
+  hoistOnDone(t);
+  renderProject(t.projectCwd);
+  syncTray();
+}
+
+// A session ended. The pty backend learns this from its own exit; a session we
+// never opened, from tmux no longer listing it.
+//
+// Every other flag goes with it: a session that has ended is not working, and
+// it is not waiting for you either — "it finished and wants you" is an offer to
+// go back to it, and there is nothing to go back to.
+function markDead(t) {
+  clearTimeout(t.idleTimer);
+  t.flagSeq = (t.flagSeq || 0) + 1;
+  t.dead = true;
+  t.busy = false;
+  t.doneAt = 0;
+  t.askingAt = 0;
+  t.tabEl.classList.add('dead');
+  t.tabEl.classList.remove('busy', 'done', 'asking');
+  renderWait(t);
+  renderProject(t.projectCwd);
+  syncTray();
+}
+
+// ---- Sessions we have not opened -------------------------------------------
+//
+// Main polls tmux for every session's last-activity stamp (activity.js). A
+// stamp that moved is the same event as a chunk of pty output, and goes through
+// the same state machine — which is what lets the rail speak for sessions this
+// window has no terminal for, i.e. all of them right after a restart.
+//
+// The silence window has to be wider than the poll: with a 2 s interval and
+// stamps counted in whole seconds, IDLE_MS would call a session finished
+// between two samples of a session that never stopped.
+const POLL_IDLE_MS = 5000;
+// How often a session that is already waiting for an answer is read again, to
+// see whether it still is. Slower than the poll because it costs a capture, and
+// the answer rarely changes without you being the one who changed it.
+const ASK_RECHECK_MS = 6000;
+const activitySeen = new Map();   // session name -> the stamp we last compared
+const activityMisses = new Map(); // session name -> consecutive polls without it
+
+// Baselines are per session and not per map: tabs are built after the window
+// loads, so a tab that appears mid-stream still gets its own first sighting
+// rather than inheriting somebody else's.
+function applyActivity(map) {
+  const now = map || {};
+  for (const t of tabs.values()) {
+    if (!t.session || t.dead || isWatched(t.id)) continue;
+    const rec = now[t.session];
+
+    // The runtime saying it needs you applies to every tab that has a session,
+    // open or not. A tab with a terminal of its own is still one you may not be
+    // looking at, and its pty cannot tell us this: Codex animates its prompt
+    // while it waits, so that stream never falls silent for the screen to be
+    // read. The title is the only thing that stands still and says so.
+    if (rec && rec.asking) { markAsking(t, rec.at * 1000); continue; }
+
+    // Already waiting for an answer. Movement alone does not disprove that —
+    // see the animation above — so the screen, not the stamp, decides when it
+    // stops being true. Throttled: it costs a capture.
+    if (t.askingAt) {
+      if (Date.now() - (t.askedAt || 0) >= ASK_RECHECK_MS) recheckAsking(t);
+      continue;
+    }
+
+    // Everything below is for tabs with no terminal of their own; the rest have
+    // their pty, which is the better witness.
+    if (t.materialized) continue;
+    const at = rec && rec.at;
+    if (rec === undefined) {
+      // Gone from tmux. Believed only after two polls in a row: one listing
+      // that failed to arrive must not paint the rail red.
+      const misses = (activityMisses.get(t.session) || 0) + 1;
+      activityMisses.set(t.session, misses);
+      if (misses >= 2) markDead(t);
+      continue;
+    }
+    activityMisses.delete(t.session);
+    const before = activitySeen.get(t.session);
+    activitySeen.set(t.session, at);
+    // A runtime saying so outright beats anything we could infer from silence.
+    // It also has to come first: Codex blinks its "Action Required" title while
+    // it waits, and that blinking is output — counted as work it would leave a
+    // blocked session pulsing away as though it were busy.
+    if (before === undefined) {
+      // First sighting is a baseline, not news: hoisting every restored project
+      // at startup would make the rail's order meaningless.
+      //
+      // A session already blocked on a question is the exception. It will never
+      // write again — that is what being blocked means — so skipping it here
+      // means never hearing about it at all. The stamp says when it last wrote,
+      // which is when the question went up.
+      checkAsking(t, at * 1000);
+      continue;
+    }
+    if (at > before) markActivity(t.id, POLL_IDLE_MS);
+  }
+}
+
+if (window.api.onSessionActivity) window.api.onSessionActivity(applyActivity);
 
 // What the panel area holds: everything pinned to the grid, plus the session
 // in focus. Pinning nothing therefore still shows the one you are working in.
@@ -387,7 +590,8 @@ function applyLayout() {
   }
   if (stripOverview) stripOverview.classList.toggle('focused', !!overviewCwd);
   // The model, the effort and the agent belong to the session in focus, so
-  // all three follow it.
+  // all three follow it. So does the place readout (project / worktree).
+  renderPlace();
   renderModelBtn();
   renderEffortBtn();
   renderAgentBtn();
@@ -467,8 +671,21 @@ function startCmdFor(t) {
 
   const flag = spec.takesModel && t.model && t.model !== 'default'
     ? ` --model '${t.model}'` : '';
-  return spec.command + flag + effortFlag(agentFor(t), t.effort);
+  const agent = agentFor(t);
+  const eFlag = effortFlag(agent, t.effort);
+  // kimi has no --effort flag: docs set thinking via KIMI_MODEL_THINKING_EFFORT.
+  if (eFlag && /^[A-Z][A-Z0-9_]*=/.test(eFlag)) {
+    return `env ${eFlag} ${spec.command}${flag}`;
+  }
+  return spec.command + flag + eFlag;
 }
+
+// Agents whose TUI does its own mouse selection and copies what you selected
+// by sending OSC 52. Their tabs keep the mouse; every other tab gets xterm's
+// own selection forced on instead (see materialize). Claude Code's fullscreen
+// renderer is the one that qualifies today — its classic renderer does not, so
+// a tab is at worst back to selecting whatever tmux gives it.
+const SELECTS_ITSELF = new Set(['claude']);
 
 // Reasoning effort, in each CLI's own syntax. Mirrors effort.js in main; the
 // level is checked against that agent's own list rather than escaped, so
@@ -476,12 +693,15 @@ function startCmdFor(t) {
 const EFFORT_LEVELS = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   codex: ['minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'],
+  kimi: ['low', 'high', 'max'],
 };
 function effortSupported(agent) { return Boolean(EFFORT_LEVELS[agent]); }
 function effortFlag(agent, level) {
   if (!level || level === 'default' || !effortSupported(agent)) return '';
   if (!EFFORT_LEVELS[agent].includes(level)) return '';
-  return agent === 'claude' ? ` --effort ${level}` : ` -c model_reasoning_effort=${level}`;
+  if (agent === 'claude') return ` --effort ${level}`;
+  if (agent === 'kimi') return `KIMI_MODEL_THINKING_EFFORT=${level}`;
+  return ` -c model_reasoning_effort=${level}`;
 }
 
 // Ids come from history.js, which only emits ones that cannot be read as a
@@ -527,6 +747,7 @@ function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resum
   tabEl.innerHTML = `
     <span class="dot"></span>
     <span class="label"></span>
+    <span class="ask" aria-hidden="true">💬</span>
     <span class="wait"></span>
     <button class="pin" title="${t('rail.pin')}">▦</button>
     <button class="close" title="${t('tab.close')}">×</button>`;
@@ -673,35 +894,46 @@ function materialize(t) {
   term.open(termEl);
 
   // ---- Clipboard ----
-  // A plain drag selects, without holding anything down. xterm only does that
-  // when no program inside is tracking the mouse — and tmux (and Claude's TUI)
-  // always is, which leaves Shift+drag as the escape hatch. Shift is a poor
-  // deal here: you cannot scroll mid-selection with it, so anything taller
-  // than the window is unselectable. Forcing the escape hatch permanently open
-  // is the same trade every terminal makes while Shift is held, made
-  // unconditional.
+  // Who gets the mouse depends on whether the program inside can do better
+  // with it than we can.
   //
-  // The cost is that button presses no longer reach the program inside —
-  // clicking inside a TUI does nothing. The wheel is a separate path and still
-  // scrolls tmux. Private API, so a version bump could quietly drop it back to
-  // Shift-only rather than break: that is why it is guarded rather than
-  // asserted.
-  try { term._core._selectionService.shouldForceSelection = () => true; } catch (_) { /* Shift still works */ }
+  // Claude Code's fullscreen renderer selects with the mouse itself, across
+  // its own scrollback, and copies what you selected by sending OSC 52 — so
+  // for those tabs the mouse belongs to it, and the only thing missing was a
+  // terminal that listens for the answer. Verified against the running TUI: a
+  // drag produces exactly one OSC 52 carrying the dragged line.
+  //
+  // Everything else — a shell, an agent that does not select — would hand the
+  // drag to tmux instead, which selects into its own buffer and never reaches
+  // the system clipboard. There we force xterm's own selection on, which is
+  // what a terminal does while Shift is held, made unconditional. The cost is
+  // that button presses stop reaching the program inside; the wheel is a
+  // separate path and still scrolls tmux. Private API, so it is guarded: a
+  // version bump drops it back to Shift-only rather than breaking.
+  if (!SELECTS_ITSELF.has(t.agent)) {
+    try { term._core._selectionService.shouldForceSelection = () => true; } catch (_) { /* Shift still works */ }
+  }
 
-  // OSC 52 is how a program inside says "put this on the clipboard" — tmux
-  // relays it for its own copy-mode when set-clipboard is on, and some TUIs
-  // send it directly. xterm.js implements no handler for it, so without this
-  // those copies vanish.
+  // OSC 52 is a program inside saying "put this on the clipboard". xterm.js
+  // ships no handler, which is why Claude's own copies went nowhere.
+  //
+  // Anything that writes to a terminal can send it, including output nobody
+  // here authored, so what arrives is sanitised: control characters are
+  // stripped apart from tab and newline, which real multi-line copies need,
+  // and the size is capped. Newlines stay deliberately — a selection is lines
+  // — so a hostile sequence could still leave a runnable command on the
+  // clipboard; pasting into a shell with bracketed paste on (bash's default)
+  // inserts it as text rather than running it.
+  const OSC52_MAX = 100 * 1024;
   term.parser.registerOscHandler(52, (data) => {
-    // "<targets>;<base64>" — targets says clipboard/primary/…, and "?" is a
-    // read request, which is deliberately not answered: a page that can ask
-    // for the clipboard back is a leak, not a feature.
+    // "<targets>;<base64>", where "?" asks to READ the clipboard — deliberately
+    // never answered: handing the program inside the clipboard back is a leak.
     const semi = String(data).indexOf(';');
     if (semi < 0) return true;
     const payload = String(data).slice(semi + 1);
-    if (!payload || payload === '?') return true;
+    if (!payload || payload === '?' || payload.length > OSC52_MAX) return true;
     try {
-      const text = atob(payload);
+      const text = atob(payload).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
       if (text) window.api.copySelection(text);
     } catch (_) { /* not valid base64 — nothing to copy */ }
     return true;
@@ -727,16 +959,33 @@ function materialize(t) {
   // Selections made without a drag (double-click word select, select-all)
   // still announce themselves here.
   const offSelect = term.onSelectionChange(copyNow);
+
+  // The wheel is left to tmux, drag or no drag. Keeping it here to extend a
+  // selection past the window was tried and is a dead end: under tmux this
+  // terminal holds no scrollback of its own (viewport scrollHeight equals
+  // clientHeight — tmux keeps the history and redraws the pane), so there is
+  // nothing above to scroll to, and intercepting the wheel only takes away the
+  // scrolling that does work. A selection still dies when the wheel reaches
+  // tmux, because the report counts as input and input clears it — scroll
+  // first, then select what is on screen.
   term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown' || !e.ctrlKey || !e.shiftKey) return true;
-    if (e.code === 'KeyC') {
+    if (e.type !== 'keydown' || !e.ctrlKey || e.altKey || e.metaKey) return true;
+    // Ctrl+V pastes, with or without Shift — the key everyone reaches for,
+    // and the other half of copying in the output window. It is taken from
+    // the program inside, which knows it as quoted-insert (readline) and
+    // visual block (vim); those still answer to Ctrl+Q and to typing the
+    // sequence, and pasting is the far commoner want here.
+    if (e.code === 'KeyV') {
+      window.api.readClipboard().then((text) => { if (text) term.paste(text); });
+      return false;
+    }
+    // Ctrl+C is NOT taken: it is the interrupt, and a terminal that cannot
+    // interrupt is broken. Copying explicitly is Ctrl+Shift+C — though a
+    // selection has already copied itself by then.
+    if (e.shiftKey && e.code === 'KeyC') {
       const sel = term.getSelection();
       if (!sel) return true;        // nothing selected — the program's key
       window.api.copySelection(sel);
-      return false;
-    }
-    if (e.code === 'KeyV') {
-      window.api.readClipboard().then((text) => { if (text) term.paste(text); });
       return false;
     }
     return true;
@@ -778,10 +1027,7 @@ function materialize(t) {
     if (firstData) { firstData = false; fitSoon(id); }
   });
   const offExit = window.api.onExit(id, () => {
-    t.dead = true;
-    t.tabEl.classList.add('dead');
-    renderProject(t.projectCwd);
-    if (overviewCwd === t.projectCwd) renderOverview(t.projectCwd);
+    markDead(t);
     term.write(`\r\n\x1b[31m${window.t('panel.exited')}\x1b[0m\r\n`);
   });
 
@@ -869,10 +1115,12 @@ async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
   const tab = tabs.get(id);
   if (alloc && alloc.session) tab.session = alloc.session;
   if (resume) {
-    // Codex picks the conversation back up under the same id; Claude forks a
-    // fresh id on resume, so the fork is matched up by birth time later
-    // (refreshTitles) rather than pinned to the id that stays behind.
-    if (agent === 'codex' && resume.id) tab.agentSession = resume.id;
+    // Both runtimes carry on in the conversation they were given: Codex under
+    // the same id, and Claude appending to the same transcript file (checked
+    // against the file it reopened). Pinning it here is what lets the output
+    // view read the conversation immediately rather than waiting for the
+    // birth-match a fresh session needs.
+    if (resume.id) tab.agentSession = resume.id;
     const titled = resume.title && titledName(resume.title, cwd, owner);
     if (titled) renameTab(id, titled);
   }
@@ -937,6 +1185,7 @@ function buildProject(p, { atTop } = {}) {
   el.innerHTML = `
     <span class="dot"></span>
     <span class="label"></span>
+    <span class="ask" aria-hidden="true">💬</span>
     <span class="wait"></span>
     <span class="count"></span>
     <button class="pin" title="${t('rail.pin')}">▦</button>`;
@@ -1104,6 +1353,7 @@ function whenLabel(at) {
 function sessionState(s) {
   if (s.dead) return t('overview.state.dead');
   if (s.busy) return t('overview.state.busy');
+  if (s.askingAt) return t('overview.state.asking', { time: waitLabel(s.askingAt) || '0m' });
   if (s.doneAt) return t('overview.state.waiting', { time: waitLabel(s.doneAt) || '0m' });
   if (!s.materialized) return t(s.session ? 'overview.state.detached' : 'overview.state.idle');
   return t('overview.state.open');
@@ -1122,6 +1372,46 @@ function section(title) {
   return sec;
 }
 
+const dotClass = (s) => 'dot'
+  + (s.dead ? ' dead' : s.busy ? ' busy' : s.askingAt ? ' asking' : s.doneAt ? ' done' : '');
+
+function liveRow(s) {
+  const row = newEl('button', 'ov-row');
+  row.dataset.id = s.id;
+  const dot = newEl('span', dotClass(s));
+  row.append(dot, newEl('span', 'ov-name', s.name), newEl('span', 'ov-state', sessionState(s)));
+  if (s.model && s.model !== 'default') row.appendChild(newEl('span', 'ov-model', s.model));
+  row.addEventListener('click', () => setActive(s.id));
+  return row;
+}
+
+// The "running now" list is the one part of the overview that changes while you
+// look at it, so renderProject calls this on every state change. Patched rather
+// than rebuilt: this runs on every chunk of output, and replacing the buttons
+// under the pointer would eat clicks.
+function renderLiveRows(cwd) {
+  if (overviewCwd !== cwd) return;
+  const host = overviewEl.querySelector('.ov-sec.live');
+  if (!host) return;
+  const mine = sessionsOf(cwd);
+  const rows = [...host.querySelectorAll('.ov-row')];
+  if (rows.length !== mine.length || rows.some((el, i) => el.dataset.id !== mine[i].id)) {
+    while (host.children.length > 1) host.lastElementChild.remove();   // keep the <h3>
+    if (!mine.length) host.appendChild(newEl('p', 'ov-empty', t('overview.none')));
+    for (const s of mine) host.appendChild(liveRow(s));
+    return;
+  }
+  rows.forEach((el, i) => {
+    const s = mine[i];
+    const dot = el.querySelector('.dot');
+    const cls = dotClass(s);
+    if (dot.className !== cls) dot.className = cls;
+    const state = el.querySelector('.ov-state');
+    const text = sessionState(s);
+    if (state.textContent !== text) state.textContent = text;
+  });
+}
+
 // Rebuilt rather than patched: it is a summary of state that several other
 // things already own, and re-deriving it is cheaper than keeping a second copy
 // of that state in sync.
@@ -1136,22 +1426,12 @@ async function renderOverview(cwd) {
   head.append(newEl('h2', null, p.name), newEl('span', 'ov-path', p.path));
   overviewEl.appendChild(head);
 
-  // What it is running now.
+  // What it is running now. Filled by renderLiveRows, which owns these rows
+  // from here on.
   const live = section(t('overview.active'));
-  const mine = sessionsOf(cwd);
-  if (!mine.length) live.appendChild(newEl('p', 'ov-empty', t('overview.none')));
-  for (const s of mine) {
-    const row = newEl('button', 'ov-row');
-    const dot = newEl('span', 'dot');
-    if (s.dead) dot.classList.add('dead');
-    else if (s.busy) dot.classList.add('busy');
-    else if (s.doneAt) dot.classList.add('done');
-    row.append(dot, newEl('span', 'ov-name', s.name), newEl('span', 'ov-state', sessionState(s)));
-    if (s.model && s.model !== 'default') row.appendChild(newEl('span', 'ov-model', s.model));
-    row.addEventListener('click', () => setActive(s.id));
-    live.appendChild(row);
-  }
+  live.classList.add('live');
   overviewEl.appendChild(live);
+  renderLiveRows(cwd);
 
   // How to start another one. A runtime that can be told "the latest" offers
   // that beside it — it is the one resume that needs no list at all.
@@ -1278,6 +1558,84 @@ document.getElementById('shot-btn').addEventListener('click', async () => {
   toast(res && res.ok
     ? window.t('toast.saved', { file: res.path.split('/').pop() })
     : window.t('toast.shotFailed'));
+});
+
+// ---- Session output: the history, as selectable text ----
+// The terminal can only ever hand over the screen in front of you — tmux keeps
+// the history and redraws the pane, so there is nothing above the top row to
+// drag a selection into. This asks tmux for the lot and shows it as ordinary
+// text, where selecting across pages is just what a browser does.
+const historyEl = document.getElementById('history');
+const historyBody = document.getElementById('history-body');
+const historyTitle = document.getElementById('history-title');
+
+function closeHistory() {
+  historyEl.classList.add('hidden');
+  historyBody.textContent = '';
+}
+
+async function openHistory() {
+  const tab = tabs.get(activeId);
+  if (!tab || !tab.materialized) { toast(window.t('toast.noTerminal')); return; }
+  const res = await window.api.scrollback({ id: tab.id, cwd: tab.cwd, agentSession: tab.agentSession || null });
+  if (!res || !res.ok) {
+    // No tmux session behind this tab (a loose terminal): the terminal's own
+    // buffer is then the whole truth, and it is already selectable there.
+    toast(window.t(res && res.reason === 'no-session' ? 'toast.historyNoSession' : 'toast.historyFailed'));
+    return;
+  }
+  historyTitle.textContent = fullName(tab) + (res.source === 'transcript' ? ' · ' + t('history.fromTranscript') : '');
+  historyBody.textContent = res.text || '';
+  historyEl.classList.remove('hidden');
+  // Land at the end, where the newest output is, like the terminal itself.
+  historyBody.scrollTop = historyBody.scrollHeight;
+}
+
+// Selecting copies, the same bargain the terminal makes — so the answer to
+// "select this and paste it there" is the same gesture in both places.
+// This window is a document, not a terminal, so it behaves like one: select,
+// Ctrl+C, and the selection clears itself the way a copy that has landed
+// should — with a line saying it did. Nothing is copied behind your back here;
+// the terminal auto-copies because a selection there has no other way out.
+function copyHistorySelection() {
+  const sel = window.getSelection();
+  const text = sel ? sel.toString() : '';
+  if (!text) return false;
+  window.api.copySelection(text);
+  sel.removeAllRanges();
+  toast(window.t('toast.copied', { n: text.split('\n').length }));
+  return true;
+}
+
+document.getElementById('history-btn').addEventListener('click', openHistory);
+document.getElementById('history-close').addEventListener('click', closeHistory);
+// The dimmed surround is not part of the window: clicking it closes, the way
+// a dialog does. Clicks inside land on the box and stop there.
+historyEl.addEventListener('mousedown', (e) => { if (e.target === historyEl) closeHistory(); });
+document.getElementById('history-copy').addEventListener('click', () => {
+  const text = historyBody.textContent;
+  if (text) window.api.copySelection(text);
+  toast(window.t('toast.historyCopied'));
+});
+document.addEventListener('keydown', (e) => {
+  if (historyEl.classList.contains('hidden')) return;
+  if (e.key === 'Escape') { closeHistory(); return; }
+  if (!e.ctrlKey || e.altKey || e.metaKey) return;
+  // Plain Ctrl+C is free here in a way it never is in a terminal, where it
+  // belongs to the program inside as its interrupt.
+  if (e.code === 'KeyC' && !e.shiftKey) {
+    if (copyHistorySelection()) e.preventDefault();
+    return;
+  }
+  // Everything, without dragging through it.
+  if (e.code === 'KeyA' && !e.shiftKey) {
+    const range = document.createRange();
+    range.selectNodeContents(historyBody);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    e.preventDefault();
+  }
 });
 
 // ---- Interactive project preview (fixed right dock) ----
@@ -1805,6 +2163,10 @@ window.api.listProjects().then((list) => {
     tabs.get(id).session = rec.session;
     if (rec.agentSession) tabs.get(id).agentSession = rec.agentSession;
   }
+  // Now that the restored tabs exist, ask tmux about them directly rather than
+  // waiting for a push — pushes only carry changes, and a session sitting on a
+  // question has nothing left to change.
+  if (window.api.activityNow) window.api.activityNow().then(applyActivity).catch(() => {});
   // Land on something rather than an empty window: the overview of the project
   // with sessions waiting for you, else of the first one in the rail. The
   // overview and not a terminal — attaching to an agent is a click you make,
@@ -1815,6 +2177,49 @@ window.api.listProjects().then((list) => {
     if (first) showOverview(first);
   }
 }).catch(() => { /* a rail without restored sessions still works */ });
+}
+
+// ---- Place readout (bottom system bar) ----
+// Project of the session in focus, plus its git branch (from .git/HEAD via
+// main). A path under .worktrees/ also gets the ⑂ marker — folder name is
+// only a fallback when HEAD is unreadable. Async IPC: a late reply after a
+// tab switch is dropped so the bar never shows the previous checkout.
+const placeStat = document.getElementById('m-place');
+const placeVal = document.getElementById('place-val');
+let placeSeq = 0;
+
+async function renderPlace() {
+  const seq = ++placeSeq;
+  const tab = tabs.get(activeId);
+  const cwd = (tab && tab.cwd) || activeCwd || null;
+  const owner = cwd ? ownerOf(cwd) : (activeCwd || null);
+  if (!owner) {
+    placeStat.classList.add('hidden');
+    placeVal.textContent = '–';
+    placeStat.title = '';
+    return;
+  }
+  const p = projects.get(owner);
+  const name = (p && p.name) || owner.split('/').pop();
+  const pathShown = cwd || (p && p.path) || owner;
+  const isWt = !!(cwd && cwd !== owner);
+  const wtFolder = isWt ? cwd.split('/').pop() : null;
+  let branch = null;
+  if (cwd && window.api.gitBranch) {
+    try { branch = await window.api.gitBranch(cwd); } catch (_) { branch = null; }
+  }
+  if (seq !== placeSeq) return;
+  const label = branch || wtFolder;
+  let text = name;
+  if (label && isWt) text = `${name} · ⑂ ${label}`;
+  else if (label) text = `${name} · ${label}`;
+  placeVal.textContent = text;
+  placeStat.title = isWt && label
+    ? t('bar.place.titleWorktree', { project: name, branch: label, path: pathShown })
+    : label
+      ? t('bar.place.titleBranch', { project: name, branch: label, path: pathShown })
+      : t('bar.place.title', { project: name, path: pathShown });
+  placeStat.classList.remove('hidden');
 }
 
 // ---- Model picker (bottom system bar) ----
@@ -2107,6 +2512,7 @@ window.api.onPortableImported(({ models }) => {
   if (!modelMenu.classList.contains('hidden')) renderModelMenu();
 });
 
+renderPlace();
 renderModelBtn();
 
 // The boot payload is synchronous and can miss if main wasn't listening yet;
@@ -2150,19 +2556,20 @@ function setMeterLabelRaw(sel, text) {
   el.textContent = text;
 }
 
-// The three meters read the plan's own quota when we can reach it, and the
-// local transcript estimate when we can't. Both states are legible on their
-// own; what's not acceptable is a bar that silently shows one while looking
-// like the other, so the labels and titles change with the mode.
+// The three meters follow the focused session's runtime. Mixing one runtime's
+// numbers into another's chrome is the failure mode to avoid: a Codex tab must
+// never show Claude's plan bars, and an opencode tab must never fall back to
+// Claude transcript totals just because they happen to be in memory.
 //
-// Which plan is a question of which runtime the focused session runs: a Codex
-// tab's meters are Codex's windows, not Claude's. Runtimes that publish no
-// usage anywhere readable (Gemini, opencode…) get an explicit dash — wrong
-// numbers with the right label are worse than none.
+//   claude   plan windows from the account API, else local transcript estimate
+//   codex    plan windows from the latest rollout
+//   kimi     plan windows from the managed /usages endpoint (same as CLI /usage)
+//   opencode no plan API and no honest per-model quota — meters stay hidden
+//   other    dashed "no data" under that runtime's name
 const PLAN_METERS = [['m-session', 'session'], ['m-week', 'week'], ['m-scoped', 'scoped']];
-let usage = null;          // last local scan
-let limits = { ok: false }; // last plan-limit read
-let metersAgent = 'claude'; // the runtime `limits` describes
+let usage = null;          // last local Claude scan — Claude meters only
+let limits = { ok: false }; // last plan-limit read (claude/codex/kimi)
+let metersAgent = 'claude'; // the runtime the bar currently describes
 
 // The runtime whose plan the meters should read: the focused session's agent.
 // Ad-hoc terminals, the overview and the empty state have no runtime of their
@@ -2194,6 +2601,11 @@ function reasonText(r) {
   return REASONS.includes(r) ? t(`bar.reason.${r}`) : t('bar.reason.other', { code: r || '?' });
 }
 
+function clearMeterReset(sel) {
+  const node = document.querySelector(`#${sel} .m-reset`);
+  if (node) node.textContent = '';
+}
+
 function renderPlanMeters() {
   for (const [sel, key] of PLAN_METERS) {
     const el = document.getElementById(sel);
@@ -2201,21 +2613,23 @@ function renderPlanMeters() {
     // Not every plan meters every window (Opus in particular) — a window the
     // account doesn't have is hidden, not shown at zero.
     el.classList.toggle('hidden', !win);
-    if (!win) continue;
+    if (!win) { clearMeterReset(sel); continue; }
     if (win.label) setMeterLabelRaw(sel, win.label);
     else setMeterLabel(sel, `bar.${key}`);
     setMeter(sel, win.pct, Math.round(win.pct) + '%', meterHot(win));
     el.title = metersAgent === 'codex'
       ? t(limits.stale ? 'bar.codexTitleStale' : 'bar.codexTitle')
-      : t(limits.stale ? 'bar.planTitleStale' : 'bar.planTitle');
+      : metersAgent === 'kimi'
+        ? t(limits.stale ? 'bar.kimiTitleStale' : 'bar.kimiTitle')
+        : t(limits.stale ? 'bar.planTitleStale' : 'bar.planTitle');
   }
 }
 
-// Fallback: no plan quota, so the two meters revert to what the transcripts can
-// tell us — tokens spent today and this week, scaled against your own busiest
-// day/week on record. Same numbers the bar showed before, honestly labelled.
+// Claude-only fallback when the plan API is unreachable: local transcript
+// tokens for today and this week. Must not run for any other runtime.
 function renderLocalMeters() {
   document.getElementById('m-scoped').classList.add('hidden');
+  clearMeterReset('m-scoped');
   const pairs = [
     ['m-session', 'bar.daily', usage && usage.today, usage && usage.peakDay],
     ['m-week', 'bar.weekly', usage && usage.week, usage && usage.peakWeek],
@@ -2230,22 +2644,37 @@ function renderLocalMeters() {
   }
 }
 
+// opencode has no plan-quota API and no honest per-model limit we can show
+// next to Claude/Codex. Hide the plan meters rather than invent local spend
+// bars that look like the same thing.
+function hidePlanMeters() {
+  for (const [sel] of PLAN_METERS) {
+    const el = document.getElementById(sel);
+    el.classList.add('hidden');
+    clearMeterReset(sel);
+    el.title = '';
+  }
+}
+
 // A runtime whose usage exists nowhere we can read: two dashed meters under
 // their usual labels, saying whose plan it is we can't see. Falling back to
 // the Claude transcripts here would dress one runtime in another's numbers.
 function renderNoDataMeters() {
   document.getElementById('m-scoped').classList.add('hidden');
+  clearMeterReset('m-scoped');
   for (const sel of ['m-session', 'm-week']) {
     const el = document.getElementById(sel);
     el.classList.remove('hidden');
     setMeterLabel(sel, sel === 'm-session' ? 'bar.session' : 'bar.week');
     setMeter(sel, 0, '–');
+    clearMeterReset(sel);
     el.title = t('bar.noQuota', { agent: agentLabelOf(metersAgent) });
   }
 }
 
 function renderMeters() {
-  if (limits.ok) renderPlanMeters();
+  if (metersAgent === 'opencode') hidePlanMeters();
+  else if (limits.ok) renderPlanMeters();
   else if (metersAgent === 'claude') renderLocalMeters();
   else renderNoDataMeters();
   tickResets();
@@ -2258,6 +2687,15 @@ function renderMeters() {
 // focus check after the await drops it.
 async function refreshLimits() {
   const agent = focusedAgent();
+  metersAgent = agent;
+
+  if (agent === 'opencode') {
+    // Drop any previous plan payload so a later paint cannot reuse it.
+    limits = { ok: false, reason: 'unsupported' };
+    renderMeters();
+    return;
+  }
+
   const result = (await window.api.getUsageLimits(agent)) || { ok: false, reason: 'network' };
   if (focusedAgent() !== agent) return;
   metersAgent = agent;
@@ -2266,14 +2704,13 @@ async function refreshLimits() {
 }
 
 // The transcript scan walks every .jsonl under ~/.claude/projects — worth doing
-// rarely. The totals it produces are read in Settings → Statistics now; what is
-// still needed down here is the meters, which fall back to this scan whenever
-// the plan quota is out of reach.
+// rarely. It feeds Claude's local-fallback meters only; skip repaint while
+// another runtime owns the bar.
 async function refreshUsage() {
   const u = await window.api.getUsageStats();
   if (!u) return;
   usage = u;
-  renderMeters();
+  if (metersAgent === 'claude') renderMeters();
 }
 
 async function refreshSystem() {
@@ -2282,6 +2719,8 @@ async function refreshSystem() {
   setMeter('m-cpu', s.cpu, s.cpu + '%', s.cpu >= 85);
   const memPct = (s.memUsed / s.memTotal) * 100;
   setMeter('m-ram', memPct, fmtBytes(s.memUsed), memPct >= 90);
+  // Branch can change inside the terminal without a tab switch — cheap HEAD read.
+  renderPlace();
 }
 
 function fmtCountdown(ms) {
@@ -2296,22 +2735,25 @@ function fmtCountdown(ms) {
 }
 
 // Countdown under each meter. In plan mode these are the account's real reset
-// timestamps. In local mode only the daily bucket has a boundary to count down
-// to — the local week is a rolling 7-day window that never resets — so the week
-// meter shows no countdown rather than a made-up one.
+// timestamps. Local Claude only has a day boundary (midnight) on the first
+// meter — the week is a rolling window with nothing to count down to.
+// Other runtimes and hidden meters stay blank so a previous plan's reset time
+// cannot linger after a focus switch.
 function tickResets() {
   const now = Date.now();
   const midnight = new Date();
   midnight.setHours(24, 0, 0, 0);
+  const localDay = metersAgent === 'claude' && !limits.ok;
 
   for (const [sel, key] of PLAN_METERS) {
     const node = document.querySelector(`#${sel} .m-reset`);
     if (!node) continue;
-    const at = limits.ok
-      ? (limits[key] && limits[key].resetsAt)
-      // The midnight countdown belongs to the local-estimate fallback's daily
-      // bucket; a runtime shown as "no data" has nothing counting down.
-      : (metersAgent === 'claude' && sel === 'm-session' ? midnight.getTime() : null);
+    let at = null;
+    if (limits.ok) {
+      at = limits[key] && limits[key].resetsAt;
+    } else if (localDay && sel === 'm-session') {
+      at = midnight.getTime();
+    }
     node.textContent = at ? t('bar.reset', { time: fmtCountdown(at - now) }) : '';
   }
 }
@@ -2326,7 +2768,7 @@ function tickClock() {
   // the DOM once a minute rather than once a second.
   const waiting = new Set();
   for (const t of tabs.values()) {
-    if (!t.doneAt) continue;
+    if (!t.doneAt && !t.askingAt) continue;
     renderWait(t);
     waiting.add(t.projectCwd);
   }
@@ -2339,6 +2781,7 @@ function tickClock() {
 window.ui.onChange((kind, payload) => {
   if (kind === 'language') {
     syncGridBtn();
+    renderPlace();
     renderModelBtn();
     if (!modelMenu.classList.contains('hidden')) renderModelMenu();
     for (const t of tabs.values()) {

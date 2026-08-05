@@ -350,3 +350,22 @@
   font-variant-numeric: tabular-nums;
   text-shadow: var(--glow-text);
 }
+
+/* ---- Instructions ----
+   The editor is a plain textarea — the content is Markdown an agent CLI reads,
+   so it gets the input treatment plus a monospace face, and grows downward. */
+#st-ins-text {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 260px;
+  padding: 8px 10px;
+  font-family: ui-monospace, "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  resize: vertical;
+}
+#st-ins-text:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }

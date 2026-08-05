@@ -41,6 +41,10 @@
           <button id="agent-btn" data-i18n-title="rail.agent.title" aria-haspopup="menu" aria-expanded="false">🤖 Agent ▾</button>
           <div id="agent-menu" class="menu hidden" role="menu"></div>
         </div>
+        <!-- The session's whole output as selectable text. The terminal can
+             only ever offer the screen you can see; this is where a selection
+             that needs scrolling is made. -->
+        <button id="history-btn" data-i18n="rail.history" data-i18n-title="rail.history.title">📜 Output</button>
         <button id="shot-btn" data-i18n="rail.screenshot" data-i18n-title="rail.screenshot.title">📷 Screenshot</button>
         <button id="settings-btn" data-i18n="rail.settings" data-i18n-title="rail.settings.title">⚙ Settings</button>
         <button id="fullscreen-btn" data-i18n="rail.fullscreen" data-i18n-title="rail.fullscreen.title">⛶ Fullscreen</button>
@@ -107,6 +111,14 @@
   <!-- Bottom system bar: usage meters + live machine stats -->
   <footer id="systembar">
     <span class="sb-brand">⚡ TABDESK</span>
+
+    <!-- Focused session's project, and its worktree branch when the cwd lives
+         under .worktrees/. Read-only context beside the brand so model/effort
+         stay about the runtime, not the checkout. -->
+    <div class="stat hidden" id="m-place">
+      <span class="m-label" data-i18n="bar.place">Place</span>
+      <span class="m-val" id="place-val">–</span>
+    </div>
 
     <!-- Model of the project in focus. Sits by the brand, ahead of the usage
          meters, because it's the one control here — the rest are readouts. The
@@ -179,6 +191,23 @@
        the embedded terminals (native X windows stacked above the page). -->
   <div id="model-menu" class="menu hidden" role="menu"></div>
   <div id="effort-menu" class="menu hidden" role="menu"></div>
+
+  <!-- The focused session's output, history included, as ordinary selectable
+       text: drag across as much of it as you like, scrolling as you go, which
+       is the one thing a terminal driven by tmux cannot offer. -->
+  <div id="history" class="hidden">
+    <div id="history-box">
+    <div id="history-head">
+      <span id="history-title"></span>
+      <span id="history-hint" data-i18n="history.hint">Select freely — Esc closes</span>
+      <div class="history-actions">
+        <button id="history-copy" data-i18n="history.copyAll">Copy all</button>
+        <button id="history-close" data-i18n-title="history.close">✕</button>
+      </div>
+    </div>
+    <pre id="history-body"></pre>
+    </div>
+  </div>
 
   <!-- What the strip's + offers: the agent CLIs installed, and the project's
        worktrees. Placed on the window rather than in the strip so it isn't

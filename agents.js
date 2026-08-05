@@ -37,7 +37,8 @@ const AGENTS = [
   },
   { id: 'codex',    label: 'Codex',        bin: 'codex',        command: 'codex',        takesModel: true, resumeArgs: 'resume {id}',  continueArgs: 'resume --last',   hint: 'agent.hint.codex' },
   { id: 'gemini',   label: 'Gemini CLI',   bin: 'gemini',       command: 'gemini',       takesModel: true, resumeArgs: '--resume {id}', continueArgs: '--resume latest', hint: 'agent.hint.gemini' },
-  { id: 'opencode', label: 'opencode',     bin: 'opencode',     command: 'opencode',     takesModel: true, resumeArgs: '--session {id}', continueArgs: '--continue',     hint: 'agent.hint.opencode' },
+  { id: 'opencode', label: 'opencode',     bin: 'opencode',     command: 'opencode --auto', takesModel: true, resumeArgs: '--session {id}', continueArgs: '--continue',     hint: 'agent.hint.opencode' },
+  { id: 'kimi',     label: 'Kimi Code',    bin: 'kimi',         command: 'kimi --auto',     takesModel: true, resumeArgs: '--session {id}', continueArgs: '--continue',     hint: 'agent.hint.kimi' },
   // Aider and Cursor Agent spell the flag differently enough that TabDesk
   // leaves their model choice to them.
   { id: 'aider',    label: 'Aider',        bin: 'aider',        command: 'aider',        hint: 'agent.hint.aider' },

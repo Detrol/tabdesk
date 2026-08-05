@@ -14,6 +14,8 @@ const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
+const opencodeStore = require('./opencode-store');
+const kimiStore = require('./kimi-store');
 
 const MAX_PER_AGENT = 10;       // rows worth showing before "older" is noise
 const CACHE_MS = 60000;
@@ -261,9 +263,79 @@ async function codexSessions(cwd, root) {
   return out;
 }
 
+// ---- opencode ------------------------------------------------------------
+// Sessions live in one SQLite database, keyed by the project directory the
+// CLI was started in. Subagents (parent_id set) are jobs, not conversations
+// anybody resumes by hand — same cut Codex makes for thread_source=subagent.
+
+async function opencodeSessions(cwd, root) {
+  const spellings = spellingsOf(cwd);
+  if (!spellings.length) return [];
+  const dirs = spellings.map(opencodeStore.sqlString).join(', ');
+  const sql = 'SELECT id, title, time_created, time_updated FROM session '
+    + `WHERE directory IN (${dirs}) `
+    + 'AND parent_id IS NULL '
+    + 'AND time_archived IS NULL '
+    + 'ORDER BY time_updated DESC '
+    + `LIMIT ${MAX_PER_AGENT}`;
+  const rows = await opencodeStore.query(sql, root || undefined);
+  if (!rows) return [];
+
+  const out = [];
+  for (const row of rows) {
+    const id = String(row.id || '');
+    if (!SAFE_ID.test(id)) continue;
+    const title = row.title != null && String(row.title).trim()
+      ? clip(String(row.title))
+      : null;
+    const at = Number(row.time_updated) || 0;
+    const born = Number(row.time_created) || 0;
+    out.push({ agent: 'opencode', id, title, at, born });
+  }
+  return out;
+}
+
+// ---- Kimi Code -----------------------------------------------------------
+// session_index.jsonl lists every session; state.json holds title and times.
+// workDir is the project path the CLI was started in (docs: data-locations).
+
+// Async like the other providers — previousSessions always .catch()s the result.
+async function kimiSessions(cwd, root) {
+  const spellings = new Set(spellingsOf(cwd));
+  if (!spellings.size) return [];
+  const rows = kimiStore.readIndex(root || undefined);
+  const out = [];
+  for (const row of rows) {
+    if (!spellings.has(row.workDir)) continue;
+    const id = row.sessionId;
+    if (!SAFE_ID.test(id)) continue;
+    // Fixture roots keep sessionDir relative under the test home; live index
+    // stores absolute paths. Resolve against the home when not absolute.
+    const home = kimiStore.home(root || undefined);
+    const sessionDir = path.isAbsolute(row.sessionDir)
+      ? row.sessionDir
+      : path.join(home, row.sessionDir);
+    const state = kimiStore.readState(sessionDir) || {};
+    const titleRaw = state.title || state.lastPrompt || null;
+    const title = titleRaw != null && String(titleRaw).trim()
+      ? clip(String(titleRaw))
+      : null;
+    const at = Date.parse(state.updatedAt || '') || 0;
+    const born = Date.parse(state.createdAt || '') || 0;
+    out.push({ agent: 'kimi', id, title, at, born });
+  }
+  out.sort((a, b) => b.at - a.at);
+  return out.slice(0, MAX_PER_AGENT);
+}
+
 // ---- what the overview asks for ------------------------------------------
 
-const PROVIDERS = { claude: claudeSessions, codex: codexSessions };
+const PROVIDERS = {
+  claude: claudeSessions,
+  codex: codexSessions,
+  opencode: opencodeSessions,
+  kimi: kimiSessions,
+};
 
 // Opening the overview should not re-walk the codex store for every repaint,
 // and these lists change on the scale of conversations, not seconds.
@@ -294,4 +366,6 @@ module.exports = {
   // Exported for the tests, which drive the parsers directly rather than
   // depending on whatever conversations happen to be on the machine.
   claudeDirFor, spellingsOf, claudeTitle, claudeSessions, codexMeta, codexTitle, codexSessions,
+  opencodeSessions,
+  kimiSessions,
 };

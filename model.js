@@ -31,6 +31,13 @@ const settings = require('./settings');
 const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
 const CODEX_CONFIG = path.join(os.homedir(), '.codex', 'config.toml');
 const GEMINI_SETTINGS = path.join(os.homedir(), '.gemini', 'settings.json');
+const OPENCODE_CONFIG = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
+const KIMI_HOME = () => {
+  const env = process.env.KIMI_CODE_HOME;
+  if (env && typeof env === 'string' && env.trim()) return path.resolve(env.trim());
+  return path.join(os.homedir(), '.kimi-code');
+};
+const KIMI_CONFIG = () => path.join(KIMI_HOME(), 'config.toml');
 
 // Aliases, not pinned model ids: each alias tracks the latest model in its
 // family, so this list doesn't go stale on the next release. The "[1m]" suffix
@@ -75,6 +82,19 @@ function globalDefault(agent = 'claude') {
     const data = readJson(GEMINI_SETTINGS);
     const name = data && data.model && data.model.name;
     return typeof name === 'string' && name ? name : 'default';
+  }
+  if (agent === 'opencode') {
+    const data = readJson(OPENCODE_CONFIG);
+    const name = data && data.model;
+    return typeof name === 'string' && SAFE_ID.test(name) ? name : 'default';
+  }
+  if (agent === 'kimi') {
+    try {
+      // Top-level default_model = "…", not inside a [table].
+      const head = fs.readFileSync(KIMI_CONFIG(), 'utf8').split(/^\s*\[/m)[0];
+      const m = head.match(/^\s*default_model\s*=\s*"([^"]+)"/m);
+      return m && SAFE_ID.test(m[1]) ? m[1] : 'default';
+    } catch (_) { return 'default'; }
   }
   return 'default';
 }
@@ -204,6 +224,59 @@ function listFromCommand(agent, bin, args) {
 // The rows the picker shows for an agent. Always starts with Default; an agent
 // with nothing else to offer gets that row alone, and the renderer shows the
 // picker as read-only rather than empty.
+// kimi provider list --json → { providers, models: { "alias": { displayName, … } } }
+function listFromKimi() {
+  const key = 'kimi';
+  const hit = listCache.get(key);
+  if (hit && Date.now() - hit.at < LIST_TTL_MS) return Promise.resolve(hit.models);
+
+  return new Promise((resolve) => {
+    const finish = (models) => {
+      listCache.set(key, { at: Date.now(), models });
+      resolve(models);
+    };
+    try {
+      const child = execFile('kimi', ['provider', 'list', '--json'], {
+        timeout: 15000,
+        maxBuffer: 4 * 1024 * 1024,
+        env: process.env,
+      }, (err, stdout) => {
+        if (err || !stdout) return finish(listFromKimiConfig());
+        let data;
+        try { data = JSON.parse(String(stdout)); } catch (_) { return finish(listFromKimiConfig()); }
+        const map = data && data.models && typeof data.models === 'object' ? data.models : null;
+        if (!map) return finish(listFromKimiConfig());
+        const models = [];
+        for (const [id, meta] of Object.entries(map)) {
+          if (!SAFE_ID.test(id)) continue;
+          const label = meta && typeof meta.displayName === 'string' && meta.displayName
+            ? meta.displayName
+            : id;
+          models.push({ id, label, hint: null });
+        }
+        finish(models.length ? models : listFromKimiConfig());
+      });
+      child.on('error', () => finish(listFromKimiConfig()));
+    } catch (_) { finish(listFromKimiConfig()); }
+  });
+}
+
+// Fallback when the CLI is unavailable: parse [models."…"] keys from config.toml.
+function listFromKimiConfig() {
+  try {
+    const text = fs.readFileSync(KIMI_CONFIG(), 'utf8');
+    const models = [];
+    const re = /^\[models\."([^"]+)"\]/gm;
+    let m;
+    while ((m = re.exec(text))) {
+      if (SAFE_ID.test(m[1])) models.push({ id: m[1], label: m[1], hint: null });
+    }
+    return models;
+  } catch (_) {
+    return [];
+  }
+}
+
 function list(agent = 'claude') {
   if (agent === 'claude') return Promise.resolve(CLAUDE_MODELS);
   if (agent === 'opencode') {
@@ -212,6 +285,9 @@ function list(agent = 'claude') {
   }
   if (agent === 'codex') {
     return listFromCodexRollouts().then((models) => [DEFAULT_ROW, ...models]);
+  }
+  if (agent === 'kimi') {
+    return listFromKimi().then((models) => [DEFAULT_ROW, ...models]);
   }
   return Promise.resolve([DEFAULT_ROW]);
 }
@@ -278,4 +354,4 @@ function watchGlobal(onChange) {
 // re-read them all at once after an import rewrote them.
 function allFor() { return { ...storedModels() }; }
 
-module.exports = { list, globalDefault, getFor, setFor, allFor, flagFor, keyFor, watchGlobal, codexModelsFromText };
+module.exports = { list, globalDefault, getFor, setFor, allFor, flagFor, keyFor, watchGlobal, codexModelsFromText, KIMI_HOME };
