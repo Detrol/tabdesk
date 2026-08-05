@@ -45,6 +45,9 @@
              only ever offer the screen you can see; this is where a selection
              that needs scrolling is made. -->
         <button id="history-btn" data-i18n="rail.history" data-i18n-title="rail.history.title">📜 Output</button>
+        <!-- The project's — or the runtime's user-wide — instruction file
+             (CLAUDE.md, AGENTS.md, …), edited in place. -->
+        <button id="instr-btn" data-i18n="rail.instructions" data-i18n-title="rail.instructions.title">📝 Instructions</button>
         <button id="shot-btn" data-i18n="rail.screenshot" data-i18n-title="rail.screenshot.title">📷 Screenshot</button>
         <button id="settings-btn" data-i18n="rail.settings" data-i18n-title="rail.settings.title">⚙ Settings</button>
         <button id="fullscreen-btn" data-i18n="rail.fullscreen" data-i18n-title="rail.fullscreen.title">⛶ Fullscreen</button>
@@ -206,6 +209,29 @@
       </div>
     </div>
     <pre id="history-body"></pre>
+    </div>
+  </div>
+
+  <!-- The instruction file a runtime reads — the project's own or the
+       user-wide one — as an editable sheet. Same overlay pattern as the
+       output viewer above: Esc or a click on the dimmed surround closes. -->
+  <div id="instr" class="hidden">
+    <div id="instr-box">
+    <div id="instr-head">
+      <span id="instr-title"></span>
+      <span id="instr-hint" data-i18n="instructions.hint">Esc closes</span>
+      <div class="history-actions">
+        <button id="instr-save" data-i18n="instructions.save">Save</button>
+        <button id="instr-close" data-i18n-title="history.close">✕</button>
+      </div>
+    </div>
+    <div id="instr-picks">
+      <select id="instr-project"></select>
+      <select id="instr-agent"></select>
+      <select id="instr-scope"></select>
+    </div>
+    <textarea id="instr-body" spellcheck="false"></textarea>
+    <div id="instr-foot"><span id="instr-status"></span></div>
     </div>
   </div>
 

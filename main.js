@@ -1086,51 +1086,62 @@ app.whenReady().then(async () => {
   // ---- Terminal lifecycle over IPC ----
 
   // Current branch of a checkout, from .git/HEAD (or a linked worktree's
-  // gitdir). No git binary — one or two small reads — so the status bar can
-  // ask on every tab switch without spawning anything. Detached HEAD shortens
-  // to 7 hex; anything unreadable is null and the bar shows project only.
+  // gitdir). Walks up from cwd so a pane sitting in src/ still resolves. No
+  // git binary — small reads — so the status bar can ask on every tab switch
+  // without spawning anything. Detached HEAD shortens to 7 hex; anything
+  // unreadable is null and the bar shows project only.
   const branchOf = (cwd) => {
     if (typeof cwd !== 'string' || !cwd) return null;
-    try {
-      const gitPath = path.join(cwd, '.git');
-      const st = fs.lstatSync(gitPath);
-      let headFile;
-      if (st.isFile()) {
-        const text = fs.readFileSync(gitPath, 'utf8').trim();
-        const m = /^gitdir:\s*(.+)$/i.exec(text);
-        if (!m) return null;
-        const gitdir = path.isAbsolute(m[1]) ? m[1] : path.resolve(cwd, m[1]);
-        headFile = path.join(gitdir, 'HEAD');
-      } else if (st.isDirectory()) {
-        headFile = path.join(gitPath, 'HEAD');
-      } else {
+    let dir = cwd;
+    for (let n = 0; n < 48; n++) {
+      try {
+        const gitPath = path.join(dir, '.git');
+        const st = fs.lstatSync(gitPath);
+        let headFile;
+        if (st.isFile()) {
+          const text = fs.readFileSync(gitPath, 'utf8').trim();
+          const m = /^gitdir:\s*(.+)$/i.exec(text);
+          if (!m) return null;
+          const gitdir = path.isAbsolute(m[1]) ? m[1] : path.resolve(dir, m[1]);
+          headFile = path.join(gitdir, 'HEAD');
+        } else if (st.isDirectory()) {
+          headFile = path.join(gitPath, 'HEAD');
+        } else {
+          return null;
+        }
+        const head = fs.readFileSync(headFile, 'utf8').trim();
+        const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+        if (ref) return ref[1];
+        if (/^[0-9a-f]{7,40}$/i.test(head)) return head.slice(0, 7);
         return null;
-      }
-      const head = fs.readFileSync(headFile, 'utf8').trim();
-      const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
-      if (ref) return ref[1];
-      if (/^[0-9a-f]{7,40}$/i.test(head)) return head.slice(0, 7);
-      return null;
-    } catch (_) {
-      return null;
+      } catch (_) { /* keep walking */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
     }
+    return null;
   };
   ipcMain.handle('git:branch', (_event, cwd) => branchOf(cwd));
 
-  // Git worktrees of a project, by the one-branch-one-worktree convention of
-  // keeping them in .worktrees/. They are branches of a project, not projects
-  // of their own, so they ride along on their project's entry rather than
-  // becoming rail tabs — the picker offers them, and an open one comes back
-  // through the tab registry.
+  // Git worktrees of a project. Convention folders: `.worktrees/` (TabDesk /
+  // agents) and `.claude/worktrees/` (Claude Code). They are branches of a
+  // project, not projects of their own, so they ride along on their project's
+  // entry rather than becoming rail tabs — the picker offers them, and an open
+  // one comes back through the tab registry.
   const worktreesIn = (dir) => {
-    let entries;
-    try { entries = fs.readdirSync(path.join(dir, '.worktrees'), { withFileTypes: true }); } catch (_) { return []; }
     const out = [];
-    for (const e of entries) {
-      if (e.name.startsWith('.')) continue;
-      const full = path.join(dir, '.worktrees', e.name);
-      try { if (!fs.statSync(full).isDirectory()) continue; } catch (_) { continue; }
-      out.push({ name: `${path.basename(dir)}/${e.name}`, path: full, model: model.getFor(full, agents.getFor(full)) });
+    const seen = new Set();
+    for (const rel of ['.worktrees', '.claude/worktrees']) {
+      let entries;
+      try { entries = fs.readdirSync(path.join(dir, rel), { withFileTypes: true }); } catch (_) { continue; }
+      for (const e of entries) {
+        if (e.name.startsWith('.')) continue;
+        const full = path.join(dir, rel, e.name);
+        if (seen.has(full)) continue;
+        try { if (!fs.statSync(full).isDirectory()) continue; } catch (_) { continue; }
+        seen.add(full);
+        out.push({ name: `${path.basename(dir)}/${e.name}`, path: full, model: model.getFor(full, agents.getFor(full)) });
+      }
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
   };
@@ -1613,9 +1624,15 @@ app.whenReady().then(async () => {
       if (err) return resolve({});
       // The title is read here and reduced to a verdict: the renderer needs to
       // know that a session is waiting for an answer, not what it is called.
+      // pane_current_path is logicalized so a symlinked project keeps the rail's
+      // spelling (and so worktrees under it stay under that spelling too).
+      const spellings = projectSpellings();
       const out = {};
       for (const [name, rec] of Object.entries(activity.parse(stdout))) {
-        out[name] = { at: rec.at, asking: asking.fromTitle(rec.title) };
+        const cwd = rec.cwd
+          ? projectsRoot.logicalizeCwd(rec.cwd, spellings)
+          : null;
+        out[name] = { at: rec.at, asking: asking.fromTitle(rec.title), cwd };
       }
       resolve(out);
     });

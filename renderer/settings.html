@@ -22,8 +22,6 @@
               aria-selected="true" data-i18n="settings.nav.general">General</button>
       <button class="st-navbtn" data-section="sync" role="tab"
               aria-selected="false" data-i18n="settings.nav.sync">Sync</button>
-      <button class="st-navbtn" data-section="instructions" role="tab"
-              aria-selected="false" data-i18n="settings.nav.instructions">Instructions</button>
       <button class="st-navbtn" data-section="stats" role="tab"
               aria-selected="false" data-i18n="settings.nav.stats">Statistics</button>
       <button class="st-navbtn" data-section="about" role="tab"
@@ -287,37 +285,6 @@
           <div class="st-row">
             <button id="st-portable" data-i18n="settings.portable.open">⇄ Export / import…</button>
           </div>
-        </div>
-      </section>
-
-      <!-- Instruction files: the CLAUDE.md / AGENTS.md / GEMINI.md a runtime
-           reads, both the project's own and the user-wide one. Loaded when the
-           section is opened, like Statistics. -->
-      <section class="st-section hidden" data-section="instructions">
-        <div class="st-row">
-          <div class="st-field st-grow">
-            <label for="st-ins-project" data-i18n="settings.ins.project">Project</label>
-            <select id="st-ins-project"></select>
-          </div>
-          <div class="st-field st-grow">
-            <label for="st-ins-agent" data-i18n="settings.ins.agent">Runtime</label>
-            <select id="st-ins-agent"></select>
-          </div>
-        </div>
-
-        <div class="st-field">
-          <label for="st-ins-scope" data-i18n="settings.ins.scope">File</label>
-          <select id="st-ins-scope"></select>
-          <p class="st-hint"><code id="st-ins-path"></code></p>
-        </div>
-
-        <div class="st-field">
-          <textarea id="st-ins-text" rows="14" spellcheck="false"></textarea>
-        </div>
-
-        <div class="st-row">
-          <button id="st-ins-save" class="st-primary" data-i18n="settings.ins.save">Save</button>
-          <span id="st-ins-status" class="st-hint"></span>
         </div>
       </section>
 

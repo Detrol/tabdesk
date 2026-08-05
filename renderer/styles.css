@@ -216,6 +216,12 @@ html, body {
 #rail-footer {
   padding: 10px;
   border-top: 1px solid var(--line-soft);
+  /* Resolution-adaptive without breakpoints: the rail is 15% of the window,
+     so a wide screen gets two button columns and a narrow one keeps one —
+     the track floor decides, not a media query. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 7px;
 }
 #rail-footer button {
   width: 100%;
@@ -230,7 +236,6 @@ html, body {
   box-shadow: var(--glow-accent);
   transition: background .15s, transform .1s;
 }
-#rail-footer button + button { margin-top: 7px; }
 #rail-footer button:hover { background: var(--tint-strong); }
 #rail-footer button:active { transform: scale(.97); }
 #shot-btn { border-color: var(--accent-2); color: var(--accent-2); box-shadow: var(--glow-accent-2); }
@@ -241,8 +246,6 @@ html, body {
    above the page, so anything overflowing into the panel area gets clipped by
    them. Labels wrap instead. */
 #run-wrap, #agent-wrap { position: relative; }
-#rail-footer #run-wrap, #rail-footer #agent-wrap { margin-top: 7px; }
-#rail-footer #run-wrap + button, #rail-footer #agent-wrap + button { margin-top: 7px; }
 #run-btn.running { border-color: var(--ok); color: var(--ok); box-shadow: var(--glow-ok); }
 
 /* Shared popup shell — used by the run menu and the model menu. */
@@ -1137,3 +1140,86 @@ html, body {
   user-select: text;
   cursor: text;
 }
+
+/* ---- Instruction file editor ----
+   Same overlay as the output viewer above, with an editable sheet instead of
+   a readout: three picks (project, runtime, which file) over a textarea. */
+#instr {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .45);
+}
+#instr.hidden { display: none; }
+#instr-box {
+  width: 75%;
+  height: 75%;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--accent-2);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-panel-focus);
+  overflow: hidden;
+}
+#instr-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--tint), transparent);
+}
+#instr-title {
+  color: var(--text);
+  font-size: 12px;
+  letter-spacing: .5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#instr-hint { font-size: 11px; color: var(--faint); flex: 1 1 auto; }
+#instr-picks {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+#instr-picks select {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+#instr-picks select:hover { border-color: var(--accent); }
+#instr-picks select option { color: var(--text); background: var(--bg); }
+#instr-body {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 18px 22px;
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: Menlo, "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  border: none;
+  resize: none;
+  outline: none;
+}
+#instr-foot {
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+}
+#instr-status { font-size: 11px; color: var(--dim); }

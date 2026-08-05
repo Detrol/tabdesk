@@ -41,6 +41,12 @@ contextBridge.exposeInMainWorld('api', {
   listAgents: () => ipcRenderer.invoke('agents:list'),
   getAgent: (projectPath) => ipcRenderer.invoke('agents:get', projectPath),
   setAgent: (projectPath, id) => ipcRenderer.invoke('agents:set', { path: projectPath, id }),
+
+  // Instruction files (CLAUDE.md, AGENTS.md, …): the overlay picks
+  // (project, agent, scope) — main resolves and validates the path itself.
+  instructionsList: (projectPath) => ipcRenderer.invoke('instructions:list', projectPath),
+  instructionsRead: (args) => ipcRenderer.invoke('instructions:read', args),
+  instructionsWrite: (args) => ipcRenderer.invoke('instructions:write', args),
   onGlobalModelChanged: (cb) => {
     const listener = (_event, id) => cb(id);
     ipcRenderer.on('model:global-changed', listener);

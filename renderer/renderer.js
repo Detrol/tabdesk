@@ -345,12 +345,24 @@ const POLL_IDLE_MS = 5000;
 const ASK_RECHECK_MS = 6000;
 const activitySeen = new Map();   // session name -> the stamp we last compared
 const activityMisses = new Map(); // session name -> consecutive polls without it
+// Live shell cwd per tmux session (pane_current_path). tab.cwd is where the
+// session was born; an agent that entered a worktree leaves that on the project
+// root, so the place bar reads this map first.
+const liveCwd = new Map();        // session name -> path
 
 // Baselines are per session and not per map: tabs are built after the window
 // loads, so a tab that appears mid-stream still gets its own first sighting
 // rather than inheriting somebody else's.
 function applyActivity(map) {
   const now = map || {};
+  let placeDirty = false;
+  for (const [session, rec] of Object.entries(now)) {
+    if (!rec || !rec.cwd) continue;
+    if (liveCwd.get(session) !== rec.cwd) {
+      liveCwd.set(session, rec.cwd);
+      placeDirty = true;
+    }
+  }
   for (const t of tabs.values()) {
     if (!t.session || t.dead || isWatched(t.id)) continue;
     const rec = now[t.session];
@@ -402,6 +414,7 @@ function applyActivity(map) {
     }
     if (at > before) markActivity(t.id, POLL_IDLE_MS);
   }
+  if (placeDirty) renderPlace();
 }
 
 if (window.api.onSessionActivity) window.api.onSessionActivity(applyActivity);
@@ -1081,10 +1094,31 @@ function closeTab(id) {
 // ---- Starting a session ----------------------------------------------------
 
 // A worktree is a branch of a project, not a project: it belongs under the row
-// its checkout came from, by the one-directory-per-branch convention.
+// its checkout came from. TabDesk agents use `.worktrees/`; Claude Code also
+// keeps checkouts under `.claude/worktrees/`.
+const WT_MARKERS = ['/.worktrees/', '/.claude/worktrees/'];
+
 function ownerOf(cwd) {
-  const i = String(cwd).indexOf('/.worktrees/');
-  return i > 0 ? cwd.slice(0, i) : cwd;
+  const s = String(cwd || '');
+  let cut = -1;
+  for (const m of WT_MARKERS) {
+    const i = s.indexOf(m);
+    if (i > 0 && i > cut) cut = i;
+  }
+  return cut > 0 ? s.slice(0, cut) : s;
+}
+
+function worktreeFolder(cwd) {
+  const s = String(cwd || '');
+  for (const m of WT_MARKERS) {
+    const i = s.indexOf(m);
+    if (i > 0) {
+      const rest = s.slice(i + m.length);
+      const folder = rest.split('/').filter(Boolean)[0];
+      return folder || null;
+    }
+  }
+  return null;
 }
 
 // Open another session in a project. The session name is reserved by main so
@@ -1638,6 +1672,151 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ---- Instruction files: CLAUDE.md, AGENTS.md & friends, edited in place ----
+//
+// Same overlay pattern as the output viewer above. Three picks — project,
+// runtime, and which of the runtime's two files (the project's own, or the
+// user-wide one) — and a textarea. Main resolves and validates the path; this
+// window only ever deals in (project, agent, scope).
+const instrEl = document.getElementById('instr');
+const instrTitle = document.getElementById('instr-title');
+const instrProject = document.getElementById('instr-project');
+const instrAgent = document.getElementById('instr-agent');
+const instrScope = document.getElementById('instr-scope');
+const instrBody = document.getElementById('instr-body');
+const instrStatus = document.getElementById('instr-status');
+
+let instrAgents = [];   // instructions:list for the picked project
+let instrClean = '';    // content as last read or saved — the dirty check
+let instrSel = { project: null, agent: null, scope: null };   // last valid picks
+
+function instrFill(sel, items, selected, toOption) {
+  sel.textContent = '';
+  for (const item of items) {
+    const opt = document.createElement('option');
+    const { value, label } = toOption(item);
+    opt.value = value;
+    opt.textContent = label;
+    opt.selected = value === selected;
+    sel.appendChild(opt);
+  }
+}
+
+const instrCurrent = () => instrAgents.find((a) => a.id === instrAgent.value);
+
+function instrFillScopes() {
+  const a = instrCurrent();
+  const opts = [];
+  if (a && a.projectFile) {
+    opts.push({ value: 'project', label: window.t('instructions.scope.project', { name: a.projectFile.name }) });
+  }
+  if (a && a.globalFile) {
+    opts.push({ value: 'global', label: window.t('instructions.scope.global', { name: a.globalFile.path }) });
+  }
+  instrFill(instrScope, opts, instrScope.value, (o) => o);
+}
+
+async function instrRead() {
+  const a = instrCurrent();
+  instrBody.value = '';
+  instrClean = '';
+  instrTitle.textContent = '';
+  instrStatus.textContent = '';
+  if (!a) return;
+  const res = await window.api.instructionsRead({
+    agent: a.id, scope: instrScope.value, projectPath: instrProject.value,
+  });
+  if (!res.ok) {
+    instrStatus.textContent = window.t('instructions.error', { error: res.error || '' });
+    return;
+  }
+  instrBody.value = res.content;
+  instrClean = res.content;
+  instrTitle.textContent = res.path;
+  // A file that is not there yet is not an error — saving creates it.
+  if (!res.exists) instrStatus.textContent = window.t('instructions.missing');
+}
+
+async function instrLoadAgents() {
+  instrAgents = (await window.api.instructionsList(instrProject.value)) || [];
+  instrFill(instrAgent, instrAgents, instrAgent.value, (a) => ({ value: a.id, label: a.label }));
+  instrFillScopes();
+  await instrRead();
+  instrSel = { project: instrProject.value, agent: instrAgent.value, scope: instrScope.value };
+}
+
+// Switching any pick — or closing — reloads the file, which would silently
+// discard typed edits. Ask first; a "keep editing" answer restores the picks.
+function instrGuard() {
+  if (instrBody.value === instrClean || window.confirm(window.t('instructions.dirty'))) return true;
+  instrProject.value = instrSel.project;
+  instrAgent.value = instrSel.agent;
+  instrScope.value = instrSel.scope;
+  return false;
+}
+
+async function openInstructions() {
+  const tab = tabs.get(activeId);
+  const rows = [...projects.values()];
+  if (!rows.length) return;
+  if (!historyEl.classList.contains('hidden')) closeHistory();
+  // Default to what is on screen: the active tab's project, and the runtime
+  // its session actually runs — the file that opens is the one that session
+  // reads. Both stay changeable afterwards.
+  instrFill(instrProject, rows, (tab && tab.cwd) || null, (p) => ({ value: p.path, label: p.name }));
+  instrAgents = (await window.api.instructionsList(instrProject.value)) || [];
+  if (!instrAgents.length) { toast(window.t('instructions.none')); return; }
+  instrFill(instrAgent, instrAgents, tab ? agentFor(tab) : null, (a) => ({ value: a.id, label: a.label }));
+  instrScope.value = 'project';
+  instrFillScopes();
+  await instrRead();
+  instrSel = { project: instrProject.value, agent: instrAgent.value, scope: instrScope.value };
+  instrEl.classList.remove('hidden');
+  instrBody.focus();
+}
+
+function closeInstructions() {
+  if (!instrGuard()) return;
+  instrEl.classList.add('hidden');
+  instrBody.value = '';
+}
+
+document.getElementById('instr-btn').addEventListener('click', openInstructions);
+document.getElementById('instr-close').addEventListener('click', closeInstructions);
+instrEl.addEventListener('mousedown', (e) => { if (e.target === instrEl) closeInstructions(); });
+
+instrProject.addEventListener('change', async () => { if (instrGuard()) await instrLoadAgents(); });
+instrAgent.addEventListener('change', async () => {
+  if (!instrGuard()) return;
+  instrFillScopes();
+  await instrRead();
+  instrSel = { project: instrProject.value, agent: instrAgent.value, scope: instrScope.value };
+});
+instrScope.addEventListener('change', async () => {
+  if (!instrGuard()) return;
+  await instrRead();
+  instrSel = { project: instrProject.value, agent: instrAgent.value, scope: instrScope.value };
+});
+
+document.getElementById('instr-save').addEventListener('click', async () => {
+  const res = await window.api.instructionsWrite({
+    agent: instrAgent.value, scope: instrScope.value,
+    projectPath: instrProject.value, content: instrBody.value,
+  });
+  if (!res.ok) {
+    instrStatus.textContent = window.t('instructions.error', { error: res.error || '' });
+    return;
+  }
+  instrClean = instrBody.value;
+  instrStatus.textContent = '';
+  toast(window.t('instructions.saved'));
+});
+
+document.addEventListener('keydown', (e) => {
+  if (instrEl.classList.contains('hidden')) return;
+  if (e.key === 'Escape') closeInstructions();
+});
+
 // ---- Interactive project preview (fixed right dock) ----
 // Runs the active project — static HTML or a live app (Python, Rust, Node, Go…)
 // — in the webview, streaming its startup logs into the code panel until it
@@ -2181,17 +2360,23 @@ window.api.listProjects().then((list) => {
 
 // ---- Place readout (bottom system bar) ----
 // Project of the session in focus, plus its git branch (from .git/HEAD via
-// main). A path under .worktrees/ also gets the ⑂ marker — folder name is
-// only a fallback when HEAD is unreadable. Async IPC: a late reply after a
-// tab switch is dropped so the bar never shows the previous checkout.
+// main). Prefers the live pane path from tmux when the agent has moved into a
+// worktree — tab.cwd alone stays on the project root where the session began.
+// Async IPC: a late reply after a tab switch is dropped.
 const placeStat = document.getElementById('m-place');
 const placeVal = document.getElementById('place-val');
 let placeSeq = 0;
 
+function placeCwd(tab) {
+  if (tab && tab.session && liveCwd.has(tab.session)) return liveCwd.get(tab.session);
+  if (tab && tab.cwd) return tab.cwd;
+  return activeCwd || null;
+}
+
 async function renderPlace() {
   const seq = ++placeSeq;
   const tab = tabs.get(activeId);
-  const cwd = (tab && tab.cwd) || activeCwd || null;
+  const cwd = placeCwd(tab);
   const owner = cwd ? ownerOf(cwd) : (activeCwd || null);
   if (!owner) {
     placeStat.classList.add('hidden');
@@ -2199,17 +2384,20 @@ async function renderPlace() {
     placeStat.title = '';
     return;
   }
-  const p = projects.get(owner);
+  const p = projects.get(owner) || (activeCwd ? projects.get(activeCwd) : null)
+    || [...projects.values()].find((x) => x.path === owner || ownerOf(x.path) === owner) || null;
   const name = (p && p.name) || owner.split('/').pop();
   const pathShown = cwd || (p && p.path) || owner;
-  const isWt = !!(cwd && cwd !== owner);
-  const wtFolder = isWt ? cwd.split('/').pop() : null;
+  const wtFolder = worktreeFolder(cwd);
+  const isWt = !!wtFolder;
   let branch = null;
   if (cwd && window.api.gitBranch) {
     try { branch = await window.api.gitBranch(cwd); } catch (_) { branch = null; }
   }
   if (seq !== placeSeq) return;
-  const label = branch || wtFolder;
+  // Worktree: prefer git branch (folder often ≠ branch); folder is fallback.
+  // Main checkout: just the branch name.
+  const label = isWt ? (branch || wtFolder) : branch;
   let text = name;
   if (label && isWt) text = `${name} · ⑂ ${label}`;
   else if (label) text = `${name} · ${label}`;
@@ -2798,6 +2986,7 @@ window.ui.onChange((kind, payload) => {
     }
     renderStrip();
     if (overviewCwd) renderOverview(overviewCwd);
+    if (!instrEl.classList.contains('hidden')) instrFillScopes();
   } else if (kind === 'theme' && payload.terminal) {
     for (const t of tabs.values()) {
       if (t.term) t.term.options.theme = payload.terminal;

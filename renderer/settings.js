@@ -297,7 +297,7 @@ el('st-test').addEventListener('click', async () => {
 // Strings baked into JS (the option labels) have to be rebuilt on a language
 // change; data-i18n attributes are handled by ui.js.
 window.ui.onChange((kind) => {
-  if (kind === 'language') { loadThemes(); loadLanguages(); applyAuthMode(); if (insLoaded) fillScopes(); }
+  if (kind === 'language') { loadThemes(); loadLanguages(); applyAuthMode(); }
 });
 
 document.getElementById('st-close').addEventListener('click', () => window.api.close());
@@ -710,112 +710,6 @@ el('st-td-join-go').addEventListener('click', async () => {
   flashSaved();
 });
 
-// ---- instruction files (CLAUDE.md, AGENTS.md, …) ----
-//
-// One editor, three picks: project, runtime, and which of the runtime's two
-// files (the project's own, or the user-wide one). Main resolves the path —
-// this window only ever deals in (project, agent, scope).
-
-const insProject = el('st-ins-project');
-const insAgent = el('st-ins-agent');
-const insScope = el('st-ins-scope');
-const insText = el('st-ins-text');
-const insPath = el('st-ins-path');
-const insStatus = el('st-ins-status');
-
-let insAgents = [];     // instructions:list for the picked project
-let insLoaded = false;  // the section has been opened at least once
-let insClean = '';      // content as last read or saved — the dirty check
-let insSel = { project: null, agent: null, scope: null };   // last valid picks
-
-const insCurrent = () => insAgents.find((a) => a.id === insAgent.value);
-
-// Switching any pick reloads the file, which would silently discard typed
-// edits. Ask first; a "keep editing" answer restores the previous picks.
-function insGuard() {
-  if (insText.value === insClean || window.confirm(window.t('settings.ins.dirty'))) return true;
-  insProject.value = insSel.project;
-  insAgent.value = insSel.agent;
-  insScope.value = insSel.scope;
-  return false;
-}
-
-function fillScopes() {
-  const a = insCurrent();
-  const opts = [];
-  if (a && a.projectFile) {
-    opts.push({ value: 'project', label: window.t('settings.ins.scope.project', { name: a.projectFile.name }) });
-  }
-  if (a && a.globalFile) {
-    opts.push({ value: 'global', label: window.t('settings.ins.scope.global', { name: a.globalFile.path }) });
-  }
-  fill(insScope, opts, insScope.value, (o) => o);
-}
-
-async function readInstructions() {
-  const a = insCurrent();
-  insText.value = '';
-  insClean = '';
-  insPath.textContent = '';
-  insStatus.textContent = '';
-  if (!a) return;
-  const res = await window.api.instructionsRead({
-    agent: a.id, scope: insScope.value, projectPath: insProject.value,
-  });
-  if (!res.ok) {
-    insStatus.textContent = window.t('settings.ins.error', { error: res.error || '' });
-    return;
-  }
-  insText.value = res.content;
-  insClean = res.content;
-  insPath.textContent = res.path;
-  // A file that is not there yet is not an error — saving creates it.
-  if (!res.exists) insStatus.textContent = window.t('settings.ins.missing');
-}
-
-async function loadInsAgents() {
-  insAgents = (await window.api.instructionsList(insProject.value)) || [];
-  fill(insAgent, insAgents, insAgent.value, (a) => ({ value: a.id, label: a.label }));
-  fillScopes();
-  await readInstructions();
-  insSel = { project: insProject.value, agent: insAgent.value, scope: insScope.value };
-}
-
-async function loadInstructions() {
-  insLoaded = true;
-  const res = await window.api.listProjects();
-  const list = (res && res.projects) || res || [];
-  fill(insProject, list, insProject.value, (p) => ({ value: p.path, label: p.name }));
-  await loadInsAgents();
-}
-
-insProject.addEventListener('change', async () => { if (insGuard()) await loadInsAgents(); });
-insAgent.addEventListener('change', async () => {
-  if (!insGuard()) return;
-  fillScopes();
-  await readInstructions();
-  insSel = { project: insProject.value, agent: insAgent.value, scope: insScope.value };
-});
-insScope.addEventListener('change', async () => {
-  if (!insGuard()) return;
-  await readInstructions();
-  insSel = { project: insProject.value, agent: insAgent.value, scope: insScope.value };
-});
-
-el('st-ins-save').addEventListener('click', async () => {
-  const res = await window.api.instructionsWrite({
-    agent: insAgent.value, scope: insScope.value,
-    projectPath: insProject.value, content: insText.value,
-  });
-  if (!res.ok) {
-    insStatus.textContent = window.t('settings.ins.error', { error: res.error || '' });
-    return;
-  }
-  insClean = insText.value;
-  insStatus.textContent = '';
-  flashSaved();
-});
-
 // ---- Statistics & About ----------------------------------------------------
 //
 // Total and Messages-today used to live in the status bar. They change slowly
@@ -852,11 +746,5 @@ for (const b of document.querySelectorAll('.st-navbtn')) {
   b.addEventListener('click', () => {
     if (b.dataset.section === 'stats') loadStats();
     if (b.dataset.section === 'about') loadAbout();
-    // Re-read on every visit while the editor is untouched, so a project or
-    // runtime added since the window opened shows up — but never reload out
-    // from under typed edits.
-    if (b.dataset.section === 'instructions' && (!insLoaded || insText.value === insClean)) {
-      loadInstructions();
-    }
   });
 }

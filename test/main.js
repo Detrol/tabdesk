@@ -531,19 +531,34 @@ app.on('ready', async () => {
 
   console.log('== tmux-aktivitet for sessioner utan pty ==');
   const AC = require(path.join(ROOT, 'activity'));
-  const acMap = AC.parse('td-claude-x 1785835133 ✳ Nagot\ntd-codex-y 1785835091 [ ! ] Action Required | pmsystem\n');
+  const acLine = (name, at, cwd, title) => `${name}\t${at}\t${cwd}\t${title}`;
+  const acMap = AC.parse([
+    acLine('td-claude-x', 1785835133, '/srv/dev/x', '✳ Nagot'),
+    acLine('td-codex-y', 1785835091, '/srv/dev/y/.worktrees/feat', '[ ! ] Action Required | pmsystem'),
+    '',
+  ].join('\n'));
   ok('varje session ger sin stampel',
     acMap['td-claude-x'].at === 1785835133 && acMap['td-codex-y'].at === 1785835091);
   ok('titeln foljer med hel, med mellanslag och rorstreck',
     acMap['td-codex-y'].title === '[ ! ] Action Required | pmsystem');
+  ok('cwd foljer med',
+    acMap['td-codex-y'].cwd === '/srv/dev/y/.worktrees/feat');
   ok('sessioner utanfor TabDesk ignoreras',
-    Object.keys(AC.parse('main 1785761003 x\nirc 12 y\ntd-claude-x 5 z')).join(',') === 'td-claude-x');
+    Object.keys(AC.parse([
+      acLine('main', 1785761003, '/tmp', 'x'),
+      acLine('irc', 12, '/tmp', 'y'),
+      acLine('td-claude-x', 5, '/tmp', 'z'),
+    ].join('\n'))).join(',') === 'td-claude-x');
   ok('rader utan stampel hoppas over',
-    Object.keys(AC.parse('td-claude-x\ntd-codex-y hej\ntd-shell-z 7 t')).join(',') === 'td-shell-z');
+    Object.keys(AC.parse('td-claude-x\ntd-codex-y\thej\n' + acLine('td-shell-z', 7, '/tmp', 't'))).join(',') === 'td-shell-z');
   ok('tomt svar ger tom karta',
     Object.keys(AC.parse('')).length === 0 && Object.keys(AC.parse(undefined)).length === 0);
   ok('nyaste fonstret talar for sessionen',
-    AC.parse('td-claude-x 100 a\ntd-claude-x 400 b\ntd-claude-x 250 c')['td-claude-x'].at === 400);
+    AC.parse([
+      acLine('td-claude-x', 100, '/a', 'a'),
+      acLine('td-claude-x', 400, '/b', 'b'),
+      acLine('td-claude-x', 250, '/c', 'c'),
+    ].join('\n'))['td-claude-x'].at === 400);
 
   console.log('== fragar runtimen, eller ar den bara tyst ==');
   const AS = require(path.join(ROOT, 'asking'));
