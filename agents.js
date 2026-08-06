@@ -35,7 +35,10 @@ const AGENTS = [
     continueArgs: '--continue',
     hint: 'agent.hint.claude',
   },
-  { id: 'codex',    label: 'Codex',        bin: 'codex',        command: 'codex',        takesModel: true, resumeArgs: 'resume {id}',  continueArgs: 'resume --last',   hint: 'agent.hint.codex' },
+  // Codex names its skip-permissions flag differently, but it is the same
+  // contract as Claude's: no prompts, no sandbox. The flag is a global option,
+  // so it also works in front of `resume …`.
+  { id: 'codex',    label: 'Codex',        bin: 'codex',        command: 'codex --dangerously-bypass-approvals-and-sandbox', takesModel: true, resumeArgs: 'resume {id}',  continueArgs: 'resume --last',   hint: 'agent.hint.codex' },
   { id: 'gemini',   label: 'Gemini CLI',   bin: 'gemini',       command: 'gemini',       takesModel: true, resumeArgs: '--resume {id}', continueArgs: '--resume latest', hint: 'agent.hint.gemini' },
   { id: 'opencode', label: 'opencode',     bin: 'opencode',     command: 'opencode --auto', takesModel: true, resumeArgs: '--session {id}', continueArgs: '--continue',     hint: 'agent.hint.opencode' },
   { id: 'kimi',     label: 'Kimi Code',    bin: 'kimi',         command: 'kimi --auto',     takesModel: true, resumeArgs: '--session {id}', continueArgs: '--continue',     hint: 'agent.hint.kimi' },
