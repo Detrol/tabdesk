@@ -14,6 +14,9 @@ const fsx = require('fs');
 
 const ROOT = path.join(__dirname, '..');
 
+// The suite never creates a renderer, so avoid starting Chromium's GPU process.
+app.disableHardwareAcceleration();
+
 // A scratch profile, set before ready and therefore before settings.js can
 // resolve a path. These tests create, replace and corrupt the group key, and
 // none of that may touch a real installation — running them must never be a
