@@ -945,12 +945,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('tabs:reorder', (event, sessions) => {
     const next = tabOrder.reorderRecords(openTabs(), sessions);
     if (!next) return false;
-    try {
-      settings.set('openTabs', next);
-      return true;
-    } catch (_) {
-      return false;
-    }
+    return settings.set('openTabs', next);
   });
 
   // What the rail should carry beyond the plain project list: the tabs that

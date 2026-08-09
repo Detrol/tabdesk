@@ -768,9 +768,10 @@ function reorderProjectTab(movingId, targetId, after) {
   }
   if (activeCwd === moving.projectCwd) renderStrip();
   syncTray();
+  renderLiveRows(moving.projectCwd);
 
-  const sessions = sessionsOf(moving.projectCwd).map((tab) => tab.session);
-  if (sessions.length === reordered.length && sessions.every(Boolean)) {
+  const sessions = window.TabOrder.persistentSessionIds(sessionsOf(moving.projectCwd));
+  if (sessions.length) {
     window.api.reorderTabs(sessions).catch(() => {});
   }
   return true;

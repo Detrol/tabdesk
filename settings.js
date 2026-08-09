@@ -33,10 +33,11 @@ function set(key, value) {
   try {
     fs.mkdirSync(path.dirname(file()), { recursive: true });
     fs.writeFileSync(file(), JSON.stringify(next, null, 2));
+    return true;
   } catch (err) {
     console.warn('[settings] could not persist', String(err));
+    return false;
   }
-  return next;
 }
 
 module.exports = { all, get, set, DEFAULTS };

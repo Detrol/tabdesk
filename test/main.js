@@ -67,6 +67,12 @@ app.on('ready', async () => {
     reordered.map((r) => r.session).join(','));
   ok('dubbletter avvisas', TabOrder.reorderRecords(records, ['a1', 'a1']) === null);
   ok('okand session avvisas', TabOrder.reorderRecords(records, ['a1', 'x']) === null);
+  ok('sessionslosa flikar hindrar inte beständig ordning',
+    TabOrder.persistentSessionIds([
+      { id: 'a', session: 'a1' },
+      { id: 'update', session: null },
+      { id: 'b', session: 'b1' },
+    ]).join(',') === 'a1,b1');
 
   const updated = TabOrder.upsertRecord(records, { session: 'a1', name: 'Nytt namn' });
   ok('uppdatering behaller plats', updated[0].session === 'a1' && updated[1].session === 'b1');
@@ -78,6 +84,24 @@ app.on('ready', async () => {
   const settings = require(path.join(ROOT, 'settings'));
   const fs = require('fs');
   const file = path.join(app.getPath('userData'), 'settings.json');
+  console.log('== settings skrivfel ==');
+  const originalWriteFileSync = fsx.writeFileSync;
+  const originalWarn = console.warn;
+  const warnings = [];
+  let failedWrite;
+  try {
+    fsx.writeFileSync = () => { throw new Error('expected settings write failure'); };
+    console.warn = (...args) => warnings.push(args.map(String).join(' '));
+    failedWrite = settings.set('openTabs', [{ session: 'kept-in-memory' }]);
+  } finally {
+    fsx.writeFileSync = originalWriteFileSync;
+    console.warn = originalWarn;
+  }
+  ok('skrivfel rapporteras till anroparen', failedWrite === false);
+  ok('skrivfel behaller vardet i minnet', settings.get('openTabs')[0].session === 'kept-in-memory');
+  ok('skrivfel varnas exakt en gang', warnings.length === 1
+    && warnings[0].includes('[settings] could not persist')
+    && warnings[0].includes('expected settings write failure'), warnings.join(' | '));
   {
 
 

@@ -23,6 +23,12 @@
     return pointerX >= left + width / 2;
   }
 
+  function persistentSessionIds(tabs) {
+    if (!Array.isArray(tabs)) return [];
+    return tabs.map((tab) => tab && tab.session)
+      .filter((session) => typeof session === 'string' && session);
+  }
+
   function reorderRecords(records, orderedIds) {
     if (!Array.isArray(records) || !validIds(orderedIds)) return null;
     const bySession = new Map(records.map((record) => [record && record.session, record]));
@@ -43,5 +49,5 @@
     return next;
   }
 
-  return { move, reorderRecords, upsertRecord, afterMidpoint };
+  return { move, reorderRecords, upsertRecord, afterMidpoint, persistentSessionIds };
 });
