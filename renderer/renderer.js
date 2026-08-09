@@ -749,6 +749,17 @@ let draggedTabId = null;
 let draggedTabProject = null;
 let draggedTabPreview = null;
 const tabMoveAnimations = new WeakMap();
+const transparentTabDragImage = document.createElement('canvas');
+transparentTabDragImage.width = 1;
+transparentTabDragImage.height = 1;
+transparentTabDragImage.setAttribute('aria-hidden', 'true');
+Object.assign(transparentTabDragImage.style, {
+  position: 'fixed',
+  left: '-2px',
+  top: '-2px',
+  pointerEvents: 'none',
+});
+document.body.appendChild(transparentTabDragImage);
 
 function projectTabPositions(projectCwd) {
   const positions = new Map();
@@ -778,7 +789,7 @@ function animateProjectTabOrder(projectCwd, before) {
       { transform: `translateX(${delta}px)` },
       { transform: 'translateX(0)' },
     ], {
-      duration: 120,
+      duration: 180,
       easing: 'cubic-bezier(.2,.8,.2,1)',
     });
     tabMoveAnimations.set(tab.tabEl, animation);
@@ -891,6 +902,7 @@ function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resum
     draggedTabPreview = preview;
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('application/x-tabdesk-tab', id);
+    e.dataTransfer.setDragImage(transparentTabDragImage, 0, 0);
     tabEl.classList.add('dragging');
   });
   tabEl.addEventListener('dragover', (e) => {

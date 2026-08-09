@@ -480,6 +480,7 @@ html, body {
 #content:has(#strip:not(.hidden)) #panels { top: 38px; }
 
 .stab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -506,7 +507,24 @@ html, body {
   box-shadow: var(--glow-accent-2);
 }
 .stab[draggable="true"] { cursor: grab; }
-.stab.dragging { opacity: .4; cursor: grabbing; }
+.stab.dragging {
+  opacity: .72;
+  cursor: grabbing;
+  border-color: var(--accent-2);
+  background: var(--tint-strong);
+  box-shadow: var(--glow-accent-2);
+}
+.stab.dragging::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: -5px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent-2);
+  box-shadow: var(--glow-accent-2);
+}
 .stab .dot {
   width: 7px;
   height: 7px;
