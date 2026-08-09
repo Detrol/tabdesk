@@ -822,6 +822,7 @@ function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resum
     draggedTabId = id;
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('application/x-tabdesk-tab', id);
+    strip.style.setProperty('--tab-snap-gap', `${Math.ceil(tabEl.getBoundingClientRect().width + 6)}px`);
     tabEl.classList.add('dragging');
   });
   tabEl.addEventListener('dragover', (e) => {
@@ -848,6 +849,7 @@ function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resum
     tabEl.classList.remove('dragging');
     draggedTabId = null;
     clearTabDrop();
+    strip.style.removeProperty('--tab-snap-gap');
   });
 
   // The agent is pinned onto the tab at birth — from an explicit pick, else
