@@ -18,6 +18,11 @@
     return next.every((id, i) => id === ids[i]) ? null : next;
   }
 
+  function afterMidpoint(pointerX, left, width) {
+    if (![pointerX, left, width].every(Number.isFinite) || width <= 0) return null;
+    return pointerX >= left + width / 2;
+  }
+
   function reorderRecords(records, orderedIds) {
     if (!Array.isArray(records) || !validIds(orderedIds)) return null;
     const bySession = new Map(records.map((record) => [record && record.session, record]));
@@ -38,5 +43,5 @@
     return next;
   }
 
-  return { move, reorderRecords, upsertRecord };
+  return { move, reorderRecords, upsertRecord, afterMidpoint };
 });

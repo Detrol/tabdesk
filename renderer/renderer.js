@@ -26,6 +26,7 @@ let activeId = null;
 let activeCwd = null;
 const projects = new Map();  // project path -> row record
 const tabs = new Map();      // id -> session record
+const tabOrder = [];         // ids in user-selected order
 
 // Panels held on screen by the ▦ button, whatever the rail points at now. The
 // session in focus is shown beside them, so pinning nothing still shows one.
@@ -40,11 +41,11 @@ const IDLE_MS = 1500;
 // A session is "watched" while it has a panel on screen — no need to flag it.
 function isWatched(id) { return pinned.has(id) || id === activeId; }
 
-// The sessions belonging to a project, in the order they were opened. A
+// The sessions belonging to a project, in the user-selected order. A
 // worktree session belongs to the project it branches from, not to a rail row
 // of its own.
 function sessionsOf(cwd) {
-  return [...tabs.values()].filter((t) => t.projectCwd === cwd);
+  return tabOrder.map((id) => tabs.get(id)).filter((t) => t && t.projectCwd === cwd);
 }
 
 // The project's own first tab: what it has running and what it has run before.
@@ -72,7 +73,7 @@ function syncTray() {
     trayQueued = false;
     window.api.syncTray({
       activeId,
-      tabs: [...tabs.values()].map((t) => ({
+      tabs: tabOrder.map((id) => tabs.get(id)).filter(Boolean).map((t) => ({
         id: t.id,
         name: fullName(t),
         cwd: t.cwd || null,
@@ -744,6 +745,37 @@ function tmuxAgentFor(t) {
   return (!t.startCmd && t.cwd) ? agentFor(t) : null;
 }
 
+let draggedTabId = null;
+
+function clearTabDrop() {
+  for (const el of strip.querySelectorAll('.drop-before, .drop-after')) {
+    el.classList.remove('drop-before', 'drop-after');
+  }
+}
+
+function reorderProjectTab(movingId, targetId, after) {
+  const moving = tabs.get(movingId);
+  const target = tabs.get(targetId);
+  if (!moving || !target || moving.projectCwd !== target.projectCwd) return false;
+  const mine = sessionsOf(moving.projectCwd).map((tab) => tab.id);
+  const reordered = window.TabOrder.move(mine, movingId, targetId, after);
+  if (!reordered) return false;
+
+  const mineSet = new Set(mine);
+  let next = 0;
+  for (let i = 0; i < tabOrder.length; i++) {
+    if (mineSet.has(tabOrder[i])) tabOrder[i] = reordered[next++];
+  }
+  if (activeCwd === moving.projectCwd) renderStrip();
+  syncTray();
+
+  const sessions = sessionsOf(moving.projectCwd).map((tab) => tab.session);
+  if (sessions.length === reordered.length && sessions.every(Boolean)) {
+    window.api.reorderTabs(sessions).catch(() => {});
+  }
+  return true;
+}
+
 // Build a session's tab in the strip. The terminal/pty is created lazily, and
 // the element only enters the DOM while its project is the one selected —
 // renderStrip() hangs it there, so a session keeps its flags and its wait
@@ -784,6 +816,38 @@ function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resum
     e.stopPropagation();
     pinSession(id);
   });
+  tabEl.draggable = true;
+  tabEl.addEventListener('dragstart', (e) => {
+    draggedTabId = id;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-tabdesk-tab', id);
+    tabEl.classList.add('dragging');
+  });
+  tabEl.addEventListener('dragover', (e) => {
+    if (!draggedTabId || draggedTabId === id) return;
+    const moving = tabs.get(draggedTabId);
+    const target = tabs.get(id);
+    if (!moving || !target || moving.projectCwd !== target.projectCwd) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    clearTabDrop();
+    const rect = tabEl.getBoundingClientRect();
+    const after = window.TabOrder.afterMidpoint(e.clientX, rect.left, rect.width);
+    if (after !== null) tabEl.classList.add(after ? 'drop-after' : 'drop-before');
+  });
+  tabEl.addEventListener('drop', (e) => {
+    if (!draggedTabId) return;
+    e.preventDefault();
+    const rect = tabEl.getBoundingClientRect();
+    const after = window.TabOrder.afterMidpoint(e.clientX, rect.left, rect.width);
+    if (after !== null) reorderProjectTab(draggedTabId, id, after);
+    clearTabDrop();
+  });
+  tabEl.addEventListener('dragend', () => {
+    tabEl.classList.remove('dragging');
+    draggedTabId = null;
+    clearTabDrop();
+  });
 
   // The agent is pinned onto the tab at birth — from an explicit pick, else
   // from what this project was last opened with. Pinning it now, rather than
@@ -797,6 +861,7 @@ function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resum
   };
   if (cwd) rec.agent = agentFor(rec);
   tabs.set(id, rec);
+  tabOrder.push(id);
   if (rec.projectCwd === activeCwd) renderStrip();
   renderProject(rec.projectCwd);
   syncTray();
@@ -1070,6 +1135,8 @@ function closeTab(id) {
   }
   t.tabEl.remove();
   tabs.delete(id);
+  const orderIndex = tabOrder.indexOf(id);
+  if (orderIndex >= 0) tabOrder.splice(orderIndex, 1);
   pinned.delete(id);
   const owner = t.projectCwd;
   const p = projects.get(owner);

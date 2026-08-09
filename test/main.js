@@ -52,6 +52,9 @@ app.on('ready', async () => {
     JSON.stringify(TabOrder.move(['a', 'b', 'c'], 'a', 'b', true)) === JSON.stringify(['b', 'a', 'c']));
   ok('samma plats ar no-op', TabOrder.move(['a', 'b', 'c'], 'a', 'b', false) === null);
   ok('okand flik avvisas', TabOrder.move(['a', 'b'], 'x', 'a', false) === null);
+  ok('vanster halva placerar fore', TabOrder.afterMidpoint(109, 100, 20) === false);
+  ok('hoger halva placerar efter', TabOrder.afterMidpoint(111, 100, 20) === true);
+  ok('ogiltig bredd avvisas', TabOrder.afterMidpoint(100, 100, 0) === null);
 
   const records = [
     { session: 'a1', cwd: '/a', name: 'A1', agentSession: 'conv-a1' },
