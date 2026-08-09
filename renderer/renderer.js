@@ -746,36 +746,98 @@ function tmuxAgentFor(t) {
 }
 
 let draggedTabId = null;
+let draggedTabProject = null;
+let draggedTabPreview = null;
+const tabMoveAnimations = new WeakMap();
 
-function clearTabDrop() {
-  for (const el of strip.querySelectorAll('.drop-before, .drop-after')) {
-    el.classList.remove('drop-before', 'drop-after');
+function projectTabPositions(projectCwd) {
+  const positions = new Map();
+  if (activeCwd !== projectCwd) return positions;
+  for (const tab of sessionsOf(projectCwd)) {
+    if (tab.tabEl && tab.tabEl.isConnected) {
+      positions.set(tab.id, tab.tabEl.getBoundingClientRect().left);
+    }
+  }
+  return positions;
+}
+
+function cancelProjectTabAnimations(projectCwd) {
+  for (const tab of sessionsOf(projectCwd)) {
+    const running = tabMoveAnimations.get(tab.tabEl);
+    if (running) running.cancel();
+    tabMoveAnimations.delete(tab.tabEl);
   }
 }
 
-function reorderProjectTab(movingId, targetId, after) {
-  const moving = tabs.get(movingId);
-  const target = tabs.get(targetId);
-  if (!moving || !target || moving.projectCwd !== target.projectCwd) return false;
-  const mine = sessionsOf(moving.projectCwd).map((tab) => tab.id);
-  const reordered = window.TabOrder.move(mine, movingId, targetId, after);
-  if (!reordered) return false;
+function animateProjectTabOrder(projectCwd, before) {
+  for (const tab of sessionsOf(projectCwd)) {
+    if (tab.id === draggedTabId || !before.has(tab.id)) continue;
+    const delta = before.get(tab.id) - tab.tabEl.getBoundingClientRect().left;
+    if (Math.abs(delta) < 0.5) continue;
+    const animation = tab.tabEl.animate([
+      { transform: `translateX(${delta}px)` },
+      { transform: 'translateX(0)' },
+    ], {
+      duration: 120,
+      easing: 'cubic-bezier(.2,.8,.2,1)',
+    });
+    tabMoveAnimations.set(tab.tabEl, animation);
+    animation.onfinish = () => {
+      if (tabMoveAnimations.get(tab.tabEl) === animation) tabMoveAnimations.delete(tab.tabEl);
+    };
+  }
+}
+
+function syncProjectTabDom(projectCwd) {
+  if (activeCwd !== projectCwd) return;
+  const add = strip.querySelector('.stab.add');
+  if (!add) return;
+  for (const tab of sessionsOf(projectCwd)) strip.insertBefore(tab.tabEl, add);
+}
+
+function applyProjectTabOrder(projectCwd, orderedIds) {
+  const mine = sessionsOf(projectCwd).map((tab) => tab.id);
+  if (mine.length !== orderedIds.length
+    || mine.some((id) => !orderedIds.includes(id))
+    || mine.every((id, i) => id === orderedIds[i])) return false;
+
+  const before = projectTabPositions(projectCwd);
+  cancelProjectTabAnimations(projectCwd);
 
   const mineSet = new Set(mine);
   let next = 0;
   for (let i = 0; i < tabOrder.length; i++) {
-    if (mineSet.has(tabOrder[i])) tabOrder[i] = reordered[next++];
+    if (mineSet.has(tabOrder[i])) tabOrder[i] = orderedIds[next++];
   }
-  if (activeCwd === moving.projectCwd) renderStrip();
-  syncTray();
-  renderLiveRows(moving.projectCwd);
-
-  const sessions = window.TabOrder.persistentSessionIds(sessionsOf(moving.projectCwd));
-  if (sessions.length) {
-    window.api.reorderTabs(sessions).catch(() => {});
+  if (activeCwd === projectCwd) {
+    syncProjectTabDom(projectCwd);
+    animateProjectTabOrder(projectCwd, before);
   }
   return true;
 }
+
+function persistProjectTabOrder(projectCwd) {
+  syncTray();
+  renderLiveRows(projectCwd);
+
+  const sessions = window.TabOrder.persistentSessionIds(sessionsOf(projectCwd));
+  if (sessions.length) {
+    window.api.reorderTabs(sessions).catch(() => {});
+  }
+}
+
+strip.addEventListener('dragover', (e) => {
+  if (!draggedTabId) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+});
+
+strip.addEventListener('drop', (e) => {
+  if (!draggedTabPreview || !draggedTabProject) return;
+  e.preventDefault();
+  draggedTabPreview.commit();
+  persistProjectTabOrder(draggedTabProject);
+});
 
 // Build a session's tab in the strip. The terminal/pty is created lazily, and
 // the element only enters the DOM while its project is the one selected —
@@ -819,37 +881,39 @@ function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resum
   });
   tabEl.draggable = true;
   tabEl.addEventListener('dragstart', (e) => {
+    const tab = tabs.get(id);
+    if (!tab) { e.preventDefault(); return; }
+    const preview = window.TabOrder.createDragPreview(
+      sessionsOf(tab.projectCwd).map((session) => session.id), id);
+    if (!preview) { e.preventDefault(); return; }
     draggedTabId = id;
+    draggedTabProject = tab.projectCwd;
+    draggedTabPreview = preview;
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('application/x-tabdesk-tab', id);
-    strip.style.setProperty('--tab-snap-gap', `${Math.ceil(tabEl.getBoundingClientRect().width + 6)}px`);
     tabEl.classList.add('dragging');
   });
   tabEl.addEventListener('dragover', (e) => {
-    if (!draggedTabId || draggedTabId === id) return;
+    if (!draggedTabPreview || draggedTabId === id) return;
     const moving = tabs.get(draggedTabId);
     const target = tabs.get(id);
     if (!moving || !target || moving.projectCwd !== target.projectCwd) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    clearTabDrop();
     const rect = tabEl.getBoundingClientRect();
     const after = window.TabOrder.afterMidpoint(e.clientX, rect.left, rect.width);
-    if (after !== null) tabEl.classList.add(after ? 'drop-after' : 'drop-before');
-  });
-  tabEl.addEventListener('drop', (e) => {
-    if (!draggedTabId) return;
-    e.preventDefault();
-    const rect = tabEl.getBoundingClientRect();
-    const after = window.TabOrder.afterMidpoint(e.clientX, rect.left, rect.width);
-    if (after !== null) reorderProjectTab(draggedTabId, id, after);
-    clearTabDrop();
+    if (after === null) return;
+    const preview = draggedTabPreview.preview(id, after);
+    if (preview) applyProjectTabOrder(moving.projectCwd, preview);
   });
   tabEl.addEventListener('dragend', () => {
+    if (draggedTabPreview && draggedTabProject) {
+      applyProjectTabOrder(draggedTabProject, draggedTabPreview.finish());
+    }
     tabEl.classList.remove('dragging');
     draggedTabId = null;
-    clearTabDrop();
-    strip.style.removeProperty('--tab-snap-gap');
+    draggedTabProject = null;
+    draggedTabPreview = null;
   });
 
   // The agent is pinned onto the tab at birth — from an explicit pick, else

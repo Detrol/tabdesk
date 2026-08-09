@@ -18,6 +18,27 @@
     return next.every((id, i) => id === ids[i]) ? null : next;
   }
 
+  function createDragPreview(ids, movingId) {
+    if (!validIds(ids) || !ids.includes(movingId)) return null;
+    const original = ids.slice();
+    let current = original.slice();
+    let committed = false;
+    return {
+      preview(targetId, after) {
+        const next = move(current, movingId, targetId, after);
+        if (next) current = next;
+        return next && next.slice();
+      },
+      commit() {
+        committed = true;
+        return current.slice();
+      },
+      finish() {
+        return (committed ? current : original).slice();
+      },
+    };
+  }
+
   function afterMidpoint(pointerX, left, width) {
     if (![pointerX, left, width].every(Number.isFinite) || width <= 0) return null;
     return pointerX >= left + width / 2;
@@ -49,5 +70,12 @@
     return next;
   }
 
-  return { move, reorderRecords, upsertRecord, afterMidpoint, persistentSessionIds };
+  return {
+    move,
+    createDragPreview,
+    reorderRecords,
+    upsertRecord,
+    afterMidpoint,
+    persistentSessionIds,
+  };
 });

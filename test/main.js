@@ -6,7 +6,7 @@
 //
 // Not shipped: build.files is an allowlist and test/ is not in it.
 
-const { app, BrowserWindow } = require('electron');
+const { app } = require('electron');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
@@ -14,8 +14,7 @@ const fsx = require('fs');
 
 const ROOT = path.join(__dirname, '..');
 
-// The suite creates one hidden renderer for a CSS geometry assertion, but it
-// does not need GPU acceleration.
+// The suite never creates a renderer, so avoid starting Chromium's GPU process.
 app.disableHardwareAcceleration();
 
 // A scratch profile, set before ready and therefore before settings.js can
@@ -57,26 +56,21 @@ app.on('ready', async () => {
   ok('hoger halva placerar efter', TabOrder.afterMidpoint(111, 100, 20) === true);
   ok('ogiltig bredd avvisas', TabOrder.afterMidpoint(100, 100, 0) === null);
 
-  const snapWindow = new BrowserWindow({ show: false, width: 640, height: 100 });
-  const styles = fsx.readFileSync(path.join(ROOT, 'renderer/styles.css'), 'utf8');
-  const snapHtml = `<style>${styles}</style><div id="strip" style="--tab-snap-gap: 48px">
-    <div class="stab">A</div><div class="stab" id="target">B</div><div class="stab" id="next">C</div>
-  </div>`;
-  await snapWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(snapHtml)}`);
-  const snapShift = await snapWindow.webContents.executeJavaScript(`(() => {
-    const target = document.getElementById('target');
-    const next = document.getElementById('next');
-    const beforeTarget = target.getBoundingClientRect().left;
-    target.classList.add('drop-before');
-    const beforeShift = target.getBoundingClientRect().left - beforeTarget;
-    target.classList.remove('drop-before');
-    const beforeNext = next.getBoundingClientRect().left;
-    target.classList.add('drop-after');
-    const afterShift = next.getBoundingClientRect().left - beforeNext;
-    return { beforeShift, afterShift };
-  })()`);
-  ok('dragmalet oppnar en synlig snapplats fore', snapShift.beforeShift >= 40, snapShift.beforeShift);
-  ok('dragmalet oppnar en synlig snapplats efter', snapShift.afterShift >= 40, snapShift.afterShift);
+  const makeDragPreview = TabOrder.createDragPreview;
+  ok('dragpreview har en testbar livscykel', typeof makeDragPreview === 'function');
+  if (typeof makeDragPreview === 'function') {
+    const cancelled = makeDragPreview(['a', 'b', 'c'], 'c');
+    ok('dragpreview omordnar fore drop',
+      cancelled.preview('a', false).join(',') === 'c,a,b');
+    ok('avbrutet drag aterstaller ursprungsordningen',
+      cancelled.finish().join(',') === 'a,b,c');
+
+    const dropped = makeDragPreview(['a', 'b', 'c'], 'c');
+    dropped.preview('a', false);
+    dropped.commit();
+    ok('drop behaller den forhandsvisade ordningen',
+      dropped.finish().join(',') === 'c,a,b');
+  }
 
   const records = [
     { session: 'a1', cwd: '/a', name: 'A1', agentSession: 'conv-a1' },
@@ -795,7 +789,6 @@ app.on('ready', async () => {
   }
 
 
-  snapWindow.destroy();
   cleanup();
   app.exit(fail ? 1 : 0);
 });

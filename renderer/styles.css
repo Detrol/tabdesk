@@ -505,15 +505,8 @@ html, body {
   color: var(--text);
   box-shadow: var(--glow-accent-2);
 }
-.stab.dragging { opacity: .55; }
-.stab.drop-before {
-  margin-left: var(--tab-snap-gap, 36px);
-  box-shadow: inset 2px 0 var(--accent-2);
-}
-.stab.drop-after {
-  margin-right: var(--tab-snap-gap, 36px);
-  box-shadow: inset -2px 0 var(--accent-2);
-}
+.stab[draggable="true"] { cursor: grab; }
+.stab.dragging { opacity: .4; cursor: grabbing; }
 .stab .dot {
   width: 7px;
   height: 7px;
