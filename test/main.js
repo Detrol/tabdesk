@@ -256,6 +256,28 @@ app.on('ready', async () => {
   ok('rad utan cwd ar inte meta', H.codexMeta('{"type":"event_msg"}') === null);
   ok('titel ur user_message',
     H.codexTitle(line({ type: 'event_msg', payload: { type: 'user_message', message: 'Fixa bygget' } })) === 'Fixa bygget');
+  const codexResponseTitle = line({
+    type: 'response_item',
+    payload: {
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Fixa nya formatet' }],
+    },
+  });
+  ok('titel ur response_item', H.codexTitle(codexResponseTitle) === 'Fixa nya formatet');
+  const codexInjectedContext = line({
+    type: 'response_item',
+    payload: {
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: '# AGENTS.md instructions for /srv/dev/tabdesk\n<INSTRUCTIONS>...' },
+        { type: 'input_text', text: '<environment_context>...</environment_context>' },
+      ],
+    },
+  });
+  ok('injicerad codex-kontext blir ingen titel',
+    H.codexTitle(codexInjectedContext + codexResponseTitle) === 'Fixa nya formatet');
   ok('utvecklarpreambel blir ingen titel',
     H.codexTitle(line({ payload: { type: 'message', role: 'developer', content: [{ text: 'hej' }] } })) === null);
 

@@ -206,11 +206,35 @@ function codexMeta(firstLine) {
 }
 
 // What the user actually said first. The transcript opens with developer and
-// tool preamble, so the first real turn is the one Codex records as a
-// user_message event.
+// tool preamble, so the first real turn comes after that context. Older Codex
+// versions duplicate it as a user_message event; newer ones only keep the
+// response_item.
 function codexTitle(text) {
   const m = /"user_message"[^\n]{0,120}?"message":"((?:[^"\\]|\\.)*)"/.exec(text);
-  return m ? clip(unquote(m[1])) : null;
+  if (m) return clip(unquote(m[1]));
+
+  // Newer Codex rollouts no longer duplicate user turns as user_message
+  // events. Their first user response_item is injected project context, so
+  // ignore those known wrappers and use the first actual input_text instead.
+  for (const raw of text.split('\n')) {
+    let record;
+    try { record = JSON.parse(raw); } catch (_) { continue; }
+    const payload = record && record.payload;
+    if (record.type !== 'response_item'
+      || !payload
+      || payload.type !== 'message'
+      || payload.role !== 'user'
+      || !Array.isArray(payload.content)) continue;
+
+    const prompt = payload.content
+      .filter((item) => item && item.type === 'input_text' && typeof item.text === 'string')
+      .map((item) => item.text.trim())
+      .find((value) => value
+        && !value.startsWith('# AGENTS.md instructions for ')
+        && !value.startsWith('<environment_context>'));
+    if (prompt) return clip(prompt);
+  }
+  return null;
 }
 
 async function codexDays(root) {
