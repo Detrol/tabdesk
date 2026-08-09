@@ -38,6 +38,7 @@ const syncTrust = require('./sync/trust');
 const syncPull = require('./sync/pullwatch');
 const syncKeys = require('./sync/keys');
 const syncInvite = require('./sync/invite');
+const tabOrder = require('./renderer/tab-order');
 
 // Where the rail's projects live — the user's stored choice, resolved (and
 // changeable) through projects-root.js. Null until first run has picked one.
@@ -121,8 +122,8 @@ function openTabs() {
 }
 
 function rememberTab(rec) {
-  const rest = openTabs().filter((r) => r.session !== rec.session);
-  settings.set('openTabs', [...rest, rec]);
+  const next = tabOrder.upsertRecord(openTabs(), rec);
+  if (next) settings.set('openTabs', next);
 }
 
 function forgetTab(session) {
@@ -941,6 +942,17 @@ app.whenReady().then(async () => {
     return next;
   });
 
+  ipcMain.handle('tabs:reorder', (event, sessions) => {
+    const next = tabOrder.reorderRecords(openTabs(), sessions);
+    if (!next) return false;
+    try {
+      settings.set('openTabs', next);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  });
+
   // What the rail should carry beyond the plain project list: the tabs that
   // were open last time, plus any td- session tmux is still holding that no
   // record claims — a session started before the registry existed, or one
@@ -972,8 +984,10 @@ app.whenReady().then(async () => {
     // leave the base name unused).
     const primary = (rec) => agents.list().some(
       (a) => rec.session === `td-${a.id}-${slugFor(rec.cwd)}`);
-    const done = (keep, orphans) => resolve([...keep, ...orphans]
-      .sort((a, b) => a.session.localeCompare(b.session))
+    const done = (keep, orphans) => resolve([
+      ...keep,
+      ...orphans.sort((a, b) => a.session.localeCompare(b.session)),
+    ]
       .map((r) => ({ ...r, primary: primary(r) })));
     try {
       execFile('tmux', ['ls', '-F', '#S #{session_path}'], (err, stdout) => {

@@ -44,6 +44,32 @@ const throws = (n, fn, code) => {
 };
 
 app.on('ready', async () => {
+  const TabOrder = require(path.join(ROOT, 'renderer/tab-order'));
+  console.log('== flikordning ==');
+  ok('flyttar fore malet',
+    JSON.stringify(TabOrder.move(['a', 'b', 'c'], 'c', 'a', false)) === JSON.stringify(['c', 'a', 'b']));
+  ok('flyttar efter malet',
+    JSON.stringify(TabOrder.move(['a', 'b', 'c'], 'a', 'b', true)) === JSON.stringify(['b', 'a', 'c']));
+  ok('samma plats ar no-op', TabOrder.move(['a', 'b', 'c'], 'a', 'b', false) === null);
+  ok('okand flik avvisas', TabOrder.move(['a', 'b'], 'x', 'a', false) === null);
+
+  const records = [
+    { session: 'a1', cwd: '/a', name: 'A1', agentSession: 'conv-a1' },
+    { session: 'b1', cwd: '/b', name: 'B1' },
+    { session: 'a2', cwd: '/a', name: 'A2' },
+  ];
+  const reordered = TabOrder.reorderRecords(records, ['a2', 'a1']);
+  ok('ordnar bara projektets poster',
+    reordered.map((r) => r.session).join(',') === 'a2,b1,a1',
+    reordered.map((r) => r.session).join(','));
+  ok('dubbletter avvisas', TabOrder.reorderRecords(records, ['a1', 'a1']) === null);
+  ok('okand session avvisas', TabOrder.reorderRecords(records, ['a1', 'x']) === null);
+
+  const updated = TabOrder.upsertRecord(records, { session: 'a1', name: 'Nytt namn' });
+  ok('uppdatering behaller plats', updated[0].session === 'a1' && updated[1].session === 'b1');
+  ok('uppdatering behaller metadata', updated[0].agentSession === 'conv-a1');
+  ok('ny post laggs sist', TabOrder.upsertRecord(records, { session: 'c1' })[3].session === 'c1');
+
   const C = require(path.join(ROOT, 'sync/crypto'));
   const K = require(path.join(ROOT, 'sync/keys'));
   const settings = require(path.join(ROOT, 'settings'));
