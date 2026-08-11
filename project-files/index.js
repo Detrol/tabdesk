@@ -137,6 +137,15 @@ function createProjectFiles(options = {}) {
     return current;
   }
 
+  function rootsStillValid(project, worktrees) {
+    if (!refreshProject(project)) return false;
+    for (const worktree of worktrees) {
+      const current = safeDirectory(io, worktree.logical);
+      if (!current || current.real !== worktree.real) return false;
+    }
+    return Boolean(refreshProject(project));
+  }
+
   function refreshRoots(project, worktrees) {
     const rootDirectories = [
       { logical: project.logical, real: project.real, kind: 'project', label: path.basename(project.logical) },
@@ -159,11 +168,20 @@ function createProjectFiles(options = {}) {
   async function openProject(projectPath) {
     const requested = safeDirectory(io, projectPath);
     const project = requested && byPath.get(requested.logical);
-    if (!project || !refreshProject(project)) return { ok: false, error: 'project-unavailable' };
+    if (!project) return { ok: false, error: 'project-unavailable' };
 
-    const worktrees = await verifiedWorktrees(project);
-    const roots = refreshRoots(project, worktrees);
-    return { ok: true, projectId: project.id, roots: roots.map(publicRoot) };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!refreshProject(project)) return { ok: false, error: 'project-unavailable' };
+      const worktrees = await verifiedWorktrees(project);
+      if (!rootsStillValid(project, worktrees)) {
+        if (!byPath.has(project.logical)) return { ok: false, error: 'project-unavailable' };
+        continue;
+      }
+      const roots = refreshRoots(project, worktrees);
+      return { ok: true, projectId: project.id, roots: roots.map(publicRoot) };
+    }
+
+    return { ok: false, error: 'project-unavailable' };
   }
 
   async function describeWorktrees(projectPath) {

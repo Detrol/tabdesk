@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const { createProjectFiles } = require('../project-files');
 
 function fixture() {
@@ -22,7 +22,7 @@ function git(cwd, args) {
 }
 
 function gitProject(project) {
-  git(project, ['init']);
+  git(project, ['init', '--initial-branch=main']);
   git(project, ['config', 'user.email', 'test@example.invalid']);
   git(project, ['config', 'user.name', 'TabDesk test']);
   fs.writeFileSync(path.join(project, '.gitignore'), '.worktrees/\n');
@@ -44,7 +44,7 @@ test('only an admitted project can be opened', async (t) => {
   assert.deepEqual(opened.roots.map(({ kind, label }) => ({ kind, label })), [
     { kind: 'project', label: 'project' },
   ]);
-  assert.equal(Object.hasOwn(opened.roots[0], 'path'), false);
+  assert.deepEqual(Object.keys(opened.roots[0]).sort(), ['id', 'kind', 'label']);
 });
 
 test('replaceAdmissions revokes paths no longer owned by that source', async (t) => {
@@ -75,7 +75,7 @@ test('offers only verified Git worktrees after the project root', async (t) => {
     { kind: 'project', label: 'project' },
     { kind: 'worktree', label: 'topic' },
   ]);
-  assert.equal(Object.hasOwn(opened.roots[1], 'path'), false);
+  assert.deepEqual(Object.keys(opened.roots[1]).sort(), ['id', 'kind', 'label']);
   assert.deepEqual(await files.describeWorktrees(fx.project), [
     { name: 'topic', path: worktree },
   ]);
@@ -123,4 +123,149 @@ test('admitSelection does not broaden a fake convention-folder selection', async
     projectPath: fake,
     selectedPath: fake,
   });
+});
+
+test('preserves root IDs across unchanged refreshes', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+
+  const first = await files.openProject(fx.project);
+  const second = await files.openProject(fx.project);
+  assert.deepEqual(second.roots, first.roots);
+});
+
+test('removes a vanished worktree root and reissues its ID if recreated', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+
+  const first = await files.openProject(fx.project);
+  const oldWorktreeId = first.roots.find((root) => root.kind === 'worktree').id;
+  git(fx.project, ['worktree', 'remove', '--force', worktree]);
+  assert.deepEqual((await files.openProject(fx.project)).roots.map((root) => root.kind), ['project']);
+  git(fx.project, ['worktree', 'add', '-b', 'replacement', worktree]);
+  const recreated = await files.openProject(fx.project);
+  assert.notEqual(recreated.roots.find((root) => root.kind === 'worktree').id, oldWorktreeId);
+});
+
+test('revokes an admitted project when its symlink is repointed', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const replacement = path.join(fx.base, 'replacement');
+  const link = path.join(fx.base, 'project-link');
+  fs.mkdirSync(replacement);
+  fs.symlinkSync(fx.project, link, 'dir');
+  const files = createProjectFiles();
+  files.admitProject(link, 'configured');
+  assert.equal((await files.openProject(link)).ok, true);
+
+  fs.unlinkSync(link);
+  fs.symlinkSync(replacement, link, 'dir');
+  assert.equal((await files.openProject(link)).error, 'project-unavailable');
+});
+
+test('reissues a worktree root ID when its symlink is repointed', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const firstWorktree = path.join(fx.base, 'first-worktree');
+  const secondWorktree = path.join(fx.base, 'second-worktree');
+  const link = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(link));
+  git(fx.project, ['worktree', 'add', '-b', 'first-topic', firstWorktree]);
+  git(fx.project, ['worktree', 'add', '-b', 'second-topic', secondWorktree]);
+  fs.symlinkSync(firstWorktree, link, 'dir');
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const first = await files.openProject(fx.project);
+  const oldWorktreeId = first.roots.find((root) => root.kind === 'worktree').id;
+
+  fs.unlinkSync(link);
+  fs.symlinkSync(secondWorktree, link, 'dir');
+  const repointed = await files.openProject(fx.project);
+  assert.notEqual(repointed.roots.find((root) => root.kind === 'worktree').id, oldWorktreeId);
+});
+
+test('rejects a project repointed during Git root discovery', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const replacement = path.join(fx.base, 'replacement');
+  const link = path.join(fx.base, 'project-link');
+  fs.mkdirSync(replacement);
+  fs.symlinkSync(fx.project, link, 'dir');
+  let repointed = false;
+  const files = createProjectFiles({
+    fs: {
+      statSync: fs.statSync,
+      realpathSync: fs.realpathSync,
+      readdirSync: fs.readdirSync,
+    },
+    execFile(file, args, options, callback) {
+      return execFile(file, args, options, (error, stdout, stderr) => {
+        if (!repointed && args.includes('--git-common-dir')) {
+          fs.unlinkSync(link);
+          fs.symlinkSync(replacement, link, 'dir');
+          repointed = true;
+        }
+        callback(error, stdout, stderr);
+      });
+    },
+  });
+  files.admitProject(link, 'configured');
+
+  const opened = await files.openProject(link);
+  assert.equal(repointed, true);
+  assert.equal(opened.error, 'project-unavailable');
+});
+
+test('retries worktree discovery when a worktree symlink is repointed mid-refresh', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const firstWorktree = path.join(fx.base, 'first-worktree');
+  const secondWorktree = path.join(fx.base, 'second-worktree');
+  const link = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(link));
+  git(fx.project, ['worktree', 'add', '-b', 'first-topic', firstWorktree]);
+  git(fx.project, ['worktree', 'add', '-b', 'second-topic', secondWorktree]);
+  fs.symlinkSync(firstWorktree, link, 'dir');
+  let repointOnGit = false;
+  let repointed = false;
+  const files = createProjectFiles({
+    fs: {
+      statSync: fs.statSync,
+      realpathSync: fs.realpathSync,
+      readdirSync: fs.readdirSync,
+    },
+    execFile(file, args, options, callback) {
+      return execFile(file, args, options, (error, stdout, stderr) => {
+        if (repointOnGit && !repointed && args.includes('--show-toplevel')) {
+          fs.unlinkSync(link);
+          fs.symlinkSync(secondWorktree, link, 'dir');
+          repointed = true;
+        }
+        callback(error, stdout, stderr);
+      });
+    },
+  });
+  files.admitProject(fx.project, 'configured');
+  const first = await files.openProject(fx.project);
+  const oldWorktreeId = first.roots.find((root) => root.kind === 'worktree').id;
+
+  repointOnGit = true;
+  const refreshed = await files.openProject(fx.project);
+  assert.equal(repointed, true);
+  assert.notEqual(refreshed.roots.find((root) => root.kind === 'worktree').id, oldWorktreeId);
 });
