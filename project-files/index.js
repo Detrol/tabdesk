@@ -575,8 +575,9 @@ function createProjectFiles(options = {}) {
     if (owner.token !== token || watchersClosed) return { ok: false, error: 'watch-failed' };
     if (selected.error) return { ok: false, error: selected.error };
 
+    let acceptingEvents = false;
     const candidate = await createRootWatcher(selected.root, (hint) => {
-      if (owner.token !== token || watchersClosed) return;
+      if (!acceptingEvents || owner.token !== token || watchersClosed) return;
       emit({
         projectId: request.projectId,
         rootId: request.rootId,
@@ -598,6 +599,7 @@ function createProjectFiles(options = {}) {
     }
 
     owner.active = candidate;
+    acceptingEvents = true;
     return { ok: true };
   }
 

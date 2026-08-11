@@ -27,8 +27,8 @@ function isTemporary(parts) {
 function normalizedWatchPath(root, value, io = fs) {
   if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\0')) return null;
   const absolute = path.resolve(value);
-  if (!contained(root.logical, absolute)) return null;
-  const relative = path.relative(root.logical, absolute);
+  if (!contained(root.real, absolute)) return null;
+  const relative = path.relative(root.real, absolute);
   const parts = relative ? relative.split(path.sep) : [];
   if (parts.includes('.git') || isTemporary(parts)) return null;
 
@@ -54,7 +54,7 @@ async function createRootWatcher(root, emit, options = {}) {
   let watcher;
 
   try {
-    watcher = await Promise.resolve(watchFactory(root.logical, {
+    watcher = await Promise.resolve(watchFactory(root.real, {
       ignoreInitial: true,
       persistent: true,
       followSymlinks: false,

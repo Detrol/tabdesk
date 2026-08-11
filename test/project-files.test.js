@@ -1296,6 +1296,39 @@ test('coalesces file watcher hints into opaque relative events', async (t) => {
   assert.equal(events.every((event) => !path.isAbsolute(event.path)), true);
 });
 
+test('watches and normalizes from the verified target of a symlink-spelled root', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const link = path.join(fx.base, 'project-link');
+  fs.symlinkSync(fx.project, link, 'dir');
+  const nested = path.join(fx.project, 'nested');
+  const target = path.join(nested, 'opaque # å.txt');
+  fs.mkdirSync(nested);
+  fs.writeFileSync(target, 'content');
+  const scheduler = manualScheduler();
+  const watcher = new FakeRootWatcher();
+  let watchedPath;
+  const files = createProjectFiles({
+    watchFactory(root) {
+      watchedPath = root;
+      return watcher;
+    },
+    scheduler,
+  });
+  t.after(() => files.close());
+  files.admitProject(link, 'configured');
+  const ids = await openedRoot(files, link);
+  const events = [];
+
+  assert.deepEqual(await files.watch('renderer-1', ids, (event) => events.push(event)), { ok: true });
+  assert.equal(watchedPath, fx.project);
+  watcher.emit('change', target);
+  scheduler.flush();
+
+  assert.deepEqual(events, [{ ...ids, path: 'nested/opaque # å.txt', kind: 'changed' }]);
+  assert.equal(path.isAbsolute(events[0].path), false);
+});
+
 test('normalizes directory hints and suppresses unsafe watcher paths', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -1348,6 +1381,53 @@ test('normalizes directory hints and suppresses unsafe watcher paths', async (t)
     { ...ids, path: '.git-archive/visible.txt', kind: 'changed' },
     { ...ids, path: 'space # å.txt', kind: 'changed' },
   ]);
+});
+
+test('does not emit from a candidate whose root fails final validation', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const replacement = path.join(fx.base, 'replacement');
+  const link = path.join(fx.base, 'project-link');
+  fs.mkdirSync(replacement);
+  fs.symlinkSync(fx.project, link, 'dir');
+  const scheduler = manualScheduler();
+  const watcher = new FakeRootWatcher();
+  const files = createProjectFiles({ watchFactory: () => watcher, scheduler });
+  files.admitProject(link, 'configured');
+  const ids = await openedRoot(files, link);
+  const events = [];
+
+  const request = files.watch('renderer-1', ids, (event) => events.push(event));
+  await Promise.resolve();
+  await Promise.resolve();
+  fs.unlinkSync(link);
+  fs.symlinkSync(replacement, link, 'dir');
+  watcher.emit('change', path.join(fx.project, 'before-install.txt'));
+  scheduler.flush();
+
+  assert.deepEqual(await request, { ok: false, error: 'project-unavailable' });
+  assert.equal(watcher.closed, true);
+  assert.deepEqual(events, []);
+});
+
+test('reports but does not emit a watcher error before candidate installation', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const scheduler = manualScheduler();
+  const watcher = new FakeRootWatcher();
+  const files = createProjectFiles({ watchFactory: () => watcher, scheduler });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+  const events = [];
+
+  const request = files.watch('renderer-1', ids, (event) => events.push(event));
+  await Promise.resolve();
+  await Promise.resolve();
+  watcher.emit('error', new Error(`/private/pre-install/${fx.project}`));
+
+  assert.deepEqual(await request, { ok: false, error: 'watch-failed' });
+  assert.equal(watcher.closed, true);
+  assert.deepEqual(events, []);
 });
 
 test('replaces the active watcher owned by one renderer', async (t) => {
