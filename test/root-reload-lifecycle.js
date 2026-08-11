@@ -22,8 +22,10 @@ function ok(name, condition, detail) {
 app.whenReady().then(async () => {
   let window;
   let interleavedWindow;
+  let closeWindow;
   let gate;
   let interleavedGate;
+  let closeGate;
   try {
     fs.writeFileSync(FIXTURE, `<!doctype html><meta charset="utf-8"><script>
       const { ipcRenderer } = require('electron');
@@ -93,38 +95,86 @@ app.whenReady().then(async () => {
     await interleavedWindow.loadFile(FIXTURE);
     await interleavedWindow.webContents.executeJavaScript('document.body.click(); true', true);
     const interleavedEffects = [];
+    let matchingNavigations = 0;
+    let rendererDeaths = 0;
+    interleavedWindow.webContents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) matchingNavigations += 1;
+    });
+    interleavedWindow.webContents.on('render-process-gone', () => { rendererDeaths += 1; });
     interleavedGate = createRendererLeaveGate({
       ipcMain,
       decisionTimeoutMs: 1000,
-      navigationTimeoutMs: 1000,
-      makeToken: () => 'real-close-token',
+      navigationTimeoutMs: 50,
+      makeToken: () => 'real-timeout-token',
     });
     const interleavedResultPromise = interleavedGate.run(interleavedWindow.webContents, {
       ownerWindow: interleavedWindow,
-      commit: () => { interleavedEffects.push('persist'); return { ok: true, path: '/close-root' }; },
+      commit: () => { interleavedEffects.push('persist'); return { ok: true, path: '/timeout-root' }; },
       rollback: () => { interleavedEffects.push('rollback'); return { ok: true }; },
       finalize: () => { interleavedEffects.push('finalize'); },
     });
-    // The gate listener was registered synchronously by run(), so this listener
-    // executes after its preventDefault() has made the reload irreversible but
-    // before Electron emits did-start-navigation for the accepted reload.
+    let timeoutOverrideObserved = false;
     interleavedWindow.webContents.once('will-prevent-unload', () => {
-      interleavedGate.close();
+      timeoutOverrideObserved = true;
+      interleavedWindow.webContents.stop();
     });
     const interleavedResult = await interleavedResultPromise;
-    ok('a real gate close inside the post-override interval keeps the reload committed',
+    ok('post-override timeout replaces the real renderer before reporting success',
       interleavedResult.ok === true
-        && interleavedResult.path === '/close-root'
+        && interleavedResult.path === '/timeout-root'
+        && timeoutOverrideObserved
+        && matchingNavigations === 0
+        && (rendererDeaths > 0 || interleavedWindow.webContents.isDestroyed())
         && interleavedEffects.join(',') === 'persist,finalize',
-      JSON.stringify({ interleavedResult, interleavedEffects }));
+      JSON.stringify({ interleavedResult, interleavedEffects, timeoutOverrideObserved,
+        matchingNavigations, rendererDeaths, destroyed: interleavedWindow.webContents.isDestroyed() }));
+
+    closeWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { contextIsolation: false, nodeIntegration: true },
+    });
+    await closeWindow.loadFile(FIXTURE);
+    await closeWindow.webContents.executeJavaScript('document.body.click(); true', true);
+    const closeEffects = [];
+    let closed = false;
+    closeWindow.once('closed', () => { closed = true; });
+    closeGate = createRendererLeaveGate({
+      ipcMain,
+      decisionTimeoutMs: 1000,
+      navigationTimeoutMs: 100,
+      makeToken: () => 'real-close-token',
+    });
+    const closeResultPromise = closeGate.run(closeWindow.webContents, {
+      ownerWindow: closeWindow,
+      commit: () => { closeEffects.push('persist'); return { ok: true, path: '/close-root' }; },
+      rollback: () => { closeEffects.push('rollback'); return { ok: true }; },
+      finalize: () => { closeEffects.push('finalize'); },
+    });
+    closeWindow.webContents.once('will-prevent-unload', () => {
+      closeWindow.webContents.stop();
+      setTimeout(() => {
+        if (!closeWindow.isDestroyed()) closeWindow.close();
+      }, 10);
+    });
+    const closeResult = await closeResultPromise;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    ok('queued real BrowserWindow close reaches closed after the approved unload',
+      closeResult.ok === true
+        && closeResult.path === '/close-root'
+        && closed
+        && closeWindow.isDestroyed()
+        && closeEffects.join(',') === 'persist,finalize',
+      JSON.stringify({ closeResult, closeEffects, closed, destroyed: closeWindow.isDestroyed() }));
   } catch (error) {
     failures += 1;
     console.error(error && error.stack ? error.stack : error);
   } finally {
     if (gate) gate.close();
     if (interleavedGate) interleavedGate.close();
+    if (closeGate) closeGate.close();
     if (window && !window.isDestroyed()) window.destroy();
     if (interleavedWindow && !interleavedWindow.isDestroyed()) interleavedWindow.destroy();
+    if (closeWindow && !closeWindow.isDestroyed()) closeWindow.destroy();
     try { fs.rmSync(PROFILE, { recursive: true, force: true }); } catch (_) { /* gone */ }
     app.exit(failures ? 1 : 0);
   }

@@ -38,26 +38,38 @@ function createRendererLeaveGate({
     try { request.sender.send(ROOT_TRANSITION_ABORT, { token: request.token }); } catch (_) { /* gone */ }
   }
 
-  function complete(request, result, { abort = true } = {}) {
-    if (active !== request) return;
-    active = null;
-    clearTimer(request);
+  function detach(request) {
     request.sender.removeListener('destroyed', request.onDestroyed);
+    request.sender.removeListener('render-process-gone', request.onRenderProcessGone);
     request.sender.removeListener('devtools-reload-page', request.onExternalReload);
     request.sender.removeListener('did-start-navigation', request.onNavigation);
     request.sender.removeListener('will-frame-navigate', request.onFrameNavigate);
     request.sender.removeListener('will-prevent-unload', request.onPreventUnload);
-    if (request.ownerWindow) request.ownerWindow.removeListener('close', request.onClose);
+    if (request.ownerWindow) {
+      request.ownerWindow.removeListener('close', request.onClose);
+      request.ownerWindow.removeListener('closed', request.onOwnerClosed);
+    }
+  }
+
+  function settleCommitted(request) {
+    if (active !== request) return;
+    active = null;
+    clearTimer(request);
+    detach(request);
+    try { request.finalize(); } catch (_) { /* renderer replacement is already committed */ }
+    request.resolve(request.commitResult);
+  }
+
+  function fail(request, result, { abort = true } = {}) {
+    if (active !== request) return;
     if (request.unloadAllowed) {
-      request.navigationAccepted = true;
-      result = request.commitResult;
-      abort = false;
+      beginRendererRecovery(request);
+      return;
     }
-    if (request.navigationAccepted && !request.finalized) {
-      request.finalized = true;
-      try { request.finalize(); } catch (_) { /* unload is already committed */ }
-    }
-    if (request.committed && !request.navigationAccepted) {
+    active = null;
+    clearTimer(request);
+    detach(request);
+    if (request.committed) {
       request.committed = false;
       try {
         const rollback = request.rollback();
@@ -68,18 +80,61 @@ function createRendererLeaveGate({
     }
     if (abort) sendAbort(request);
     request.resolve(result);
-    if (request.queuedClose && request.ownerWindow) {
-      queueMicrotask(() => {
+  }
+
+  function startTimer(request, timeoutMs, onTimeout) {
+    clearTimer(request);
+    request.timer = setTimeout(() => {
+      request.timer = null;
+      if (active === request) onTimeout();
+    }, timeoutMs);
+  }
+
+  function beginForcedClose(request) {
+    if (active !== request || request.phase === 'closing') return;
+    request.phase = 'closing';
+    clearTimer(request);
+    setImmediate(() => {
+      if (active !== request) return;
+      const owner = request.ownerWindow;
+      if (owner) {
         try {
-          if (!request.ownerWindow.isDestroyed()) request.ownerWindow.close();
-        } catch (_) { /* owner disappeared with the committed unload */ }
-      });
+          if (owner.isDestroyed()) {
+            settleCommitted(request);
+            return;
+          }
+          owner.destroy();
+          if (active === request && owner.isDestroyed()) settleCommitted(request);
+          return;
+        } catch (_) { /* fall through to force-close the web contents */ }
+      }
+      try {
+        if (request.sender.isDestroyed()) {
+          settleCommitted(request);
+          return;
+        }
+        request.sender.close({ waitForBeforeUnload: false });
+        if (active === request && request.sender.isDestroyed()) settleCommitted(request);
+      } catch (_) { /* destroyed event remains the terminal signal */ }
+    });
+  }
+
+  function beginRendererRecovery(request) {
+    if (active !== request || request.phase === 'recovering' || request.phase === 'closing') return;
+    request.phase = 'recovering';
+    startTimer(request, navigationTimeoutMs, () => beginForcedClose(request));
+    try {
+      request.sender.forcefullyCrashRenderer();
+      if (active !== request) return;
+      request.sender.reload();
+    } catch (_) {
+      beginForcedClose(request);
     }
   }
 
-  function startTimer(request, timeoutMs, error) {
-    clearTimer(request);
-    request.timer = setTimeout(() => complete(request, { ok: false, error }), timeoutMs);
+  function awaitsOwnerClose(request) {
+    if (request.phase !== 'closing' || !request.ownerWindow) return false;
+    try { return !request.ownerWindow.isDestroyed(); } catch (_) { return false; }
   }
 
   function onResponse(event, response = {}) {
@@ -88,7 +143,7 @@ function createRendererLeaveGate({
       || response.token !== request.token || event.sender !== request.sender) return;
     clearTimer(request);
     if (response.approved !== true) {
-      complete(request, { ok: false, canceled: true, error: 'canceled' });
+      fail(request, { ok: false, canceled: true, error: 'canceled' });
       return;
     }
     request.phase = 'committing';
@@ -99,38 +154,40 @@ function createRendererLeaveGate({
         throw new Error('root transition commit must be synchronous');
       }
     } catch (error) {
-      complete(request, {
+      fail(request, {
         ok: false,
         error: error && error.code ? error.code : 'persist-failed',
       });
       return;
     }
     if (result && result.ok === false) {
-      complete(request, result);
+      fail(request, result);
       return;
     }
     request.committed = true;
     request.commitResult = result && typeof result === 'object' ? result : { ok: true };
     if (request.interrupted) {
-      complete(request, { ok: false, error: 'navigation-changed' });
+      fail(request, { ok: false, error: 'navigation-changed' });
       return;
     }
     try {
       request.expectedUrl = request.sender.getURL();
     } catch (_) {
-      complete(request, { ok: false, error: 'renderer-unavailable' });
+      fail(request, { ok: false, error: 'renderer-unavailable' });
       return;
     }
     request.phase = 'reload';
-    startTimer(request, navigationTimeoutMs, 'reload-start-timeout');
+    startTimer(request, navigationTimeoutMs, () => {
+      if (request.unloadAllowed) beginRendererRecovery(request);
+      else fail(request, { ok: false, error: 'reload-start-timeout' });
+    });
     // Electron delivers the unload/navigation events asynchronously. There is
-    // deliberately no await or callback gap between arming this state and the
-    // only main-process reload call allowed to own it.
-    request.reloadIssued = true;
+    // deliberately no await or callback gap between arming the reload phase and
+    // the only main-process reload call allowed to own it.
     try {
       request.sender.reload();
     } catch (_) {
-      complete(request, { ok: false, error: 'reload-failed' });
+      fail(request, { ok: false, error: 'reload-failed' });
     }
   }
 
@@ -162,31 +219,42 @@ function createRendererLeaveGate({
         commitResult: null,
         expectedUrl: null,
         interrupted: false,
-        reloadIssued: false,
         unloadAllowed: false,
-        navigationAccepted: false,
-        finalized: false,
-        queuedClose: false,
         timer: null,
         onDestroyed: null,
+        onRenderProcessGone: null,
+        onOwnerClosed: null,
         onClose: null,
         onExternalReload: null,
         onFrameNavigate: null,
         onNavigation: null,
         onPreventUnload: null,
       };
-      request.onDestroyed = () => complete(request, { ok: false, error: 'renderer-unavailable' });
+      request.onDestroyed = () => {
+        if (awaitsOwnerClose(request)) return;
+        if (request.unloadAllowed) settleCommitted(request);
+        else fail(request, { ok: false, error: 'renderer-unavailable' });
+      };
+      request.onRenderProcessGone = () => {
+        if (awaitsOwnerClose(request)) return;
+        if (request.unloadAllowed) settleCommitted(request);
+        else fail(request, { ok: false, error: 'renderer-unavailable' });
+      };
+      request.onOwnerClosed = () => {
+        if (request.unloadAllowed) settleCommitted(request);
+        else fail(request, { ok: false, error: 'navigation-changed' });
+      };
       request.onClose = (event) => {
         event.preventDefault();
         if (request.unloadAllowed) {
-          request.queuedClose = true;
+          beginForcedClose(request);
           return;
         }
         if (request.phase === 'committing') {
           request.interrupted = true;
           return;
         }
-        complete(request, { ok: false, error: 'navigation-changed' });
+        fail(request, { ok: false, error: 'navigation-changed' });
       };
       request.onExternalReload = () => {
         if (request.unloadAllowed) return;
@@ -194,7 +262,7 @@ function createRendererLeaveGate({
           request.interrupted = true;
           return;
         }
-        complete(request, { ok: false, error: 'navigation-changed' });
+        fail(request, { ok: false, error: 'navigation-changed' });
       };
       request.onNavigation = (details = {}) => {
         if (!details.isMainFrame || details.isSameDocument) return;
@@ -202,21 +270,17 @@ function createRendererLeaveGate({
           request.interrupted = true;
           return;
         }
-        const matchesIssuedReload = request.phase === 'reload' && request.reloadIssued
+        const matchesIssuedReload = (request.phase === 'reload' || request.phase === 'recovering')
           && details.url === request.expectedUrl;
         if (matchesIssuedReload) {
-          clearTimer(request);
-          request.navigationAccepted = true;
-          complete(request, request.commitResult, { abort: false });
+          settleCommitted(request);
           return;
         }
         if (request.unloadAllowed) {
-          // Electron cannot identify which same-tick navigation consumed an
-          // already-granted unload. The durable commit is now irreversible.
-          complete(request, request.commitResult, { abort: false });
+          beginRendererRecovery(request);
           return;
         }
-        complete(request, { ok: false, error: 'navigation-changed' });
+        fail(request, { ok: false, error: 'navigation-changed' });
       };
       request.onFrameNavigate = (details = {}) => {
         if (!details.isMainFrame) return;
@@ -226,33 +290,37 @@ function createRendererLeaveGate({
           request.interrupted = true;
           return;
         }
-        complete(request, { ok: false, error: 'navigation-changed' });
+        fail(request, { ok: false, error: 'navigation-changed' });
       };
       request.onPreventUnload = (event) => {
         if (request.phase === 'committing') {
           request.interrupted = true;
           return;
         }
-        if (request.phase === 'reload' && request.reloadIssued && !request.unloadAllowed) {
+        if (request.phase === 'reload' && !request.unloadAllowed) {
           request.unloadAllowed = true;
           request.sender.removeListener('will-prevent-unload', request.onPreventUnload);
+          startTimer(request, navigationTimeoutMs, () => beginRendererRecovery(request));
           event.preventDefault();
           return;
         }
-        complete(request, { ok: false, error: 'navigation-changed' });
+        fail(request, { ok: false, error: 'navigation-changed' });
       };
       active = request;
       sender.once('destroyed', request.onDestroyed);
+      sender.on('render-process-gone', request.onRenderProcessGone);
       sender.on('devtools-reload-page', request.onExternalReload);
       sender.on('did-start-navigation', request.onNavigation);
       sender.on('will-frame-navigate', request.onFrameNavigate);
       sender.on('will-prevent-unload', request.onPreventUnload);
       if (ownerWindow) ownerWindow.on('close', request.onClose);
-      startTimer(request, decisionTimeoutMs, 'leave-timeout');
+      if (ownerWindow) ownerWindow.once('closed', request.onOwnerClosed);
+      startTimer(request, decisionTimeoutMs,
+        () => fail(request, { ok: false, error: 'leave-timeout' }));
       try {
         sender.send(ROOT_LEAVE_REQUEST, { token });
       } catch (_) {
-        complete(request, { ok: false, error: 'renderer-unavailable' });
+        fail(request, { ok: false, error: 'renderer-unavailable' });
       }
     });
   }
@@ -260,7 +328,10 @@ function createRendererLeaveGate({
   return {
     run,
     close() {
-      if (active) complete(active, { ok: false, error: 'gate-closed' });
+      if (active) {
+        if (active.unloadAllowed) beginForcedClose(active);
+        else fail(active, { ok: false, error: 'gate-closed' });
+      }
       ipcMain.removeListener(ROOT_LEAVE_RESPONSE, onResponse);
     },
   };

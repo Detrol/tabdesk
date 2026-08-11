@@ -248,19 +248,23 @@ test('window close after the root reload is issued cannot consume its unload exc
   assert.deepEqual(effects, ['persist', 'rollback']);
 });
 
-test('post-override terminal paths keep the durable root committed and finalize once', async (t) => {
-  for (const scenario of ['close/app-quit', 'devtools-reload', 'gate-close', 'timeout', 'destroyed', 'wrong-navigation']) {
+test('post-override terminal paths require navigation or renderer/window death', async (t) => {
+  for (const scenario of ['devtools-reload', 'gate-close', 'destroyed', 'wrong-navigation']) {
     await t.test(scenario, async () => {
       const harness = leaveHarness({ navigation: 'deferred' });
       const ownerWindow = new EventEmitter();
-      let replayedCloses = 0;
-      let closePrevented = false;
+      let forcedCloses = 0;
+      let ownerDestroyed = false;
       let unloadAllowed = false;
-      ownerWindow.close = () => { replayedCloses += 1; };
-      ownerWindow.isDestroyed = () => false;
+      ownerWindow.destroy = () => {
+        forcedCloses += 1;
+        ownerDestroyed = true;
+        ownerWindow.emit('closed');
+      };
+      ownerWindow.isDestroyed = () => ownerDestroyed;
       const effects = [];
       const gate = createGate(harness, ['leave-token'], {
-        navigationTimeoutMs: scenario === 'timeout' ? 5 : 30,
+        navigationTimeoutMs: 30,
       });
       const resultPromise = gate.run(harness.sender, {
         ownerWindow,
@@ -273,12 +277,7 @@ test('post-override terminal paths keep the durable root committed and finalize 
         preventDefault() { unloadAllowed = true; },
       });
 
-      if (scenario === 'close/app-quit') {
-        // BrowserWindow.close() and app.quit() converge on the same owner close
-        // event. Repeated attempts must queue only one close replay.
-        ownerWindow.emit('close', { preventDefault() { closePrevented = true; } });
-        ownerWindow.emit('close', { preventDefault() { closePrevented = true; } });
-      } else if (scenario === 'devtools-reload') {
+      if (scenario === 'devtools-reload') {
         harness.sender.emit('devtools-reload-page');
       } else if (scenario === 'gate-close') {
         gate.close();
@@ -286,7 +285,7 @@ test('post-override terminal paths keep the durable root committed and finalize 
         harness.destroy();
       }
 
-      if (scenario === 'close/app-quit' || scenario === 'devtools-reload') {
+      if (scenario === 'devtools-reload') {
         harness.sender.emit('did-start-navigation', {
           url: harness.sender.getURL(),
           isMainFrame: true,
@@ -306,10 +305,110 @@ test('post-override terminal paths keep the durable root committed and finalize 
       assert.equal(unloadAllowed, true);
       assert.deepEqual(result, { ok: true, path: '/new-root' });
       assert.deepEqual(effects, ['persist', 'finalize']);
-      assert.equal(closePrevented, scenario === 'close/app-quit');
-      assert.equal(replayedCloses, scenario === 'close/app-quit' ? 1 : 0);
+      assert.equal(forcedCloses,
+        scenario === 'gate-close' || scenario === 'wrong-navigation' ? 1 : 0);
     });
   }
+});
+
+test('post-override timeout replaces the live renderer before reporting committed success', async () => {
+  const harness = leaveHarness({ navigation: 'deferred' });
+  const ownerWindow = new EventEmitter();
+  ownerWindow.isDestroyed = () => false;
+  let rendererDeaths = 0;
+  harness.sender.forcefullyCrashRenderer = () => {
+    rendererDeaths += 1;
+    queueMicrotask(() => harness.sender.emit('render-process-gone', {}, { reason: 'killed' }));
+  };
+  const effects = [];
+  const gate = createGate(harness, ['leave-token'], { navigationTimeoutMs: 5 });
+  const resultPromise = gate.run(harness.sender, {
+    ownerWindow,
+    commit: () => { effects.push('persist'); return { ok: true, path: '/new-root' }; },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+    finalize: () => { effects.push('finalize'); },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.sender.emit('will-prevent-unload', { preventDefault() {} });
+
+  const result = await resultPromise;
+  gate.close();
+
+  assert.deepEqual(result, { ok: true, path: '/new-root' });
+  assert.equal(rendererDeaths, 1);
+  assert.equal(harness.reloads(), 2);
+  assert.deepEqual(effects, ['persist', 'finalize']);
+});
+
+test('post-override recovery timeout force-closes a still-live owner', async () => {
+  const harness = leaveHarness({ navigation: 'deferred' });
+  const ownerWindow = new EventEmitter();
+  let ownerDestroyed = false;
+  let rendererCrashes = 0;
+  ownerWindow.isDestroyed = () => ownerDestroyed;
+  ownerWindow.destroy = () => {
+    ownerDestroyed = true;
+    ownerWindow.emit('closed');
+  };
+  harness.sender.forcefullyCrashRenderer = () => { rendererCrashes += 1; };
+  const effects = [];
+  const gate = createGate(harness, ['leave-token'], { navigationTimeoutMs: 5 });
+  const resultPromise = gate.run(harness.sender, {
+    ownerWindow,
+    commit: () => { effects.push('persist'); return { ok: true, path: '/new-root' }; },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+    finalize: () => { effects.push('finalize'); },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.sender.emit('will-prevent-unload', { preventDefault() {} });
+
+  const result = await resultPromise;
+  gate.close();
+
+  assert.deepEqual(result, { ok: true, path: '/new-root' });
+  assert.equal(rendererCrashes, 1);
+  assert.equal(harness.reloads(), 2);
+  assert.equal(ownerDestroyed, true);
+  assert.deepEqual(effects, ['persist', 'finalize']);
+});
+
+test('post-override close or app quit force-closes the owner before resolving', async () => {
+  const harness = leaveHarness({ navigation: 'deferred' });
+  const ownerWindow = new EventEmitter();
+  let destroyed = false;
+  let forcedCloses = 0;
+  let closePrevented = false;
+  ownerWindow.isDestroyed = () => destroyed;
+  ownerWindow.destroy = () => {
+    forcedCloses += 1;
+    destroyed = true;
+    ownerWindow.emit('closed');
+  };
+  const effects = [];
+  const gate = createGate(harness, ['leave-token'], { navigationTimeoutMs: 30 });
+  const resultPromise = gate.run(harness.sender, {
+    ownerWindow,
+    commit: () => { effects.push('persist'); return { ok: true, path: '/new-root' }; },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+    finalize: () => { effects.push('finalize'); },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.sender.emit('will-prevent-unload', { preventDefault() {} });
+  ownerWindow.emit('close', { preventDefault() { closePrevented = true; } });
+  ownerWindow.emit('close', { preventDefault() { closePrevented = true; } });
+  harness.destroy();
+
+  const result = await resultPromise;
+  gate.close();
+
+  assert.deepEqual(result, { ok: true, path: '/new-root' });
+  assert.equal(closePrevented, true);
+  assert.equal(forcedCloses, 1);
+  assert.equal(destroyed, true);
+  assert.deepEqual(effects, ['persist', 'finalize']);
+  assert.equal(harness.sender.listenerCount('render-process-gone'), 0);
+  assert.equal(ownerWindow.listenerCount('close'), 0);
+  assert.equal(ownerWindow.listenerCount('closed'), 0);
 });
 
 function createGate(harness, tokens = ['leave-token'], timeouts = {}) {
