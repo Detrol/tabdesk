@@ -1307,10 +1307,12 @@ test('watches and normalizes from the verified target of a symlink-spelled root'
   fs.writeFileSync(target, 'content');
   const scheduler = manualScheduler();
   const watcher = new FakeRootWatcher();
-  let watchedPath;
+  let watchedPaths;
+  let watchOptions;
   const files = createProjectFiles({
-    watchFactory(root) {
-      watchedPath = root;
+    watchFactory(roots, options) {
+      watchedPaths = roots;
+      watchOptions = options;
       return watcher;
     },
     scheduler,
@@ -1321,12 +1323,77 @@ test('watches and normalizes from the verified target of a symlink-spelled root'
   const events = [];
 
   assert.deepEqual(await files.watch('renderer-1', ids, (event) => events.push(event)), { ok: true });
-  assert.equal(watchedPath, fx.project);
+  assert.deepEqual(watchedPaths, [fx.project, link]);
+  assert.equal(watchOptions.followSymlinks, false);
+  assert.equal(watchOptions.ignored(link), false);
+  assert.equal(watchOptions.ignored(path.join(link, 'nested')), true);
+  assert.equal(watchOptions.ignored(path.join(fx.base, 'other-outside')), true);
   watcher.emit('change', target);
   scheduler.flush();
 
   assert.deepEqual(events, [{ ...ids, path: 'nested/opaque # å.txt', kind: 'changed' }]);
   assert.equal(path.isAbsolute(events[0].path), false);
+});
+
+test('fails and closes when a watched logical root symlink is deleted', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const link = path.join(fx.base, 'project-link');
+  const target = path.join(fx.project, 'old-target.txt');
+  fs.symlinkSync(fx.project, link, 'dir');
+  fs.writeFileSync(target, 'content');
+  const scheduler = manualScheduler();
+  const watcher = new FakeRootWatcher();
+  const files = createProjectFiles({ watchFactory: () => watcher, scheduler });
+  files.admitProject(link, 'configured');
+  const ids = await openedRoot(files, link);
+  const events = [];
+  await files.watch('renderer-1', ids, (event) => events.push(event));
+
+  watcher.emit('change', target);
+  assert.equal(scheduler.size, 1);
+  fs.unlinkSync(link);
+  watcher.emit('unlink', link);
+  watcher.emit('change', target);
+  scheduler.flush();
+
+  assert.equal(watcher.closed, true);
+  assert.equal(watcher.closeCalls, 1);
+  assert.equal(scheduler.size, 0);
+  assert.deepEqual(events, [{ ...ids, path: '', kind: 'watch-failed' }]);
+  assert.equal(JSON.stringify(events).includes(fx.project), false);
+  assert.equal(JSON.stringify(events).includes(link), false);
+});
+
+test('revalidates a logical root symlink before emitting a queued real-target hint', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const replacement = path.join(fx.base, 'replacement');
+  const link = path.join(fx.base, 'project-link');
+  const target = path.join(fx.project, 'old-target.txt');
+  fs.mkdirSync(replacement);
+  fs.symlinkSync(fx.project, link, 'dir');
+  fs.writeFileSync(target, 'content');
+  const scheduler = manualScheduler();
+  const watcher = new FakeRootWatcher();
+  const files = createProjectFiles({ watchFactory: () => watcher, scheduler });
+  files.admitProject(link, 'configured');
+  const ids = await openedRoot(files, link);
+  const events = [];
+  await files.watch('renderer-1', ids, (event) => events.push(event));
+
+  watcher.emit('change', target);
+  fs.unlinkSync(link);
+  fs.symlinkSync(replacement, link, 'dir');
+  scheduler.flush();
+  watcher.emit('change', target);
+
+  assert.equal(watcher.closed, true);
+  assert.equal(watcher.closeCalls, 1);
+  assert.equal(scheduler.size, 0);
+  assert.deepEqual(events, [{ ...ids, path: '', kind: 'watch-failed' }]);
+  assert.equal(JSON.stringify(events).includes(fx.project), false);
+  assert.equal(JSON.stringify(events).includes(link), false);
 });
 
 test('normalizes directory hints and suppresses unsafe watcher paths', async (t) => {

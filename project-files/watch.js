@@ -24,6 +24,21 @@ function isTemporary(parts) {
   return parts.some((part) => part.includes('.tabdesk-'));
 }
 
+function isLogicalRoot(root, value) {
+  return root.logical !== root.real && typeof value === 'string' && path.isAbsolute(value)
+    && !value.includes('\0') && path.resolve(value) === root.logical;
+}
+
+function sameRootIdentity(root, io = fs) {
+  try {
+    const stats = io.statSync(root.logical);
+    return stats.isDirectory() && io.realpathSync(root.logical) === root.real
+      && stats.dev === root.dev && stats.ino === root.ino && stats.birthtimeMs === root.birthtimeMs;
+  } catch (_) {
+    return false;
+  }
+}
+
 function normalizedWatchPath(root, value, io = fs) {
   if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\0')) return null;
   const absolute = path.resolve(value);
@@ -43,6 +58,7 @@ function normalizedWatchPath(root, value, io = fs) {
 }
 
 function blockedWatchPath(root, absolute, io = fs) {
+  if (isLogicalRoot(root, absolute)) return false;
   return normalizedWatchPath(root, absolute, io) === null;
 }
 
@@ -54,7 +70,8 @@ async function createRootWatcher(root, emit, options = {}) {
   let watcher;
 
   try {
-    watcher = await Promise.resolve(watchFactory(root.real, {
+    const watchPaths = root.logical === root.real ? root.real : [root.real, root.logical];
+    watcher = await Promise.resolve(watchFactory(watchPaths, {
       ignoreInitial: true,
       persistent: true,
       followSymlinks: false,
@@ -105,6 +122,11 @@ async function createRootWatcher(root, emit, options = {}) {
 
   function queue(event, absolute) {
     if (closed) return;
+    if (!sameRootIdentity(root, io)) {
+      fail();
+      return;
+    }
+    if (isLogicalRoot(root, absolute)) return;
     const relative = normalizedWatchPath(root, absolute, io);
     if (relative === null) return;
     if (event === 'unlinkDir' && relative === '') {
@@ -115,7 +137,12 @@ async function createRootWatcher(root, emit, options = {}) {
     if (previous !== undefined) scheduler.clearTimeout(previous);
     const timer = scheduler.setTimeout(() => {
       pending.delete(relative);
-      if (!closed) send({ path: relative, kind: EVENT_KINDS[event] });
+      if (closed) return;
+      if (!sameRootIdentity(root, io)) {
+        fail();
+        return;
+      }
+      send({ path: relative, kind: EVENT_KINDS[event] });
     }, debounceMs);
     pending.set(relative, timer);
   }
