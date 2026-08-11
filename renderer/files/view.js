@@ -71,10 +71,13 @@ export function createFileView({
   let activeProjectPath = null;
   let activeMemory = null;
   let activationRequest = 0;
+  let rootSwitchRequest = 0;
+  let documentOperationRequest = 0;
+  let pendingDocumentOperation = null;
   let treeRequest = 0;
   let destroyed = false;
   let watchQueue = Promise.resolve();
-  let viewMessage = null;
+  let viewMessageKey = null;
   let loadedDirectories = new Map();
   let unsubscribe = NOOP;
 
@@ -100,9 +103,44 @@ export function createFileView({
       && identity.path === documentState.path;
   }
 
-  function errorText(code) {
+  function operationCurrent(operation) {
+    return !destroyed && pendingDocumentOperation === operation
+      && operation.request === documentOperationRequest && activeMemory
+      && operation.projectPath === activeProjectPath
+      && operation.projectId === activeMemory.projectId
+      && operation.rootId === selectedRootId()
+      && operation.path === documentState.path;
+  }
+
+  function beginDocumentOperation(kind) {
+    if (pendingDocumentOperation || !activeMemory || !documentState.path) return null;
+    const operation = {
+      ...currentIdentity(),
+      request: ++documentOperationRequest,
+      kind,
+      content: documentState.content,
+      revision: documentState.revision,
+      status: documentState.status,
+    };
+    pendingDocumentOperation = operation;
+    repaintDocument();
+    return operation;
+  }
+
+  function finishDocumentOperation(operation) {
+    if (pendingDocumentOperation !== operation) return;
+    pendingDocumentOperation = null;
+    repaintDocument();
+  }
+
+  function invalidateDocumentOperation() {
+    documentOperationRequest += 1;
+    pendingDocumentOperation = null;
+  }
+
+  function errorKey(code) {
     const safeCode = SAFE_ERRORS.has(code) ? code : 'unreadable';
-    return translated(t, `files.error.${safeCode}`);
+    return `files.error.${safeCode}`;
   }
 
   function unavailableText(code) {
@@ -111,7 +149,7 @@ export function createFileView({
   }
 
   function setViewMessage(code) {
-    viewMessage = code ? errorText(code) : null;
+    viewMessageKey = errorKey(code);
     repaintDocument();
   }
 
@@ -121,9 +159,10 @@ export function createFileView({
   }
 
   function clearDocument() {
+    invalidateDocumentOperation();
     readGate.invalidate();
     documentState = FileState.initial();
-    viewMessage = null;
+    viewMessageKey = null;
     editor.setDocument('', { anchor: 0, head: 0 });
     editor.setReadOnly(true);
     editor.setLanguage('');
@@ -133,6 +172,7 @@ export function createFileView({
   function canLeave() {
     if (!FileState.needsDiscard(documentState)) return true;
     if (!confirmDiscard(documentState.path)) return false;
+    invalidateDocumentOperation();
     dispatch({ type: 'discard' });
     editor.setDocument('', { anchor: 0, head: 0 });
     editor.setReadOnly(true);
@@ -142,30 +182,32 @@ export function createFileView({
 
   async function save() {
     if (destroyed || documentState.status !== 'dirty' || !activeMemory) return;
-    const identity = currentIdentity();
-    const content = documentState.content;
-    const revision = documentState.revision;
-    const result = await api.writeProjectFile({
-      projectId: identity.projectId,
-      rootId: identity.rootId,
-      path: identity.path,
-      content,
-      expectedRevision: revision,
-      overwrite: false,
-    });
-    if (destroyed || identity.projectPath !== activeProjectPath
-      || identity.projectId !== activeMemory.projectId
-      || identity.rootId !== selectedRootId() || identity.path !== documentState.path
-      || content !== documentState.content || revision !== documentState.revision) return;
+    const operation = beginDocumentOperation('save');
+    if (!operation) return;
+    let result;
+    try {
+      result = await api.writeProjectFile({
+        projectId: operation.projectId,
+        rootId: operation.rootId,
+        path: operation.path,
+        content: operation.content,
+        expectedRevision: operation.revision,
+        overwrite: false,
+      });
+    } catch { result = null; }
+    if (!operationCurrent(operation) || operation.content !== documentState.content
+      || operation.revision !== documentState.revision || documentState.status !== 'dirty') return;
     if (result && result.ok) {
-      viewMessage = null;
-      dispatch({ type: 'save-success', revision: result.revision });
+      await reconcileWrite(operation, result, 'save-success');
     } else if (result && result.error === 'conflict') {
       dispatch({ type: 'disk-changed', exists: true });
+      finishDocumentOperation(operation);
     } else if (result && result.error === 'deleted') {
       dispatch({ type: 'disk-changed', exists: false });
+      finishDocumentOperation(operation);
     } else {
       setViewMessage(result && result.error);
+      finishDocumentOperation(operation);
     }
   }
 
@@ -197,24 +239,28 @@ export function createFileView({
   }
 
   async function rereadForReload() {
-    if (!activeMemory || !documentState.path || !confirmReload(documentState.path)) return;
-    const identity = currentIdentity();
-    const localContent = documentState.content;
-    const localStatus = documentState.status;
+    if (!activeMemory || !documentState.path || pendingDocumentOperation
+      || !confirmReload(documentState.path)) return;
+    const operation = beginDocumentOperation('reload');
+    if (!operation) return;
     const token = readGate.next();
-    const result = await api.readProjectFile({
-      projectId: identity.projectId,
-      rootId: identity.rootId,
-      path: identity.path,
-    });
-    if (!identityMatches(identity, token) || localContent !== documentState.content
-      || localStatus !== documentState.status) return;
+    let result;
+    try {
+      result = await api.readProjectFile({
+        projectId: operation.projectId,
+        rootId: operation.rootId,
+        path: operation.path,
+      });
+    } catch { result = null; }
+    if (!operationCurrent(operation) || !identityMatches(operation, token)
+      || operation.content !== documentState.content || operation.status !== documentState.status) return;
     if (!result || !result.ok) {
       if (result && result.error === 'deleted') dispatch({ type: 'disk-changed', exists: false });
       else setViewMessage(result && result.error);
+      finishDocumentOperation(operation);
       return;
     }
-    viewMessage = null;
+    viewMessageKey = null;
     dispatch({
       type: 'reload-success',
       content: result.content,
@@ -224,32 +270,65 @@ export function createFileView({
     editor.setDocument(result.content, { anchor: 0, head: 0 });
     editor.setReadOnly(false);
     editor.setLanguage(result.path);
+    finishDocumentOperation(operation);
   }
 
   async function overwrite() {
-    if (!activeMemory || documentState.status !== 'conflict' || !documentState.exists) return;
-    const identity = currentIdentity();
-    const content = documentState.content;
-    const result = await api.writeProjectFile({
-      projectId: identity.projectId,
-      rootId: identity.rootId,
-      path: identity.path,
-      content,
-      expectedRevision: documentState.revision,
-      overwrite: true,
-    });
-    if (destroyed || identity.projectPath !== activeProjectPath
-      || identity.projectId !== activeMemory.projectId
-      || identity.rootId !== selectedRootId() || identity.path !== documentState.path
-      || content !== documentState.content) return;
+    if (!activeMemory || pendingDocumentOperation || documentState.status !== 'conflict'
+      || !documentState.exists) return;
+    const operation = beginDocumentOperation('overwrite');
+    if (!operation) return;
+    let result;
+    try {
+      result = await api.writeProjectFile({
+        projectId: operation.projectId,
+        rootId: operation.rootId,
+        path: operation.path,
+        content: operation.content,
+        expectedRevision: operation.revision,
+        overwrite: true,
+      });
+    } catch { result = null; }
+    if (!operationCurrent(operation) || operation.content !== documentState.content
+      || documentState.status !== 'conflict') return;
     if (result && result.ok) {
-      viewMessage = null;
-      dispatch({ type: 'overwrite-success', revision: result.revision });
+      await reconcileWrite(operation, result, 'overwrite-success');
     } else if (result && result.error === 'deleted') {
       dispatch({ type: 'disk-changed', exists: false });
+      finishDocumentOperation(operation);
     } else {
       setViewMessage(result && result.error);
+      finishDocumentOperation(operation);
     }
+  }
+
+  async function reconcileWrite(operation, writeResult, successType) {
+    let snapshot;
+    try {
+      snapshot = await api.readProjectFile({
+        projectId: operation.projectId,
+        rootId: operation.rootId,
+        path: operation.path,
+      });
+    } catch { snapshot = null; }
+    if (!operationCurrent(operation) || operation.content !== documentState.content) return;
+    if (snapshot && snapshot.ok && snapshot.revision === writeResult.revision
+      && snapshot.content === operation.content) {
+      viewMessageKey = null;
+      dispatch({ type: successType, revision: writeResult.revision });
+    } else if (snapshot && snapshot.ok) {
+      dispatch({
+        type: 'disk-snapshot',
+        content: snapshot.content,
+        revision: snapshot.revision,
+        ignored: snapshot.ignored,
+      });
+    } else if (snapshot && snapshot.error === 'deleted') {
+      dispatch({ type: 'disk-changed', exists: false });
+    } else {
+      setViewMessage(snapshot && snapshot.error);
+    }
+    finishDocumentOperation(operation);
   }
 
   function repaintDocument() {
@@ -266,9 +345,10 @@ export function createFileView({
     const statusKey = documentState.ignored && !activeMemory?.showIgnored
       ? 'files.ignored'
       : statusKeys[documentState.status];
-    statusLabel.textContent = viewMessage || translated(t, statusKey);
+    statusLabel.textContent = translated(t, viewMessageKey || statusKey);
     saveButton.textContent = translated(t, 'files.save');
-    saveButton.disabled = documentState.status !== 'dirty';
+    const operationPending = Boolean(pendingDocumentOperation);
+    saveButton.disabled = documentState.status !== 'dirty' || operationPending;
     conflictPanel.replaceChildren();
     conflictPanel.classList.toggle(
       'hidden',
@@ -282,16 +362,16 @@ export function createFileView({
       );
       conflictPanel.append(explanation);
       if (documentState.exists) {
-        appendAction(conflictPanel, 'files.reload', rereadForReload);
-        appendAction(conflictPanel, 'files.overwrite', overwrite);
+        appendAction(conflictPanel, 'files.reload', rereadForReload, operationPending);
+        appendAction(conflictPanel, 'files.overwrite', overwrite, operationPending);
       }
-      appendAction(conflictPanel, 'files.copy', copyLocalChanges);
+      appendAction(conflictPanel, 'files.copy', copyLocalChanges, operationPending);
     } else if (documentState.status === 'deleted') {
       const explanation = node('span', 'files-conflict-message');
       explanation.textContent = translated(t, 'files.deleted');
       conflictPanel.append(explanation);
-      appendAction(conflictPanel, 'files.reload', rereadForReload);
-      appendAction(conflictPanel, 'files.copy', copyLocalChanges);
+      appendAction(conflictPanel, 'files.reload', rereadForReload, operationPending);
+      appendAction(conflictPanel, 'files.copy', copyLocalChanges, operationPending);
     }
   }
 
@@ -347,11 +427,14 @@ export function createFileView({
 
   async function openFile(path, { skipGuard = false } = {}) {
     if (!activeMemory || (!skipGuard && !canLeave())) return false;
+    invalidateDocumentOperation();
     const identity = currentIdentity(path);
     const token = readGate.next();
-    viewMessage = null;
+    viewMessageKey = null;
     dispatch({ type: 'open-start', request: token, path });
+    editor.setDocument('', { anchor: 0, head: 0 });
     editor.setReadOnly(true);
+    editor.setLanguage('');
     const result = await api.readProjectFile({
       projectId: identity.projectId,
       rootId: identity.rootId,
@@ -559,6 +642,10 @@ export function createFileView({
 
   async function switchRoot(rootId) {
     if (!activeMemory || rootId === selectedRootId()) return true;
+    const request = ++rootSwitchRequest;
+    const memory = activeMemory;
+    const projectPath = activeProjectPath;
+    const projectId = memory.projectId;
     const previous = selectedRootId();
     if (!canLeave()) {
       rootSelect.value = previous || '';
@@ -570,8 +657,11 @@ export function createFileView({
     const identity = currentIdentity();
     enqueueWatch(identity.projectPath, identity.projectId, identity.rootId);
     await rebuildTree();
-    if (activeMemory.lastFile && activeMemory.lastFile.rootId === rootId) {
-      await openFile(activeMemory.lastFile.path, { skipGuard: true });
+    if (destroyed || request !== rootSwitchRequest || activeMemory !== memory
+      || activeProjectPath !== projectPath || memory.projectId !== projectId
+      || selectedRootId() !== rootId) return false;
+    if (memory.lastFile && memory.lastFile.rootId === rootId) {
+      await openFile(memory.lastFile.path, { skipGuard: true });
     }
     return true;
   }
@@ -592,6 +682,7 @@ export function createFileView({
     if (activeProjectPath !== null && activeProjectPath !== projectPath && !canLeave()) return false;
     if (activeProjectPath !== projectPath) clearDocument();
     const request = ++activationRequest;
+    rootSwitchRequest += 1;
     readGate.invalidate();
     treeRequest += 1;
     activeProjectPath = projectPath;
@@ -625,7 +716,7 @@ export function createFileView({
       memory.selectedRootId = result.roots[0]?.id || null;
       if (rememberedRoot) {
         toast(translated(t, 'files.rootGone'));
-        viewMessage = translated(t, 'files.rootGone');
+        viewMessageKey = 'files.rootGone';
       }
     }
     activeMemory = memory;
@@ -644,8 +735,10 @@ export function createFileView({
 
   async function deactivate() {
     activationRequest += 1;
+    rootSwitchRequest += 1;
     treeRequest += 1;
     readGate.invalidate();
+    invalidateDocumentOperation();
     activeProjectPath = null;
     activeMemory = null;
     editor.setLanguage('');
@@ -663,6 +756,7 @@ export function createFileView({
       path: identity.path,
     });
     if (!identityMatches(identity, token)) return;
+    if (pendingDocumentOperation && operationCurrent(pendingDocumentOperation)) return;
     if (!result || !result.ok) {
       if (result && result.error === 'deleted') {
         dispatch({ type: 'disk-changed', exists: false });
@@ -697,6 +791,9 @@ export function createFileView({
     }
     const directory = parentPath(change.path || '');
     if (loadedDirectories.has(directory)) await reloadDirectory(directory);
+    if (pendingDocumentOperation && operationCurrent(pendingDocumentOperation)) {
+      return;
+    }
     await checkOpenFileHint();
   }
 
@@ -726,8 +823,10 @@ export function createFileView({
     if (destroyed) return;
     destroyed = true;
     activationRequest += 1;
+    rootSwitchRequest += 1;
     treeRequest += 1;
     readGate.invalidate();
+    invalidateDocumentOperation();
     unsubscribe();
     editor.destroy();
     await enqueueUnwatch();
