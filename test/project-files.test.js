@@ -775,6 +775,81 @@ test('retargeting an admitted project symlink disables every issued root operati
   await assertRootOperationsUnavailable(files, ids, opened.revision);
 });
 
+test('re-admitting a replaced project identity revokes its old watcher and sources', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const replacement = path.join(fx.base, 'replacement');
+  const link = path.join(fx.base, 'project-link');
+  fs.mkdirSync(replacement);
+  fs.writeFileSync(path.join(fx.project, 'safe.txt'), 'original');
+  fs.symlinkSync(fx.project, link, 'dir');
+  const watcher = new FakeRootWatcher();
+  const scheduler = manualScheduler();
+  const files = createProjectFiles({ watchFactory: () => watcher, scheduler });
+  t.after(() => files.close());
+  files.admitProject(link, 'configured');
+  const oldIds = await openedRoot(files, link);
+  const events = [];
+  assert.deepEqual(await files.watch('renderer-1', oldIds, (event) => events.push(event)), { ok: true });
+  watcher.emit('change', path.join(fx.project, 'safe.txt'));
+  assert.equal(scheduler.size, 1);
+
+  fs.unlinkSync(link);
+  fs.symlinkSync(replacement, link, 'dir');
+  const admitted = files.admitProject(link, 'picker');
+  const opened = await files.openProject(link);
+
+  assert.equal(admitted.ok, true);
+  assert.equal(opened.ok, true);
+  assert.equal(opened.projectId, admitted.projectId);
+  assert.notEqual(opened.projectId, oldIds.projectId);
+  assert.notEqual(opened.roots[0].id, oldIds.rootId);
+  assert.equal(watcher.closed, true);
+  assert.equal(watcher.closeCalls, 1);
+  assert.equal(scheduler.size, 0);
+  watcher.emit('change', path.join(fx.project, 'late.txt'));
+  scheduler.flush();
+  assert.deepEqual(events, []);
+  assert.deepEqual(await files.list({ ...oldIds, directory: '' }), {
+    ok: false,
+    error: 'project-unavailable',
+  });
+
+  files.replaceAdmissions('picker', []);
+  assert.equal((await files.openProject(link)).error, 'project-unavailable');
+});
+
+test('a stale project refresh cannot revoke its newly admitted replacement', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const replacement = path.join(fx.base, 'replacement');
+  const link = path.join(fx.base, 'project-link');
+  fs.mkdirSync(replacement);
+  gitProject(replacement);
+  fs.symlinkSync(fx.project, link, 'dir');
+  let files;
+  let replaced = false;
+  files = createProjectFiles({
+    execFile(file, args, options, callback) {
+      return execFile(file, args, options, (error, stdout, stderr) => {
+        if (!replaced && args.includes('--git-common-dir')) {
+          fs.unlinkSync(link);
+          fs.symlinkSync(replacement, link, 'dir');
+          files.admitProject(link, 'picker');
+          replaced = true;
+        }
+        callback(error, stdout, stderr);
+      });
+    },
+  });
+  files.admitProject(link, 'configured');
+
+  assert.equal((await files.openProject(link)).error, 'project-unavailable');
+  assert.equal(replaced, true);
+  assert.equal((await files.openProject(link)).ok, true);
+});
+
 test('removing an issued worktree disables every operation on its root ID', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -783,18 +858,40 @@ test('removing an issued worktree disables every operation on its root ID', asyn
   fs.mkdirSync(path.dirname(worktree));
   git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
   fs.writeFileSync(path.join(worktree, 'safe.txt'), 'original');
-  const files = createProjectFiles();
+  const projectWatcher = new FakeRootWatcher();
+  const worktreeWatcher = new FakeRootWatcher();
+  const candidates = [projectWatcher, worktreeWatcher];
+  const scheduler = manualScheduler();
+  const files = createProjectFiles({ watchFactory: () => candidates.shift(), scheduler });
+  t.after(() => files.close());
   files.admitProject(fx.project, 'configured');
   const openedProject = await files.openProject(fx.project);
+  const projectIds = {
+    projectId: openedProject.projectId,
+    rootId: openedProject.roots.find(({ kind }) => kind === 'project').id,
+  };
   const ids = {
     projectId: openedProject.projectId,
     rootId: openedProject.roots.find(({ kind }) => kind === 'worktree').id,
   };
   const opened = await files.read({ ...ids, path: 'safe.txt' });
+  const worktreeEvents = [];
+  assert.deepEqual(await files.watch('project-renderer', projectIds, () => {}), { ok: true });
+  assert.deepEqual(await files.watch('worktree-renderer', ids, (event) => worktreeEvents.push(event)), { ok: true });
+  worktreeWatcher.emit('change', path.join(worktree, 'safe.txt'));
+  assert.equal(scheduler.size, 1);
 
   git(fx.project, ['worktree', 'remove', '--force', worktree]);
+  assert.deepEqual((await files.openProject(fx.project)).roots.map(({ kind }) => kind), ['project']);
 
   await assertRootOperationsUnavailable(files, ids, opened.revision);
+  assert.equal(worktreeWatcher.closed, true);
+  assert.equal(worktreeWatcher.closeCalls, 1);
+  assert.equal(projectWatcher.closed, false);
+  assert.equal(scheduler.size, 0);
+  worktreeWatcher.emit('change', path.join(worktree, 'late.txt'));
+  scheduler.flush();
+  assert.deepEqual(worktreeEvents, []);
 });
 
 test('denies every worktree operation after the checkout belongs to a foreign repository', async (t) => {
@@ -808,15 +905,28 @@ test('denies every worktree operation after the checkout belongs to a foreign re
   fs.mkdirSync(path.dirname(worktree));
   git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
   fs.writeFileSync(path.join(worktree, 'safe.txt'), 'original');
-  const files = createProjectFiles();
+  const watcher = new FakeRootWatcher();
+  const scheduler = manualScheduler();
+  const files = createProjectFiles({ watchFactory: () => watcher, scheduler });
+  t.after(() => files.close());
   files.admitProject(fx.project, 'configured');
   const opened = await files.openProject(fx.project);
   const worktreeId = opened.roots.find(({ kind }) => kind === 'worktree').id;
   const ids = { projectId: opened.projectId, rootId: worktreeId };
   const document = await files.read({ ...ids, path: 'safe.txt' });
+  const events = [];
+  assert.deepEqual(await files.watch('worktree-renderer', ids, (event) => events.push(event)), { ok: true });
+  watcher.emit('change', path.join(worktree, 'safe.txt'));
+  assert.equal(scheduler.size, 1);
 
   fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${path.join(foreign, '.git')}\n`);
   await assertRootOperationsUnavailable(files, ids, document.revision);
+  assert.equal(watcher.closed, true);
+  assert.equal(watcher.closeCalls, 1);
+  assert.equal(scheduler.size, 0);
+  watcher.emit('change', path.join(worktree, 'late.txt'));
+  scheduler.flush();
+  assert.deepEqual(events, []);
 });
 
 test('labels FIFO entries as unavailable and exposes only public entry keys', async (t) => {

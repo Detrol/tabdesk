@@ -65,14 +65,28 @@ function createProjectFiles(options = {}) {
   const watcherOwners = new Map();
   let watchersClosed = false;
 
-  function revoke(project) {
-    byPath.delete(project.logical);
-    byId.delete(project.id);
+  function closeOwnedWatchers(projectId, rootId) {
     for (const owner of watcherOwners.values()) {
-      if (owner.active?.projectId !== project.id) continue;
+      if (owner.active?.projectId !== projectId) continue;
+      if (rootId !== undefined && owner.active.rootId !== rootId) continue;
       owner.token += 1;
       closeActive(owner);
     }
+  }
+
+  function revoke(project) {
+    if (byPath.get(project.logical) === project) byPath.delete(project.logical);
+    if (byId.get(project.id) === project) byId.delete(project.id);
+    closeOwnedWatchers(project.id);
+  }
+
+  function invalidateRoot(project, root) {
+    if (project.rootsById.get(root.id) !== root) return;
+    project.rootsById.delete(root.id);
+    for (const [key, candidate] of project.rootsByKey) {
+      if (candidate === root) project.rootsByKey.delete(key);
+    }
+    closeOwnedWatchers(project.id, root.id);
   }
 
   function admitProject(projectPath, source) {
@@ -82,7 +96,7 @@ function createProjectFiles(options = {}) {
 
     let project = byPath.get(dir.logical);
     if (!project || !sameDirectory(project, dir)) {
-      if (project) byId.delete(project.id);
+      if (project) revoke(project);
       project = {
         id: crypto.randomUUID(),
         logical: dir.logical,
@@ -228,6 +242,9 @@ function createProjectFiles(options = {}) {
       nextByKey.set(key, root);
       nextById.set(root.id, root);
     }
+    for (const root of project.rootsById.values()) {
+      if (!nextById.has(root.id)) invalidateRoot(project, root);
+    }
     project.rootsByKey = nextByKey;
     project.rootsById = nextById;
     return rootDirectories.map((directory) => project.rootsByKey.get(
@@ -292,18 +309,26 @@ function createProjectFiles(options = {}) {
     const root = typeof rootId === 'string' && project.rootsById.get(rootId);
     if (!root) return { error: 'project-unavailable' };
     const current = safeDirectory(io, root.logical);
-    if (!sameDirectory(root, current)) return { error: 'project-unavailable' };
+    if (!sameDirectory(root, current)) {
+      invalidateRoot(project, root);
+      return { error: 'project-unavailable' };
+    }
 
     if (root.kind === 'worktree') {
       const projectCommonDir = await gitCommonDir(project.logical);
       if (!projectCommonDir || !await isGitWorktree(current, projectCommonDir)) {
+        invalidateRoot(project, root);
         return { error: 'project-unavailable' };
       }
       const refreshed = byId.get(projectId);
       const refreshedRoot = refreshed && refreshed.rootsById.get(rootId);
       const refreshedCurrent = refreshedRoot && safeDirectory(io, refreshedRoot.logical);
-      if (refreshed !== project || refreshedRoot !== root || !refreshProject(project)
-        || !sameDirectory(root, refreshedCurrent)) {
+      if (refreshed !== project || refreshedRoot !== root) {
+        return { error: 'project-unavailable' };
+      }
+      if (!refreshProject(project)) return { error: 'project-unavailable' };
+      if (!sameDirectory(root, refreshedCurrent)) {
+        invalidateRoot(project, root);
         return { error: 'project-unavailable' };
       }
     }
