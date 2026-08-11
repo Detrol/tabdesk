@@ -307,3 +307,131 @@ test('retries when a worktree candidate is repointed before Git reads it', async
   assert.equal(repointed, true);
   assert.notEqual(refreshed.roots.find((root) => root.kind === 'worktree').id, oldWorktreeId);
 });
+
+async function openedRoot(files, project) {
+  const opened = await files.openProject(project);
+  assert.equal(opened.ok, true);
+  return { projectId: opened.projectId, rootId: opened.roots[0].id };
+}
+
+test('lists only canonical relative directories and denies Git metadata', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  for (const directory of ['../outside', '/etc', 'a\\b', 'a\0b']) {
+    assert.equal((await files.list({ ...ids, directory })).error, 'invalid-path');
+  }
+  assert.equal((await files.list({ ...ids, directory: '.git' })).error, 'git-metadata-denied');
+});
+
+test('lists contained entries safely, omits Git metadata, and sorts directories first', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const insideDir = path.join(fx.project, 'adir');
+  const insideFile = path.join(fx.project, 'target.txt');
+  const outsideDir = path.join(fx.base, 'outside');
+  fs.mkdirSync(insideDir);
+  fs.mkdirSync(outsideDir);
+  fs.writeFileSync(insideFile, 'inside');
+  fs.writeFileSync(path.join(fx.project, 'z-file.txt'), 'z');
+  fs.writeFileSync(path.join(fx.project, '.visible-dotfile'), 'dot');
+  fs.symlinkSync('target.txt', path.join(fx.project, 'file-link'));
+  fs.symlinkSync('adir', path.join(fx.project, 'directory-link'), 'dir');
+  fs.symlinkSync(outsideDir, path.join(fx.project, 'external-link'), 'dir');
+  fs.symlinkSync('missing-target', path.join(fx.project, 'broken-link'));
+  fs.symlinkSync('.git', path.join(fx.project, 'git-link'), 'dir');
+
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+  const listed = await files.list({ ...ids, directory: '' });
+
+  assert.equal(listed.ok, true);
+  assert.deepEqual(listed.entries.map(({ name }) => name), [
+    'adir', 'directory-link', 'external-link', '.gitignore', '.visible-dotfile', 'broken-link',
+    'file-link', 'target.txt', 'z-file.txt',
+  ]);
+  assert.equal(listed.entries.some(({ name }) => name === '.git'), false);
+  assert.equal(listed.entries.some(({ name }) => name === 'git-link'), false);
+  assert.deepEqual(listed.entries.find(({ name }) => name === 'file-link'), {
+    name: 'file-link', path: 'file-link', kind: 'file', hidden: false, ignored: false, symlink: true,
+    unavailable: undefined,
+  });
+  assert.deepEqual(listed.entries.find(({ name }) => name === 'directory-link'), {
+    name: 'directory-link', path: 'directory-link', kind: 'directory', hidden: false, ignored: false, symlink: true,
+    unavailable: undefined,
+  });
+  assert.deepEqual(listed.entries.find(({ name }) => name === 'external-link'), {
+    name: 'external-link', path: 'external-link', kind: 'directory', hidden: false, ignored: false, symlink: true,
+    unavailable: 'outside-root',
+  });
+  assert.deepEqual(listed.entries.find(({ name }) => name === 'broken-link'), {
+    name: 'broken-link', path: 'broken-link', kind: 'other', hidden: false, ignored: false, symlink: true,
+    unavailable: 'unreadable',
+  });
+  assert.equal((await files.list({ ...ids, directory: 'external-link' })).error, 'outside-root');
+  assert.equal((await files.list({ ...ids, directory: 'broken-link' })).error, 'unreadable');
+  assert.equal((await files.list({ ...ids, directory: 'git-link' })).error, 'git-metadata-denied');
+});
+
+test('revalidates a symlink target on every listing call', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const inside = path.join(fx.project, 'inside');
+  const outside = path.join(fx.base, 'outside');
+  const link = path.join(fx.project, 'changing-link');
+  fs.mkdirSync(inside);
+  fs.mkdirSync(outside);
+  fs.symlinkSync('inside', link, 'dir');
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  assert.equal((await files.list({ ...ids, directory: 'changing-link' })).ok, true);
+  fs.unlinkSync(link);
+  fs.symlinkSync(outside, link, 'dir');
+  assert.equal((await files.list({ ...ids, directory: 'changing-link' })).error, 'outside-root');
+});
+
+test('uses Git ignore rules in one listing while retaining tracked matches', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, '.gitignore'), '*.tmp\nignored/\n');
+  fs.mkdirSync(path.join(fx.project, 'nested'));
+  fs.writeFileSync(path.join(fx.project, 'nested', '.gitignore'), '*.log\n!keep.log\n');
+  fs.writeFileSync(path.join(fx.project, 'nested', 'hidden.log'), 'hidden');
+  fs.writeFileSync(path.join(fx.project, 'nested', 'keep.log'), 'kept');
+  fs.mkdirSync(path.join(fx.project, 'ignored'));
+  fs.writeFileSync(path.join(fx.project, 'ignored', 'secret.txt'), 'secret');
+  fs.writeFileSync(path.join(fx.project, 'untracked.tmp'), 'ignored');
+  fs.writeFileSync(path.join(fx.project, 'tracked.tmp'), 'tracked');
+  git(fx.project, ['add', '.gitignore', 'nested/.gitignore']);
+  git(fx.project, ['add', '-f', 'tracked.tmp']);
+  git(fx.project, ['commit', '-m', 'ignore fixtures']);
+
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+  const rootDefault = await files.list({ ...ids, directory: '' });
+  assert.equal(rootDefault.entries.some(({ name }) => name === 'ignored'), false);
+  assert.equal(rootDefault.entries.some(({ name }) => name === 'untracked.tmp'), false);
+  assert.equal(rootDefault.entries.find(({ name }) => name === 'tracked.tmp').ignored, false);
+
+  const rootAll = await files.list({ ...ids, directory: '', showIgnored: true });
+  assert.equal(rootAll.entries.find(({ name }) => name === 'ignored').ignored, true);
+  assert.equal(rootAll.entries.find(({ name }) => name === 'untracked.tmp').ignored, true);
+  assert.equal(rootAll.entries.find(({ name }) => name === 'tracked.tmp').ignored, false);
+
+  const nestedDefault = await files.list({ ...ids, directory: 'nested' });
+  assert.equal(nestedDefault.entries.some(({ name }) => name === 'hidden.log'), false);
+  assert.equal(nestedDefault.entries.find(({ name }) => name === 'keep.log').ignored, false);
+  const nestedAll = await files.list({ ...ids, directory: 'nested', showIgnored: true });
+  assert.equal(nestedAll.entries.find(({ name }) => name === 'hidden.log').ignored, true);
+  assert.equal(nestedAll.entries.find(({ name }) => name === 'keep.log').ignored, false);
+});
