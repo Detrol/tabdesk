@@ -810,6 +810,7 @@ export function createFileView({
 
   function applyLabels() {
     element.setAttribute('aria-label', translated(t, 'files.panel'));
+    editor.setLabel(translated(t, 'files.panel'));
     rootLabel.textContent = translated(t, 'files.root');
     ignoredButton.textContent = translated(t, 'files.showIgnored');
     tree.setAttribute('aria-label', translated(t, 'files.tree'));

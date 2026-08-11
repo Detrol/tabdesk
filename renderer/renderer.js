@@ -69,6 +69,7 @@ const fileView = window.TabDeskFiles.createFileView({
 panels.appendChild(fileView.element);
 let filesCwd = null;
 let stripFiles = null;
+const navigation = window.TabDeskNavigation.createNavigation();
 
 window.addEventListener('beforeunload', (event) => {
   if (!fileView.hasUnsavedChanges()) return;
@@ -442,9 +443,12 @@ if (window.api.onSessionActivity) window.api.onSessionActivity(applyActivity);
 // What the panel area holds: everything pinned to the grid, plus the session
 // in focus. Pinning nothing therefore still shows the one you are working in.
 function shownIds() {
-  const ids = [...pinned].filter((id) => tabs.has(id)).slice(0, MAX_PANELS);
-  if (activeId && tabs.has(activeId) && !ids.includes(activeId)) ids.push(activeId);
-  return ids;
+  return window.TabDeskNavigation.shownTerminalIds({
+    pinned,
+    activeId,
+    hasTab: (id) => tabs.has(id),
+    maximum: MAX_PANELS,
+  });
 }
 
 // A pinned panel can belong to a project other than the strip currently in
@@ -464,17 +468,24 @@ function leaveFiles() {
   if (!fileView.canLeave()) return false;
   filesCwd = null;
   fileView.deactivate().catch(() => {});
+  renderStrip();
+  applyLayout();
+  syncTray();
   return true;
 }
 
-function setActive(id, { skipFileGuard = false } = {}) {
+function setActive(id, { skipFileGuard = false, navigationToken = null } = {}) {
   const t = tabs.get(id);
   if (!t) return false;
   if (!skipFileGuard && !leaveFiles()) return false;
+  const token = navigationToken == null ? navigation.next() : navigationToken;
+  if (!navigation.isCurrent(token)) return false;
   // A session names its own project: reaching one from the tray, or from a
   // strip the rail has not caught up with, has to move the rail too.
   if (activeCwd !== t.projectCwd
-    && !selectProject(t.projectCwd, { open: false, skipFileGuard: true })) return false;
+    && !selectProject(t.projectCwd, {
+      open: false, skipFileGuard: true, navigationToken: token,
+    })) return false;
   overviewCwd = null;
   if (!t.materialized) materialize(t);
 
@@ -509,6 +520,7 @@ function setActive(id, { skipFileGuard = false } = {}) {
 // focus path on this one state transition so none of them tears down Files.
 function focusVisibleTerminal(id) {
   if (!tabs.has(id) || activeId === id) return false;
+  navigation.next();
   activeId = id;
   applyLayout();
   revealClippedStripTab(id);
@@ -1286,6 +1298,7 @@ function closeTab(id) {
   // and on the project's own overview if it doesn't — never on some other
   // project's terminal, which is not where you were.
   if (activeId === id) {
+    navigation.next();
     activeId = null;
     // A terminal focused directly beside a special panel does not make that
     // special view go away. Closing it therefore clears only terminal focus.
@@ -1337,39 +1350,43 @@ function worktreeFolder(cwd) {
 // promised that plain name, which only main can tell once it knows the slug.
 async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
   if (!leaveFiles()) return null;
+  const navigationToken = navigation.next();
   const owner = projectCwd || ownerOf(cwd);
   const agent = agentFor({ cwd, agent: agentId });
   const siblings = sessionsOf(owner).filter((x) => x.cwd === cwd);
   const basePromised = siblings.some(
     (x) => !x.session && !x.materialized && agentFor(x) === agent);
   const base = sessionLabel(cwd, agent, owner);
-  const alloc = await window.api.allocateSession(cwd, agent, base, basePromised);
-
-  let name = base;
-  if (alloc && alloc.session && alloc.suffix) name = `${base} ·${alloc.suffix}`;
-
-  // Models don't cross between agents, so ask for this agent's pick rather
-  // than reusing whatever the project's default agent is set to. Effort is
-  // stored the same way and asked for alongside it.
-  const [model, effort] = await Promise.all([
-    window.api.getModel(cwd, agent),
-    window.api.getEffort(cwd, agent),
-  ]);
-  const id = buildTab({ name, cwd, projectCwd: owner, model, effort, agent, resume });
-  const tab = tabs.get(id);
-  if (alloc && alloc.session) tab.session = alloc.session;
-  if (resume) {
-    // Both runtimes carry on in the conversation they were given: Codex under
-    // the same id, and Claude appending to the same transcript file (checked
-    // against the file it reopened). Pinning it here is what lets the output
-    // view read the conversation immediately rather than waiting for the
-    // birth-match a fresh session needs.
-    if (resume.id) tab.agentSession = resume.id;
-    const titled = resume.title && titledName(resume.title, cwd, owner);
-    if (titled) renameTab(id, titled);
-  }
-  setActive(id);
-  return id;
+  return navigation.runSession(navigationToken, {
+    allocate: () => window.api.allocateSession(cwd, agent, base, basePromised),
+    // Models don't cross between agents, so ask for this agent's pick rather
+    // than reusing whatever the project's default agent is set to. Effort is
+    // stored the same way and asked for alongside it.
+    load: () => Promise.all([
+      window.api.getModel(cwd, agent),
+      window.api.getEffort(cwd, agent),
+    ]),
+    release: (allocation) => window.api.releaseSession(allocation.session),
+    commit: (allocation, [model, effort]) => {
+      let name = base;
+      if (allocation && allocation.session && allocation.suffix) {
+        name = `${base} ·${allocation.suffix}`;
+      }
+      const id = buildTab({ name, cwd, projectCwd: owner, model, effort, agent, resume });
+      const tab = tabs.get(id);
+      if (allocation && allocation.session) tab.session = allocation.session;
+      if (resume) {
+        // Both runtimes carry on in the conversation they were given: Codex
+        // under the same id, and Claude appending to the same transcript file.
+        if (resume.id) tab.agentSession = resume.id;
+        const titled = resume.title && titledName(resume.title, cwd, owner);
+        if (titled) renameTab(id, titled);
+      }
+      return setActive(id, {
+        skipFileGuard: true, navigationToken,
+      }) ? id : null;
+    },
+  });
 }
 
 // "+" in the rail is for a project the rail doesn't already carry: one outside
@@ -1396,12 +1413,14 @@ addBtn.addEventListener('click', async () => {
   }
 
   if (!leaveFiles()) return;
+  const choiceNavigation = navigation.next();
 
   // "Starts with" from the picker: an explicit override, stored against the
   // project exactly like the rail's agent menu stores it. Left untouched there,
   // it comes back undefined and the project keeps what it had.
   if (choice.agent) {
     const res = await window.api.setAgent(choice.path, choice.agent);
+    if (!navigation.isCurrent(choiceNavigation)) return;
     if (res && res.ok) agentByProject[choice.path] = res.agent;
   }
 
@@ -1413,14 +1432,18 @@ addBtn.addEventListener('click', async () => {
   if (!projects.has(owner)) {
     buildProject({ name: owner.split('/').pop(), path: owner, worktrees: [] }, { atTop: true });
   }
-  selectProject(owner, { open: false, skipFileGuard: true });
+  selectProject(owner, {
+    open: false, skipFileGuard: true, navigationToken: choiceNavigation,
+  });
 
   // A named runtime, or a worktree, is an ask to start something; a project on
   // its own is an ask to look at it.
   if (choice.agent || choice.path !== owner) {
     await newSession(choice.path, choice.agent, { projectCwd: owner });
   } else {
-    selectProject(owner, { skipFileGuard: true });
+    selectProject(owner, {
+      skipFileGuard: true, navigationToken: choiceNavigation,
+    });
   }
 });
 
@@ -1460,10 +1483,14 @@ function buildProject(p, { atTop } = {}) {
 // Clicking a project shows what it has. Something running is what you meant to
 // get back to — the session you were last in — and nothing running means the
 // overview, which is where one is started or an earlier one picked up.
-function selectProject(cwd, { open = true, skipFileGuard = false } = {}) {
+function selectProject(cwd, {
+  open = true, skipFileGuard = false, navigationToken = null,
+} = {}) {
   if (!projects.has(cwd)) return false;
   const navigates = open || cwd !== activeCwd;
   if (!skipFileGuard && navigates && !leaveFiles()) return false;
+  const token = navigationToken == null ? navigation.next() : navigationToken;
+  if (!navigation.isCurrent(token)) return false;
   activeCwd = cwd;
   renderStrip();
   if (!open) { applyLayout(); return true; }
@@ -1472,13 +1499,19 @@ function selectProject(cwd, { open = true, skipFileGuard = false } = {}) {
   const last = p.lastId && tabs.has(p.lastId)
     ? p.lastId
     : (mine.length ? mine[mine.length - 1].id : null);
-  if (last) return setActive(last, { skipFileGuard: true });
-  return showOverview(cwd, { skipFileGuard: true });
+  if (last) return setActive(last, {
+    skipFileGuard: true, navigationToken: token,
+  });
+  return showOverview(cwd, {
+    skipFileGuard: true, navigationToken: token,
+  });
 }
 
-function showOverview(cwd, { skipFileGuard = false } = {}) {
+function showOverview(cwd, { skipFileGuard = false, navigationToken = null } = {}) {
   if (!projects.has(cwd)) return false;
   if (!skipFileGuard && !leaveFiles()) return false;
+  const token = navigationToken == null ? navigation.next() : navigationToken;
+  if (!navigation.isCurrent(token)) return false;
   activeCwd = cwd;
   overviewCwd = cwd;
   activeId = null;
@@ -1492,6 +1525,7 @@ function showOverview(cwd, { skipFileGuard = false } = {}) {
 function showFiles(cwd) {
   if (!projects.has(cwd)) return false;
   if (filesCwd && filesCwd !== cwd && !leaveFiles()) return false;
+  navigation.next();
   overviewCwd = null;
   activeCwd = cwd;
   activeId = null;

@@ -39,6 +39,7 @@ const REQUIRED_FILE_KEYS = [
   'files.error.project-unavailable',
   'files.error.root-unavailable',
   'files.error.invalid-path',
+  'files.error.outside-root',
   'files.error.git-metadata-denied',
   'files.error.not-file',
   'files.error.not-text',

@@ -109,6 +109,7 @@ export function createEditor({
   let currentLanguage = [];
   let currentTheme = editorTheme(theme);
   let currentReadOnly = false;
+  let currentLabel = typeof label === 'string' ? label : '';
 
   const change = typeof onChange === 'function' ? onChange : () => {};
   const save = typeof onSave === 'function' ? onSave : () => {};
@@ -154,7 +155,7 @@ export function createEditor({
           indentWithTab,
         ]),
         EditorView.contentAttributes.of({
-          'aria-label': typeof label === 'string' ? label : '',
+          'aria-label': currentLabel,
         }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !suppressChange) {
@@ -233,6 +234,11 @@ export function createEditor({
     setTheme(nextTheme) {
       currentTheme = editorTheme(nextTheme);
       reconfigure(appearance, currentTheme);
+    },
+
+    setLabel(nextLabel) {
+      currentLabel = typeof nextLabel === 'string' ? nextLabel : '';
+      if (!destroyed) view.contentDOM.setAttribute('aria-label', currentLabel);
     },
 
     getSelection() {

@@ -401,6 +401,37 @@ app.on('ready', async () => {
 
       let locale = 'en';
       const localeT = (key) => locale + ':' + key;
+      const localeLabelApi = makeFilesApi({
+        entries: [fileEntry('label.txt')],
+        read: async ({ path }) => ({
+          ok: true, path, content: 'disk-label', revision: 'l'.repeat(64), ignored: false,
+        }),
+      });
+      const localeLabelView = TabDeskFiles.createFileView({ api: localeLabelApi, t: localeT });
+      document.querySelector('#test-root').append(localeLabelView.element);
+      await localeLabelView.activate('/locale-label');
+      treeItem(localeLabelView, 'label.txt').click();
+      await wait(10);
+      await replaceFileText(localeLabelView, 'local-label');
+      const localeEditorBefore = localeLabelView.element.querySelector('.cm-editor');
+      const labelBeforeLanguage = localeLabelView.element.querySelector('.cm-content')
+        .getAttribute('aria-label');
+      locale = 'sv';
+      localeLabelView.onLanguage();
+      await wait(10);
+      const localeContent = localeLabelView.element.querySelector('.cm-content');
+      const editorLabelRetranslated = labelBeforeLanguage === 'en:files.panel'
+        && localeContent.getAttribute('aria-label') === 'sv:files.panel';
+      const localeStatePreserved = localeLabelView.element.querySelector('.cm-editor')
+          === localeEditorBefore
+        && localeContent.textContent === 'local-label'
+        && localeLabelView.hasUnsavedChanges();
+      press(localeLabelView.element, 'z');
+      await wait(10);
+      const localeHistoryPreserved = localeContent.textContent === 'disk-label';
+      await localeLabelView.destroy();
+
+      locale = 'en';
       const localeErrorApi = makeFilesApi({
         entries: [fileEntry('binary.dat')],
         read: async () => ({ ok: false, error: 'not-text' }),
@@ -946,6 +977,9 @@ app.on('ready', async () => {
         ownSaveReconciledClean,
         postWriteMismatchConflicts,
         postWriteDeletionConflicts,
+        editorLabelRetranslated,
+        localeStatePreserved,
+        localeHistoryPreserved,
         typedErrorRetranslated,
         rootGoneRetranslated,
         navigationInvalidatesPending,
@@ -1002,6 +1036,9 @@ app.on('ready', async () => {
     ok('successful save becomes clean only after exact R1 reread', result.ownSaveReconciledClean);
     ok('post-write R2 keeps local content in conflict', result.postWriteMismatchConflicts);
     ok('post-write deletion keeps local content without overwrite', result.postWriteDeletionConflicts);
+    ok('language change updates the live editor aria-label', result.editorLabelRetranslated);
+    ok('language change keeps the same dirty editor state', result.localeStatePreserved);
+    ok('language change preserves editor undo history', result.localeHistoryPreserved);
     ok('active typed error retranslates on language change', result.typedErrorRetranslated);
     ok('active root-gone notice retranslates on language change', result.rootGoneRetranslated);
     ok('file navigation invalidates a pending save and its post-read', result.navigationInvalidatesPending);

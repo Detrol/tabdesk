@@ -394,6 +394,7 @@
   "files.error.project-unavailable": "The project is no longer available.",
   "files.error.root-unavailable": "The selected root is no longer available.",
   "files.error.invalid-path": "That path is not valid.",
+  "files.error.outside-root": "That path is outside the project root.",
   "files.error.git-metadata-denied": "Git metadata cannot be opened here.",
   "files.error.not-file": "That path is not a regular file.",
   "files.error.not-text": "This file is not text.",

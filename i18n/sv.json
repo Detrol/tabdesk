@@ -394,6 +394,7 @@
   "files.error.project-unavailable": "Projektet är inte längre tillgängligt.",
   "files.error.root-unavailable": "Den valda roten är inte längre tillgänglig.",
   "files.error.invalid-path": "Sökvägen är ogiltig.",
+  "files.error.outside-root": "Sökvägen ligger utanför projektroten.",
   "files.error.git-metadata-denied": "Git-metadata kan inte öppnas här.",
   "files.error.not-file": "Sökvägen är inte en vanlig fil.",
   "files.error.not-text": "Filen är inte en textfil.",
