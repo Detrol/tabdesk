@@ -193,6 +193,18 @@ function currentDirectory(io, directory) {
   return stats.isDirectory() && sameFileIdentity(stats, directory.identity);
 }
 
+function ownsTempPath(io, temp, fd, identity) {
+  if (!temp || fd === undefined || !identity) return false;
+  try {
+    const named = io.lstatSync(temp);
+    const opened = io.fstatSync(fd);
+    return named.isFile() && !named.isSymbolicLink() && opened.isFile()
+      && sameFileIdentity(named, identity) && sameFileIdentity(opened, identity);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function revalidateWriteTarget(firstTarget, root, parent, io, revalidate, changedError) {
   const current = await revalidate();
   if (!current || current.error) return failure(current?.error || 'unreadable');
@@ -225,6 +237,7 @@ async function writeDocument(target, request, options = {}) {
   let parentDirectory;
   let tempFd;
   let temp;
+  let tempIdentity;
 
   try {
     if (process.platform !== 'linux' || !options.root) return failure('write-failed');
@@ -257,6 +270,11 @@ async function writeDocument(target, request, options = {}) {
     tempFd = io.openSync(candidate, tempFlags(io), 0o600);
     temp = candidate;
     const tempStats = io.fstatSync(tempFd);
+    tempIdentity = {
+      dev: tempStats.dev,
+      ino: tempStats.ino,
+      birthtimeMs: tempStats.birthtimeMs,
+    };
     if (!tempStats.isFile() || tempStats.dev !== rootDirectory.identity.dev
       || (tempStats.mode & 0o077) !== 0) {
       throw writeFailure('unsafe temporary file');
@@ -264,13 +282,18 @@ async function writeDocument(target, request, options = {}) {
     writeAll(io, tempFd, encoded.bytes);
     io.fsyncSync(tempFd);
 
-    if (options.beforeReplace) await options.beforeReplace();
+    if (options.beforeReplace) {
+      await options.beforeReplace();
+      if (!ownsTempPath(io, temp, tempFd, tempIdentity)) return failure('write-failed');
+    }
 
     const finalTarget = await revalidateWriteTarget(
       firstTarget, rootDirectory, parentDirectory, io, revalidate, 'conflict',
     );
+    if (!ownsTempPath(io, temp, tempFd, tempIdentity)) return failure('write-failed');
     if (!finalTarget.ok) return finalTarget;
     const finalSnapshot = await readBytes(finalTarget.target, io, revalidate);
+    if (!ownsTempPath(io, temp, tempFd, tempIdentity)) return failure('write-failed');
     if (!finalSnapshot.ok) return finalSnapshot;
     if (finalSnapshot.dev !== rootDirectory.identity.dev) return failure('write-failed');
     const finalDecoded = decode(finalSnapshot.bytes);
@@ -284,16 +307,19 @@ async function writeDocument(target, request, options = {}) {
       firstTarget, rootDirectory, parentDirectory, io, revalidate, 'conflict',
     );
     if (!beforeRename.ok) return beforeRename;
+    // Keep the ownership check adjacent to rename. Without native renameat2 support,
+    // another process can still replace the name between these two synchronous syscalls.
+    if (!ownsTempPath(io, temp, tempFd, tempIdentity)) return failure('write-failed');
     io.renameSync(temp, destination);
     temp = undefined;
     return { ok: true, revision: revision(encoded.bytes) };
   } catch (error) {
     return failure(fileError(error, 'write-failed'));
   } finally {
-    closeQuietly(io, tempFd);
-    if (temp) {
+    if (ownsTempPath(io, temp, tempFd, tempIdentity)) {
       try { io.unlinkSync(temp); } catch (_) { /* unlink only the temp created above */ }
     }
+    closeQuietly(io, tempFd);
     closeQuietly(io, parentDirectory?.fd);
     closeQuietly(io, rootDirectory?.fd);
   }

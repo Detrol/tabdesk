@@ -2161,6 +2161,86 @@ test('detects a change after temp flush and removes only its own temporary file'
   assert.deepEqual(documentTemps(fx.project), []);
 });
 
+test('does not rename or clean a regular replacement of its opened temp pathname', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'regular-temp-race.txt');
+  fs.writeFileSync(target, 'original');
+  let replacement;
+  const { files, ids } = await admittedFiles(fx.project, {
+    beforeReplace() {
+      const temps = documentTemps(fx.project);
+      assert.equal(temps.length, 1);
+      replacement = path.join(fx.project, temps[0]);
+      fs.unlinkSync(replacement);
+      fs.writeFileSync(replacement, 'regular sentinel', { mode: 0o600 });
+    },
+  });
+  const opened = await files.read({ ...ids, path: 'regular-temp-race.txt' });
+
+  const result = await files.write({
+    ...ids, path: 'regular-temp-race.txt', content: 'editor bytes',
+    expectedRevision: opened.revision, overwrite: false,
+  });
+  const replacementExists = fs.existsSync(replacement);
+  assert.deepEqual({
+    result,
+    target: fs.readFileSync(target, 'utf8'),
+    replacementExists,
+    replacement: replacementExists ? fs.readFileSync(replacement, 'utf8') : null,
+  }, {
+    result: { ok: false, error: 'write-failed' },
+    target: 'original',
+    replacementExists: true,
+    replacement: 'regular sentinel',
+  });
+});
+
+test('does not rename or clean a symlink replacement of its opened temp pathname', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'symlink-temp-race.txt');
+  const sentinel = path.join(fx.project, 'symlink-sentinel.txt');
+  fs.writeFileSync(target, 'original');
+  fs.writeFileSync(sentinel, 'symlink sentinel');
+  let replacement;
+  const { files, ids } = await admittedFiles(fx.project, {
+    beforeReplace() {
+      const temps = documentTemps(fx.project);
+      assert.equal(temps.length, 1);
+      replacement = path.join(fx.project, temps[0]);
+      fs.unlinkSync(replacement);
+      fs.symlinkSync(path.basename(sentinel), replacement);
+    },
+  });
+  const opened = await files.read({ ...ids, path: 'symlink-temp-race.txt' });
+
+  const result = await files.write({
+    ...ids, path: 'symlink-temp-race.txt', content: 'editor bytes',
+    expectedRevision: opened.revision, overwrite: false,
+  });
+  const replacementExists = fs.existsSync(replacement);
+  assert.deepEqual({
+    result,
+    target: fs.readFileSync(target, 'utf8'),
+    targetIsSymlink: fs.lstatSync(target).isSymbolicLink(),
+    replacementExists,
+    replacementIsSymlink: replacementExists && fs.lstatSync(replacement).isSymbolicLink(),
+    replacementTarget: replacementExists ? fs.readlinkSync(replacement) : null,
+  }, {
+    result: { ok: false, error: 'write-failed' },
+    target: 'original',
+    targetIsSymlink: false,
+    replacementExists: true,
+    replacementIsSymlink: true,
+    replacementTarget: path.basename(sentinel),
+  });
+});
+
 test('cleans the exact temporary file when fsync fails', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
