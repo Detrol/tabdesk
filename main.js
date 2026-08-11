@@ -795,7 +795,7 @@ app.whenReady().then(async () => {
         getWindows: () => BrowserWindow.getAllWindows(),
       });
       return await rendererLeaveGate.run(win.webContents, {
-        reload: () => win.webContents.reload(),
+        ownerWindow: win,
         commit: () => commitRootTransition(transaction),
         rollback: () => rollbackRootTransition(transaction),
         finalize,

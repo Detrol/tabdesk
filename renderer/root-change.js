@@ -12,8 +12,6 @@
       'persist-failed': 'projects.root.error.persist',
       'rollback-failed': 'projects.root.error.persist',
       'root-commit-failed': 'projects.root.error.persist',
-      'commit-timeout': 'projects.root.error.reload',
-      'commit-rejected': 'projects.root.error.reload',
       'reload-start-timeout': 'projects.root.error.reload',
       'reload-failed': 'projects.root.error.reload',
       'navigation-changed': 'projects.root.error.reload',

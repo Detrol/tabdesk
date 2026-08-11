@@ -40,13 +40,20 @@ test('a closed main window preserves sessions during committed shutdown', () => 
   assert.deepEqual(forgotten, []);
 });
 
-function leaveHarness({ decision = 'approve', ack = true, navigation = 'start' } = {}) {
+function leaveHarness({
+  decision = 'approve',
+  navigation = 'start',
+  url = 'file:///tabdesk/renderer/index.html',
+} = {}) {
   const ipcMain = new EventEmitter();
   const sender = new EventEmitter();
   const otherSender = new EventEmitter();
   let destroyed = false;
+  let reloads = 0;
+  let allowedUnloads = 0;
   const sent = [];
   sender.isDestroyed = () => destroyed;
+  sender.getURL = () => url;
   sender.send = (channel, payload) => {
     sent.push({ channel, payload });
     if (channel === 'projects:root-leave-request' && decision === 'approve') {
@@ -69,35 +76,189 @@ function leaveHarness({ decision = 'approve', ack = true, navigation = 'start' }
         destroyed = true;
         sender.emit('destroyed');
       });
-    } else if (channel === 'projects:root-unload-permit' && ack) {
-      queueMicrotask(() => ipcMain.emit('projects:root-unload-ack',
-        { sender }, { token: payload.token, armed: true }));
     }
   };
-  const reload = () => {
+  sender.reload = () => {
+    reloads += 1;
     if (navigation === 'throw') throw new Error('expected reload failure');
+    if (navigation === 'deferred') return;
+    const unloadEvent = {
+      preventDefault() { allowedUnloads += 1; },
+    };
+    sender.emit('will-prevent-unload', unloadEvent);
     if (navigation === 'start') {
-      queueMicrotask(() => sender.emit('did-start-navigation', {
+      sender.emit('did-start-navigation', {
+        url,
         isMainFrame: true,
         isSameDocument: false,
-      }));
+      });
     }
   };
-  return { ipcMain, sender, sent, reload, destroy: () => { destroyed = true; sender.emit('destroyed'); } };
+  return {
+    ipcMain,
+    sender,
+    sent,
+    reloads: () => reloads,
+    allowedUnloads: () => allowedUnloads,
+    destroy: () => { destroyed = true; sender.emit('destroyed'); },
+  };
 }
+
+test('only the gate-owned reload may override dirty unload and finalize its target', async () => {
+  const harness = leaveHarness();
+  const effects = [];
+  const gate = createGate(harness);
+
+  const result = await gate.run(harness.sender, {
+    commit: () => { effects.push('persist'); return { ok: true, path: '/new-root' }; },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+    finalize: () => { effects.push('finalize'); },
+  });
+  gate.close();
+
+  assert.deepEqual(result, { ok: true, path: '/new-root' });
+  assert.equal(harness.reloads(), 1);
+  assert.equal(harness.allowedUnloads(), 1);
+  assert.deepEqual(effects, ['persist', 'finalize']);
+  assert.deepEqual(harness.sent.map(({ channel }) => channel), ['projects:root-leave-request']);
+});
+
+test('a renderer-initiated navigation cannot consume the armed reload exception', async () => {
+  const harness = leaveHarness({ navigation: 'deferred' });
+  const effects = [];
+  let navigationPrevented = false;
+  let wrongUnloadAllowed = false;
+  const gate = createGate(harness, ['leave-token'], { navigationTimeoutMs: 30 });
+
+  const resultPromise = gate.run(harness.sender, {
+    commit: () => { effects.push('persist'); return { ok: true }; },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+    finalize: () => { effects.push('finalize'); },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.sender.emit('will-frame-navigate', {
+    url: 'file:///wrong.html',
+    isMainFrame: true,
+    preventDefault() { navigationPrevented = true; },
+  });
+  harness.sender.emit('will-prevent-unload', {
+    preventDefault() { wrongUnloadAllowed = true; },
+  });
+  const result = await resultPromise;
+  gate.close();
+
+  assert.deepEqual(result, { ok: false, error: 'navigation-changed' });
+  assert.equal(navigationPrevented, true);
+  assert.equal(wrongUnloadAllowed, false);
+  assert.deepEqual(effects, ['persist', 'rollback']);
+});
+
+test('a different main-frame target cannot finalize the issued root reload', async () => {
+  const harness = leaveHarness({ navigation: 'deferred' });
+  const effects = [];
+  const gate = createGate(harness);
+  const resultPromise = gate.run(harness.sender, {
+    commit: () => { effects.push('persist'); return { ok: true }; },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+    finalize: () => { effects.push('finalize'); },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.sender.emit('did-start-navigation', {
+    url: 'file:///unrelated.html',
+    isMainFrame: true,
+    isSameDocument: false,
+  });
+  const result = await resultPromise;
+  gate.close();
+
+  assert.deepEqual(result, { ok: false, error: 'navigation-changed' });
+  assert.deepEqual(effects, ['persist', 'rollback']);
+});
+
+test('a devtools reload disarms the root reload exception before unload', async () => {
+  const harness = leaveHarness({ navigation: 'deferred' });
+  const effects = [];
+  let wrongUnloadAllowed = false;
+  const gate = createGate(harness);
+  const resultPromise = gate.run(harness.sender, {
+    commit: () => { effects.push('persist'); return { ok: true }; },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.sender.emit('devtools-reload-page');
+  harness.sender.emit('will-prevent-unload', {
+    preventDefault() { wrongUnloadAllowed = true; },
+  });
+  const result = await resultPromise;
+  gate.close();
+
+  assert.deepEqual(result, { ok: false, error: 'navigation-changed' });
+  assert.equal(wrongUnloadAllowed, false);
+  assert.deepEqual(effects, ['persist', 'rollback']);
+});
+
+test('window close or app quit during the root commit is blocked and rolls back before reload', async () => {
+  const harness = leaveHarness();
+  const ownerWindow = new EventEmitter();
+  let closePrevented = false;
+  const effects = [];
+  const gate = createGate(harness);
+
+  const result = await gate.run(harness.sender, {
+    ownerWindow,
+    commit: () => {
+      effects.push('persist');
+      ownerWindow.emit('close', { preventDefault() { closePrevented = true; } });
+      return { ok: true };
+    },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+    finalize: () => { effects.push('finalize'); },
+  });
+  gate.close();
+
+  assert.deepEqual(result, { ok: false, error: 'navigation-changed' });
+  assert.equal(closePrevented, true);
+  assert.equal(harness.reloads(), 0);
+  assert.deepEqual(effects, ['persist', 'rollback']);
+});
+
+test('window close after the root reload is issued cannot consume its unload exception', async () => {
+  const harness = leaveHarness({ navigation: 'deferred' });
+  const ownerWindow = new EventEmitter();
+  const effects = [];
+  let closePrevented = false;
+  let closeUnloadAllowed = false;
+  const gate = createGate(harness);
+  const resultPromise = gate.run(harness.sender, {
+    ownerWindow,
+    commit: () => { effects.push('persist'); return { ok: true }; },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  ownerWindow.emit('close', { preventDefault() { closePrevented = true; } });
+  harness.sender.emit('will-prevent-unload', {
+    preventDefault() { closeUnloadAllowed = true; },
+  });
+  const result = await resultPromise;
+  gate.close();
+
+  assert.deepEqual(result, { ok: false, error: 'navigation-changed' });
+  assert.equal(closePrevented, true);
+  assert.equal(closeUnloadAllowed, false);
+  assert.deepEqual(effects, ['persist', 'rollback']);
+});
 
 function createGate(harness, tokens = ['leave-token'], timeouts = {}) {
   return lifecycle.createRendererLeaveGate({
     ipcMain: harness.ipcMain,
     decisionTimeoutMs: 30,
-    commitTimeoutMs: 30,
     navigationTimeoutMs: 30,
     makeToken: () => tokens.shift(),
     ...timeouts,
   });
 }
 
-test('approved root change persists before permit and finalizes only after reload starts navigating', async () => {
+test('approved root change persists before its main-owned reload and finalizes on that navigation', async () => {
   assert.equal(typeof lifecycle.createRendererLeaveGate, 'function');
   const harness = leaveHarness();
   const order = [];
@@ -106,13 +267,14 @@ test('approved root change persists before permit and finalizes only after reloa
     order.push('request');
     originalSend(...args);
   };
+  const originalReload = harness.sender.reload;
+  harness.sender.reload = () => {
+    order.push('reload');
+    originalReload();
+  };
   const gate = createGate(harness);
 
   const result = await gate.run(harness.sender, {
-    reload: () => {
-      order.push('reload');
-      harness.reload();
-    },
     commit: () => {
       order.push('commit');
       return { ok: true, path: '/new-root' };
@@ -123,30 +285,25 @@ test('approved root change persists before permit and finalizes only after reloa
   gate.close();
 
   assert.deepEqual(result, { ok: true, path: '/new-root' });
-  assert.deepEqual(order, ['request', 'commit', 'request', 'reload', 'finalize']);
-  assert.deepEqual(harness.sent.map(({ channel }) => channel), [
-    'projects:root-leave-request',
-    'projects:root-unload-permit',
-  ]);
+  assert.deepEqual(order, ['request', 'commit', 'reload', 'finalize']);
+  assert.deepEqual(harness.sent.map(({ channel }) => channel), ['projects:root-leave-request']);
 });
 
 test('persistence failure never arms unload permit or reloads the dirty renderer', async () => {
   const harness = leaveHarness();
   let root = '/old-root';
-  let reloads = 0;
   const gate = createGate(harness);
 
   const result = await gate.run(harness.sender, {
     commit: () => ({ ok: false, error: 'persist-failed' }),
     rollback: () => { root = '/old-root'; },
-    reload: () => { reloads += 1; harness.reload(); },
     finalize: () => { throw new Error('must not finalize'); },
   });
   gate.close();
 
   assert.deepEqual(result, { ok: false, error: 'persist-failed' });
   assert.equal(root, '/old-root');
-  assert.equal(reloads, 0);
+  assert.equal(harness.reloads(), 0);
   assert.equal(harness.sent.filter(({ channel }) => channel === 'projects:root-unload-permit').length, 0);
 });
 
@@ -159,7 +316,6 @@ test('reload start failure rolls back persisted root without finalizing admissio
   const result = await gate.run(harness.sender, {
     commit: () => { root = '/new-root'; effects.push('persist'); return { ok: true, path: root }; },
     rollback: () => { root = '/old-root'; effects.push('rollback'); return { ok: true }; },
-    reload: harness.reload,
     finalize: () => { effects.push('finalize'); },
   });
   gate.close();
@@ -175,17 +331,14 @@ test('cancel stays non-mutating while post-decision failures roll persisted root
     { name: 'cancel', harness: leaveHarness({ decision: 'cancel' }), error: 'canceled' },
     { name: 'reload timeout', harness: leaveHarness({ navigation: 'none' }), error: 'reload-start-timeout' },
     { name: 'reload failure', harness: leaveHarness({ navigation: 'throw' }), error: 'reload-failed' },
-    { name: 'commit ack timeout', harness: leaveHarness({ ack: false }), error: 'commit-timeout' },
   ]) {
     await t.test(scenario.name, async () => {
       const effects = [];
       let root = '/old-root';
       const gate = createGate(scenario.harness, ['leave-token'], {
-        commitTimeoutMs: 5,
         navigationTimeoutMs: 5,
       });
       const result = await gate.run(scenario.harness.sender, {
-        reload: scenario.harness.reload,
         commit: () => { root = '/new-root'; effects.push('persist'); return { ok: true }; },
         rollback: () => { root = '/old-root'; effects.push('rollback'); return { ok: true }; },
         finalize: () => { effects.push('finalize'); },
@@ -207,7 +360,6 @@ test('wrong sender and wrong token cannot approve a root mutation', async () => 
   const gate = createGate(harness);
 
   const result = await gate.run(harness.sender, {
-    reload: harness.reload,
     commit: () => { mutations += 1; },
   });
   gate.close();
@@ -224,7 +376,6 @@ test('navigation or destruction during a pending decision invalidates late appro
       let mutations = 0;
       const gate = createGate(harness, ['leave-token']);
       const resultPromise = gate.run(harness.sender, {
-        reload: harness.reload,
         commit: () => { mutations += 1; },
       });
       if (scenario === 'navigation') {
@@ -240,15 +391,14 @@ test('navigation or destruction during a pending decision invalidates late appro
   }
 });
 
-test('navigation or destruction after persistence rolls the active transition back', async (t) => {
+test('unexpected navigation or destruction after persistence rolls the active transition back', async (t) => {
   for (const scenario of ['navigation', 'destroyed']) {
     await t.test(scenario, async () => {
-      const harness = leaveHarness({ ack: false });
+      const harness = leaveHarness({ navigation: 'deferred' });
       const effects = [];
       let root = '/old-root';
       const gate = createGate(harness, ['leave-token']);
       const resultPromise = gate.run(harness.sender, {
-        reload: harness.reload,
         commit: () => { root = '/new-root'; effects.push('persist'); return { ok: true }; },
         rollback: () => { root = '/old-root'; effects.push('rollback'); return { ok: true }; },
       });
@@ -271,19 +421,14 @@ test('overlapping root changes are blocked and only the active token can commit'
   let commits = 0;
   const gate = createGate(harness, ['first-token', 'second-token']);
   const first = gate.run(harness.sender, {
-    reload: harness.reload,
     commit: () => { commits += 1; return { ok: true }; },
   });
   const second = await gate.run(harness.sender, {
-    reload: harness.reload,
     commit: () => { commits += 1; return { ok: true }; },
   });
   assert.deepEqual(second, { ok: false, error: 'root-change-in-progress' });
   harness.ipcMain.emit('projects:root-leave-response',
     { sender: harness.sender }, { token: 'first-token', approved: true });
-  await new Promise((resolve) => setImmediate(resolve));
-  harness.ipcMain.emit('projects:root-unload-ack',
-    { sender: harness.sender }, { token: 'first-token', armed: true });
   assert.deepEqual(await first, { ok: true });
   gate.close();
   assert.equal(commits, 1);
@@ -295,7 +440,6 @@ test('decision timeout is distinct and ignores a late approval safely', async ()
   let commits = 0;
   const gate = createGate(harness, ['late-token'], { decisionTimeoutMs: 5 });
   const result = await gate.run(harness.sender, {
-    reload: harness.reload,
     commit: () => { commits += 1; },
   });
   harness.ipcMain.emit('projects:root-leave-response',
@@ -407,35 +551,22 @@ test('preload answers root leave requests through one semantic callback', async 
   assert.equal(ipcRenderer.listenerCount('projects:root-leave-request'), 0);
 });
 
-test('preload arms and consumes only the matching root unload permit once', async () => {
+test('preload exposes only the semantic root leave decision, never an unload permit', async () => {
   const { api, ipcRenderer, sent } = loadPreloadApi();
-  assert.equal(typeof api.consumeProjectsRootUnloadPermit, 'function');
+  assert.equal(api.consumeProjectsRootUnloadPermit, undefined);
   const unsubscribe = api.onProjectsRootLeaveRequested(() => true);
-  ipcRenderer.emit('projects:root-leave-request', {}, { token: 'permit-token' });
+  ipcRenderer.emit('projects:root-leave-request', {}, { token: 'decision-token' });
   await new Promise((resolve) => setImmediate(resolve));
-  ipcRenderer.emit('projects:root-unload-permit', {}, { token: 'sibling-token' });
-  ipcRenderer.emit('projects:root-unload-permit', {}, { token: 'permit-token' });
 
-  assert.equal(api.consumeProjectsRootUnloadPermit(), true);
-  assert.equal(api.consumeProjectsRootUnloadPermit(), false);
-  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [
-    {
-      channel: 'projects:root-leave-response',
-      payload: { token: 'permit-token', approved: true },
-    },
-    {
-      channel: 'projects:root-unload-ack',
-      payload: { token: 'sibling-token', armed: false },
-    },
-    {
-      channel: 'projects:root-unload-ack',
-      payload: { token: 'permit-token', armed: true },
-    },
-  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{
+    channel: 'projects:root-leave-response',
+    payload: { token: 'decision-token', approved: true },
+  }]);
+  assert.equal(ipcRenderer.listenerCount('projects:root-unload-permit'), 0);
   unsubscribe();
 });
 
-test('preload abort disarms a permit and suppresses a late decision', async () => {
+test('preload abort suppresses a late leave decision', async () => {
   const { api, ipcRenderer, sent } = loadPreloadApi();
   let resolveDecision;
   const decision = new Promise((resolve) => { resolveDecision = resolve; });
@@ -445,7 +576,6 @@ test('preload abort disarms a permit and suppresses a late decision', async () =
   resolveDecision(true);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(api.consumeProjectsRootUnloadPermit(), false);
   assert.deepEqual(sent, []);
   unsubscribe();
 });

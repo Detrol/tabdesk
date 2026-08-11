@@ -86,8 +86,6 @@ if (window.api && typeof window.api.onProjectsRootLeaveRequested === 'function')
 }
 
 window.addEventListener('beforeunload', (event) => {
-  if (typeof window.api.consumeProjectsRootUnloadPermit === 'function'
-      && window.api.consumeProjectsRootUnloadPermit()) return;
   if (!fileView.hasUnsavedChanges()) return;
   event.preventDefault();
   event.returnValue = '';

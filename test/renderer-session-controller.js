@@ -46,7 +46,6 @@ function setup(stage) {
       rootLeaveSubscriptions: 0,
       rootLeaveChecks: 0,
       rootLeaveDecision: null,
-      rootUnloadPermitConsumes: 0,
       tray: null,
     };
     const stage = ${JSON.stringify(stage)};
@@ -140,10 +139,6 @@ function setup(stage) {
         state.rootLeaveChecks += 1;
         return () => {};
       },
-      consumeProjectsRootUnloadPermit: () => {
-        state.rootUnloadPermitConsumes += 1;
-        return state.rootUnloadPermitConsumes === 1;
-      },
       getUsageLimits: async () => ({ ok: false, reason: 'network' }),
       getUsageStats: async () => null,
       getSystemStats: async () => null,
@@ -155,6 +150,7 @@ function setup(stage) {
     window.api = new Proxy(api, {
       get(target, property) {
         if (property in target) return target[property];
+        if (property === 'consumeProjectsRootUnloadPermit') return undefined;
         if (String(property).startsWith('on')) return events;
         return asyncNull;
       },
@@ -193,7 +189,7 @@ async function runScenario(stage) {
         projectCount: document.querySelector('.tab.project .count').textContent,
         overviewShown: document.querySelector('.overview').classList.contains('shown'),
         trayTabs: state.tray ? state.tray.tabs.length : -1,
-        rootUnloadPermitted: !rootUnload.defaultPrevented,
+        rootUnloadPrevented: rootUnload.defaultPrevented,
         nextUnloadPrevented: nextUnload.defaultPrevented,
       };
       const close = document.querySelector('.stab .close');
@@ -234,9 +230,8 @@ app.whenReady().then(async () => {
         && early.rootLeaveChecks === 1
         && early.rootLeaveDecision === false,
       JSON.stringify(early));
-    ok('matching root unload permit bypasses the dirty beforeunload exactly once',
-      early.rootUnloadPermitConsumes === 2
-        && early.beforeClose.rootUnloadPermitted
+    ok('renderer dirty guard protects every unload without a generic permit',
+      early.beforeClose.rootUnloadPrevented
         && early.beforeClose.nextUnloadPrevented,
       JSON.stringify(early));
 
