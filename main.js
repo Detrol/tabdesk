@@ -39,6 +39,9 @@ const syncPull = require('./sync/pullwatch');
 const syncKeys = require('./sync/keys');
 const syncInvite = require('./sync/invite');
 const tabOrder = require('./renderer/tab-order');
+const { createProjectFiles } = require('./project-files');
+
+const projectFiles = createProjectFiles();
 
 // Where the rail's projects live — the user's stored choice, resolved (and
 // changeable) through projects-root.js. Null until first run has picked one.
@@ -301,6 +304,7 @@ function createWindow() {
   // records survive the reload the same way they survive a quit.
   win.webContents.on('did-start-navigation', (details) => {
     if (!details.isMainFrame || details.isSameDocument) return;
+    projectFiles.unwatch(win.webContents.id);
     termEmbed.killAll();
     tmuxSessions.clear();
     lastActivity = '';
@@ -309,6 +313,8 @@ function createWindow() {
     }
     terminals.clear();
   });
+  const contentsId = win.webContents.id;
+  win.webContents.once('destroyed', () => projectFiles.unwatch(contentsId));
 
   return win;
 }
@@ -761,6 +767,7 @@ app.whenReady().then(async () => {
     } catch (err) {
       return { ok: false, error: String(err.message || err) };
     }
+    projectFiles.replaceAdmissions('configured', []);
     // Child windows hold pre-change state (picker's project list, settings'
     // shown path); the main window survives the reload, they just close.
     for (const w of BrowserWindow.getAllWindows()) {
@@ -979,11 +986,29 @@ app.whenReady().then(async () => {
     // leave the base name unused).
     const primary = (rec) => agents.list().some(
       (a) => rec.session === `td-${a.id}-${slugFor(rec.cwd)}`);
-    const done = (keep, orphans) => resolve([
-      ...keep,
-      ...orphans.sort((a, b) => a.session.localeCompare(b.session)),
-    ]
-      .map((r) => ({ ...r, primary: primary(r) })));
+    const done = async (keep, orphans) => {
+      const restored = [];
+      try {
+        const surviving = [
+          ...keep,
+          ...orphans.sort((a, b) => a.session.localeCompare(b.session)),
+        ];
+        for (const record of surviving) {
+          const admitted = await projectFiles.admitSelection(record.cwd, 'restored');
+          if (!admitted.ok) continue;
+          restored.push({
+            ...record,
+            primary: primary(record),
+            projectPath: admitted.projectPath,
+          });
+        }
+        projectFiles.replaceAdmissions('restored', restored.map((record) => record.projectPath));
+        resolve(restored);
+      } catch (_) {
+        projectFiles.replaceAdmissions('restored', []);
+        resolve([]);
+      }
+    };
     try {
       execFile('tmux', ['ls', '-F', '#S #{session_path}'], (err, stdout) => {
         // "No server running" is how tmux reports that every session is gone —
@@ -1132,29 +1157,6 @@ app.whenReady().then(async () => {
   };
   ipcMain.handle('git:branch', (_event, cwd) => branchOf(cwd));
 
-  // Git worktrees of a project. Convention folders: `.worktrees/` (TabDesk /
-  // agents) and `.claude/worktrees/` (Claude Code). They are branches of a
-  // project, not projects of their own, so they ride along on their project's
-  // entry rather than becoming rail tabs — the picker offers them, and an open
-  // one comes back through the tab registry.
-  const worktreesIn = (dir) => {
-    const out = [];
-    const seen = new Set();
-    for (const rel of ['.worktrees', '.claude/worktrees']) {
-      let entries;
-      try { entries = fs.readdirSync(path.join(dir, rel), { withFileTypes: true }); } catch (_) { continue; }
-      for (const e of entries) {
-        if (e.name.startsWith('.')) continue;
-        const full = path.join(dir, rel, e.name);
-        if (seen.has(full)) continue;
-        try { if (!fs.statSync(full).isDirectory()) continue; } catch (_) { continue; }
-        seen.add(full);
-        out.push({ name: `${path.basename(dir)}/${e.name}`, path: full, model: model.getFor(full, agents.getFor(full)) });
-      }
-    }
-    return out.sort((a, b) => a.name.localeCompare(b.name));
-  };
-
   // List project directories under the projects folder, most-recently-modified
   // first. `closed` carries the user's × on that tab: the rail leaves those
   // out, the picker still offers them (see closedProjects below). Always an
@@ -1164,9 +1166,12 @@ app.whenReady().then(async () => {
   // The projects folder itself leads the list: work that spans projects — an
   // agent asked about the whole tree — runs in the root, and those sessions
   // and conversations need a row to live under just like any project's do.
-  ipcMain.handle('projects:list', () => {
+  ipcMain.handle('projects:list', async () => {
     const base = rootDir();
-    if (!base) return [];
+    if (!base) {
+      projectFiles.replaceAdmissions('configured', []);
+      return [];
+    }
     try {
       const closed = new Set(closedProjects());
       const root = {
@@ -1187,13 +1192,23 @@ app.whenReady().then(async () => {
           return {
             name: e.name, path: full, mtime: st.mtimeMs,
             model: model.getFor(full, agents.getFor(full)), closed: closed.has(full),
-            worktrees: worktreesIn(full),
+            worktrees: [],
           };
         })
         .filter(Boolean)
         .sort((a, b) => b.mtime - a.mtime);
-      return [root, ...dirs];
+      const rows = [root, ...dirs];
+      projectFiles.replaceAdmissions('configured', rows.map((row) => row.path));
+      await Promise.all(rows.map(async (row) => {
+        const worktrees = await projectFiles.describeWorktrees(row.path);
+        row.worktrees = worktrees.map((worktree) => ({
+          ...worktree,
+          model: model.getFor(worktree.path, agents.getFor(worktree.path)),
+        }));
+      }));
+      return rows;
     } catch (_) {
+      projectFiles.replaceAdmissions('configured', []);
       return [];
     }
   });
@@ -1210,7 +1225,11 @@ app.whenReady().then(async () => {
     if (done) done(choice || null);
   });
 
-  ipcMain.handle('projects:create', (event, name) => createProject(name));
+  ipcMain.handle('projects:create', (event, name) => {
+    const result = createProject(name);
+    if (result.ok) projectFiles.admitProject(result.path, 'picker');
+    return result;
+  });
 
   // Escape hatch for a project that doesn't live under the projects folder.
   ipcMain.handle('projects:browse', async (event) => {
@@ -1222,7 +1241,28 @@ app.whenReady().then(async () => {
     });
     if (res.canceled || !res.filePaths.length) return null;
     const dir = res.filePaths[0];
-    return { name: path.basename(dir), path: dir, model: model.getFor(dir, agents.getFor(dir)) };
+    const admitted = await projectFiles.admitSelection(dir, 'picker');
+    if (!admitted.ok) return null;
+    return {
+      name: path.basename(dir),
+      path: admitted.selectedPath,
+      projectPath: admitted.projectPath,
+      model: model.getFor(admitted.selectedPath, agents.getFor(admitted.selectedPath)),
+    };
+  });
+
+  ipcMain.handle('project-files:open', (_event, projectPath) =>
+    projectFiles.openProject(projectPath));
+  ipcMain.handle('project-files:list', (_event, args) => projectFiles.list(args));
+  ipcMain.handle('project-files:read', (_event, args) => projectFiles.read(args));
+  ipcMain.handle('project-files:write', (_event, args) => projectFiles.write(args));
+  ipcMain.handle('project-files:watch', (event, args) =>
+    projectFiles.watch(event.sender.id, args, (change) => {
+      if (!event.sender.isDestroyed()) event.sender.send('project-files:changed', change);
+    }));
+  ipcMain.handle('project-files:unwatch', (event) => {
+    projectFiles.unwatch(event.sender.id);
+    return { ok: true };
   });
 
   // ---- Portable state: export / import ----
@@ -1903,6 +1943,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => { quitting = true; });
+app.on('will-quit', () => projectFiles.close());
 
 app.on('window-all-closed', () => {
   quitting = true;

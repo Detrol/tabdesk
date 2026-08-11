@@ -105,6 +105,17 @@ contextBridge.exposeInMainWorld('api', {
   listProjects: () => ipcRenderer.invoke('projects:list'),
   chooseProjectsRoot: () => ipcRenderer.invoke('projects:choose-root'),
   setProjectsRoot: (dir) => ipcRenderer.invoke('projects:set-root', dir),
+  openProjectFiles: (projectPath) => ipcRenderer.invoke('project-files:open', projectPath),
+  listProjectFiles: (args) => ipcRenderer.invoke('project-files:list', args),
+  readProjectFile: (args) => ipcRenderer.invoke('project-files:read', args),
+  writeProjectFile: (args) => ipcRenderer.invoke('project-files:write', args),
+  watchProjectFiles: (args) => ipcRenderer.invoke('project-files:watch', args),
+  unwatchProjectFiles: () => ipcRenderer.invoke('project-files:unwatch'),
+  onProjectFilesChanged: (cb) => {
+    const listener = (_event, change) => cb(change);
+    ipcRenderer.on('project-files:changed', listener);
+    return () => ipcRenderer.removeListener('project-files:changed', listener);
+  },
   // Remembers a closed tab across restarts (and an opened one as no longer closed).
   setProjectClosed: (dir, closed) => ipcRenderer.send('projects:closed', { path: dir, closed }),
   // Opens the "new tab" picker window; resolves with the choice, or null.

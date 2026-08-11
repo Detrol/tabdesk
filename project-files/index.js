@@ -68,6 +68,11 @@ function createProjectFiles(options = {}) {
   function revoke(project) {
     byPath.delete(project.logical);
     byId.delete(project.id);
+    for (const owner of watcherOwners.values()) {
+      if (owner.active?.projectId !== project.id) continue;
+      owner.token += 1;
+      closeActive(owner);
+    }
   }
 
   function admitProject(projectPath, source) {
@@ -560,7 +565,7 @@ function createProjectFiles(options = {}) {
   function closeActive(owner) {
     const active = owner.active;
     owner.active = null;
-    if (active) active.close();
+    if (active) active.watcher.close();
   }
 
   async function watch(ownerId, request = {}, emit) {
@@ -598,7 +603,11 @@ function createProjectFiles(options = {}) {
       return { ok: false, error: current.error || 'watch-failed' };
     }
 
-    owner.active = candidate;
+    owner.active = {
+      watcher: candidate,
+      projectId: request.projectId,
+      rootId: request.rootId,
+    };
     acceptingEvents = true;
     return { ok: true };
   }
