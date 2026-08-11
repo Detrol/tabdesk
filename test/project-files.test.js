@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
 const { execFile, execFileSync } = require('child_process');
@@ -29,6 +30,20 @@ function gitProject(project) {
   fs.writeFileSync(path.join(project, '.gitignore'), '.worktrees/\n');
   git(project, ['add', '.gitignore']);
   git(project, ['commit', '-m', 'initial']);
+}
+
+function sha256(bytes) {
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+function documentTemps(directory) {
+  return fs.readdirSync(directory).filter((name) => name.includes('.tabdesk-'));
+}
+
+async function admittedFiles(project, options) {
+  const files = createProjectFiles(options);
+  files.admitProject(project, 'configured');
+  return { files, ids: await openedRoot(files, project) };
 }
 
 test('only an admitted project can be opened', async (t) => {
@@ -685,4 +700,364 @@ test('labels FIFO entries as unavailable and exposes only public entry keys', as
     'hidden', 'ignored', 'kind', 'name', 'path', 'symlink', 'unavailable',
   ]);
   assert.equal(Object.values(entry).some((value) => typeof value === 'string' && value.includes(fx.project)), false);
+});
+
+test('reads UTF-8 documents with exact-byte revisions and normalized format metadata', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const cases = [
+    {
+      name: 'ordinary.js', bytes: Buffer.from('alpha\nbeta\n'), content: 'alpha\nbeta\n', language: 'js',
+      format: { bom: false, lineEnding: '\n', trailingNewline: true },
+    },
+    {
+      name: 'unknown.oddity', bytes: Buffer.from('plain'), content: 'plain', language: 'oddity',
+      format: { bom: false, lineEnding: '\n', trailingNewline: false },
+    },
+    {
+      name: 'bom.txt', bytes: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('one\ntwo')]),
+      content: 'one\ntwo', language: 'txt',
+      format: { bom: true, lineEnding: '\n', trailingNewline: false },
+    },
+    {
+      name: 'crlf.txt', bytes: Buffer.from('one\r\ntwo\r\n'), content: 'one\ntwo\n', language: 'txt',
+      format: { bom: false, lineEnding: '\r\n', trailingNewline: true },
+    },
+    {
+      name: 'cr.txt', bytes: Buffer.from('one\rtwo\r'), content: 'one\ntwo\n', language: 'txt',
+      format: { bom: false, lineEnding: '\r', trailingNewline: true },
+    },
+    {
+      name: 'mixed.txt', bytes: Buffer.from('one\r\ntwo\r\nthree\nfour\r'),
+      content: 'one\ntwo\nthree\nfour\n', language: 'txt',
+      format: { bom: false, lineEnding: '\r\n', trailingNewline: true },
+    },
+  ];
+  for (const item of cases) fs.writeFileSync(path.join(fx.project, item.name), item.bytes);
+  const { files, ids } = await admittedFiles(fx.project);
+
+  for (const item of cases) {
+    assert.deepEqual(await files.read({ ...ids, path: item.name }), {
+      ok: true,
+      path: item.name,
+      content: item.content,
+      revision: sha256(item.bytes),
+      ignored: false,
+      language: item.language,
+      format: item.format,
+    });
+  }
+});
+
+test('reports Git-ignored status on readable documents without making it an authorization rule', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.appendFileSync(path.join(fx.project, '.gitignore'), '*.ignored\n');
+  fs.writeFileSync(path.join(fx.project, 'visible.ignored'), 'still readable');
+  const { files, ids } = await admittedFiles(fx.project);
+
+  const result = await files.read({ ...ids, path: 'visible.ignored' });
+  assert.equal(result.ok, true);
+  assert.equal(result.ignored, true);
+});
+
+test('uses listing-equivalent Git paths for file aliases and children of directory aliases', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.mkdirSync(path.join(fx.project, 'target-dir'));
+  fs.writeFileSync(path.join(fx.project, 'target.txt'), 'target');
+  fs.writeFileSync(path.join(fx.project, 'target-dir', 'child.txt'), 'child');
+  fs.symlinkSync('target.txt', path.join(fx.project, 'alias.txt'));
+  fs.symlinkSync('target-dir', path.join(fx.project, 'alias-dir'), 'dir');
+  fs.appendFileSync(path.join(fx.project, '.gitignore'), 'alias.txt\ntarget-dir/child.txt\n');
+  const { files, ids } = await admittedFiles(fx.project);
+
+  assert.equal((await files.read({ ...ids, path: 'alias.txt' })).ignored, true);
+  assert.equal((await files.read({ ...ids, path: 'target.txt' })).ignored, false);
+  assert.equal((await files.read({ ...ids, path: 'alias-dir/child.txt' })).ignored, true);
+});
+
+test('rejects invalid UTF-8, NUL data, non-files, oversized files, and deleted files safely', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(path.join(fx.project, 'invalid.txt'), Buffer.from([0xc3, 0x28]));
+  fs.writeFileSync(path.join(fx.project, 'nul.txt'), Buffer.from('before\0after'));
+  fs.mkdirSync(path.join(fx.project, 'directory'));
+  execFileSync('mkfifo', [path.join(fx.project, 'pipe')]);
+  fs.writeFileSync(path.join(fx.project, 'large.txt'), Buffer.alloc((5 * 1024 * 1024) + 1, 0x61));
+  fs.writeFileSync(path.join(fx.project, 'deleted.txt'), 'gone soon');
+  const { files, ids } = await admittedFiles(fx.project);
+  fs.unlinkSync(path.join(fx.project, 'deleted.txt'));
+
+  assert.deepEqual(await files.read({ ...ids, path: 'invalid.txt' }), { ok: false, error: 'not-text' });
+  assert.deepEqual(await files.read({ ...ids, path: 'nul.txt' }), { ok: false, error: 'not-text' });
+  assert.deepEqual(await files.read({ ...ids, path: 'directory' }), { ok: false, error: 'not-file' });
+  assert.deepEqual(await files.read({ ...ids, path: 'pipe' }), { ok: false, error: 'not-file' });
+  assert.deepEqual(await files.read({ ...ids, path: 'large.txt' }), { ok: false, error: 'too-large' });
+  assert.deepEqual(await files.read({ ...ids, path: 'deleted.txt' }), { ok: false, error: 'deleted' });
+});
+
+test('maps file access denial to permission-denied without exposing system errors', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const denied = path.join(fx.project, 'denied.txt');
+  fs.writeFileSync(denied, 'secret');
+  const io = new Proxy(fs, {
+    get(target, property) {
+      if (property === 'openSync') {
+        return (value, flags, mode) => {
+          if (value === denied && flags === 'r') {
+            throw Object.assign(new Error('fixture access denied'), { code: 'EACCES' });
+          }
+          return target.openSync(value, flags, mode);
+        };
+      }
+      return target[property];
+    },
+  });
+  const { files, ids } = await admittedFiles(fx.project, { fs: io });
+
+  assert.deepEqual(await files.read({ ...ids, path: 'denied.txt' }), {
+    ok: false, error: 'permission-denied',
+  });
+});
+
+test('atomically saves exact bytes while retaining mode, BOM, CRLF, and final newline', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'formatted.txt');
+  const original = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('one\r\ntwo\r\n')]);
+  fs.writeFileSync(target, original, { mode: 0o640 });
+  const { files, ids } = await admittedFiles(fx.project);
+  const opened = await files.read({ ...ids, path: 'formatted.txt' });
+
+  const saved = await files.write({
+    ...ids,
+    path: 'formatted.txt',
+    content: opened.content.replace('two', 'edited'),
+    expectedRevision: opened.revision,
+    overwrite: false,
+  });
+  const expected = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('one\r\nedited\r\n')]);
+  assert.deepEqual(saved, { ok: true, revision: sha256(expected) });
+  assert.deepEqual(fs.readFileSync(target), expected);
+  assert.equal(fs.statSync(target).mode & 0o777, 0o640);
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('preserves a no-final-newline convention when editing inside the document', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'no-final.txt');
+  fs.writeFileSync(target, 'one\ntwo');
+  const { files, ids } = await admittedFiles(fx.project);
+  const opened = await files.read({ ...ids, path: 'no-final.txt' });
+
+  const saved = await files.write({
+    ...ids, path: 'no-final.txt', content: 'one\nchanged',
+    expectedRevision: opened.revision, overwrite: false,
+  });
+  assert.equal(saved.ok, true);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'one\nchanged');
+});
+
+test('rejects stale saves and permits explicit overwrite only for an existing eligible target', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'conflict.txt');
+  fs.writeFileSync(target, 'original\n');
+  const { files, ids } = await admittedFiles(fx.project);
+  const opened = await files.read({ ...ids, path: 'conflict.txt' });
+  fs.writeFileSync(target, 'external\n');
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'conflict.txt', content: 'local\n',
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'conflict' });
+  assert.equal(fs.readFileSync(target, 'utf8'), 'external\n');
+
+  const overwritten = await files.write({
+    ...ids, path: 'conflict.txt', content: 'local\n',
+    expectedRevision: opened.revision, overwrite: true,
+  });
+  assert.equal(overwritten.ok, true);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'local\n');
+
+  fs.unlinkSync(target);
+  assert.deepEqual(await files.write({
+    ...ids, path: 'conflict.txt', content: 'must not recreate\n',
+    expectedRevision: overwritten.revision, overwrite: true,
+  }), { ok: false, error: 'deleted' });
+  assert.equal(fs.existsSync(target), false);
+});
+
+test('rejects oversized output before creating a temporary file', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(path.join(fx.project, 'small.txt'), 'small');
+  const { files, ids } = await admittedFiles(fx.project);
+  const opened = await files.read({ ...ids, path: 'small.txt' });
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'small.txt', content: 'x'.repeat((5 * 1024 * 1024) + 1),
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'too-large' });
+  assert.equal(fs.readFileSync(path.join(fx.project, 'small.txt'), 'utf8'), 'small');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('detects a change after temp flush and removes only its own temporary file', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'racing.txt');
+  fs.writeFileSync(target, 'original');
+  let hookCalls = 0;
+  const { files, ids } = await admittedFiles(fx.project, {
+    beforeReplace() {
+      hookCalls += 1;
+      fs.writeFileSync(target, 'external');
+    },
+  });
+  const opened = await files.read({ ...ids, path: 'racing.txt' });
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'racing.txt', content: 'local',
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'conflict' });
+  assert.equal(hookCalls, 1);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'external');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('cleans the exact temporary file when fsync fails', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'fsync.txt');
+  fs.writeFileSync(target, 'original');
+  let tempFd;
+  const io = new Proxy(fs, {
+    get(source, property) {
+      if (property === 'openSync') {
+        return (value, flags, mode) => {
+          const fd = source.openSync(value, flags, mode);
+          if (flags === 'wx') tempFd = fd;
+          return fd;
+        };
+      }
+      if (property === 'fsyncSync') {
+        return (fd) => {
+          if (fd === tempFd) throw Object.assign(new Error('fixture fsync failure'), { code: 'EIO' });
+          return source.fsyncSync(fd);
+        };
+      }
+      return source[property];
+    },
+  });
+  const { files, ids } = await admittedFiles(fx.project, { fs: io });
+  const opened = await files.read({ ...ids, path: 'fsync.txt' });
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'fsync.txt', content: 'local',
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'write-failed' });
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('cleans the exact temporary file when applying the source mode fails', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'mode.txt');
+  fs.writeFileSync(target, 'original');
+  const io = new Proxy(fs, {
+    get(source, property) {
+      if (property === 'fchmodSync') {
+        return () => { throw Object.assign(new Error('fixture chmod failure'), { code: 'EIO' }); };
+      }
+      return source[property];
+    },
+  });
+  const { files, ids } = await admittedFiles(fx.project, { fs: io });
+  const opened = await files.read({ ...ids, path: 'mode.txt' });
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'mode.txt', content: 'local',
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'write-failed' });
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('writes through internal file symlinks without replacing the link', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'target.txt');
+  const link = path.join(fx.project, 'alias.txt');
+  fs.writeFileSync(target, 'original');
+  fs.symlinkSync('target.txt', link);
+  const { files, ids } = await admittedFiles(fx.project);
+  const opened = await files.read({ ...ids, path: 'alias.txt' });
+
+  const saved = await files.write({
+    ...ids, path: 'alias.txt', content: 'updated',
+    expectedRevision: opened.revision, overwrite: false,
+  });
+  assert.equal(saved.ok, true);
+  assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+  assert.equal(fs.readlinkSync(link), 'target.txt');
+  assert.equal(fs.readFileSync(target, 'utf8'), 'updated');
+});
+
+test('fails closed when an internal symlink is retargeted outside before replacement', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'target.txt');
+  const outside = path.join(fx.base, 'outside.txt');
+  const link = path.join(fx.project, 'alias.txt');
+  fs.writeFileSync(target, 'inside');
+  fs.writeFileSync(outside, 'outside');
+  fs.symlinkSync('target.txt', link);
+  const { files, ids } = await admittedFiles(fx.project, {
+    beforeReplace() {
+      fs.unlinkSync(link);
+      fs.symlinkSync(outside, link);
+    },
+  });
+  const opened = await files.read({ ...ids, path: 'alias.txt' });
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'alias.txt', content: 'must not escape',
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'outside-root' });
+  assert.equal(fs.readFileSync(target, 'utf8'), 'inside');
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'outside');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('validates document request paths and write payloads before filesystem mutation', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(path.join(fx.project, 'safe.txt'), 'safe');
+  const { files, ids } = await admittedFiles(fx.project);
+  const opened = await files.read({ ...ids, path: 'safe.txt' });
+
+  for (const unsafe of ['', '../safe.txt', '/etc/passwd', 'a\\b', 'a\0b']) {
+    assert.deepEqual(await files.read({ ...ids, path: unsafe }), { ok: false, error: 'invalid-path' });
+  }
+  assert.deepEqual(await files.read({ ...ids, path: '.git/config' }), {
+    ok: false, error: 'git-metadata-denied',
+  });
+  for (const request of [
+    { content: Buffer.from('no'), expectedRevision: opened.revision, overwrite: false },
+    { content: 'no', expectedRevision: 'not-a-revision', overwrite: false },
+    { content: 'no', expectedRevision: opened.revision, overwrite: 'yes' },
+  ]) {
+    assert.deepEqual(await files.write({ ...ids, path: 'safe.txt', ...request }), {
+      ok: false, error: 'invalid-request',
+    });
+  }
+  assert.equal(fs.readFileSync(path.join(fx.project, 'safe.txt'), 'utf8'), 'safe');
+  assert.deepEqual(documentTemps(fx.project), []);
 });

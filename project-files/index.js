@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const childProcess = require('child_process');
+const { readDocument, writeDocument } = require('./document');
 
 const SOURCES = new Set(['configured', 'picker', 'restored']);
 
@@ -302,13 +303,13 @@ function createProjectFiles(options = {}) {
     return { project, root, real: current.real };
   }
 
-  function resolveContained(root, parts) {
+  function resolveContained(root, parts, { missing = 'unreadable' } = {}) {
     const logical = path.join(root.real, ...parts);
     let real;
     try {
       real = io.realpathSync(logical);
-    } catch (_) {
-      return { error: 'unreadable' };
+    } catch (error) {
+      return { error: error && error.code === 'ENOENT' ? missing : 'unreadable' };
     }
     if (!contained(root.real, real)) return { error: 'outside-root' };
     if (hasGitComponent(root.real, real)) return { error: 'git-metadata-denied' };
@@ -463,6 +464,75 @@ function createProjectFiles(options = {}) {
     };
   }
 
+  function languageHint(relativePath) {
+    const extension = path.posix.extname(relativePath).slice(1).toLowerCase();
+    return extension || 'text';
+  }
+
+  async function resolveDocumentRequest(projectId, rootId, parts) {
+    const selected = await selectedRoot(projectId, rootId);
+    if (selected.error) return { error: selected.error };
+    const target = resolveContained(selected, parts, { missing: 'deleted' });
+    if (target.error) return target;
+    return { selected, target };
+  }
+
+  function documentGitPath(selected, parts) {
+    const parent = resolveContained(selected, parts.slice(0, -1));
+    if (parent.error) return parent;
+    const directory = relativeGitPath(selected.real, parent.real);
+    return { path: directory ? `${directory}/${parts.at(-1)}` : parts.at(-1) };
+  }
+
+  async function read(request = {}) {
+    const parts = relativeParts(request.path);
+    if (!parts) return { ok: false, error: 'invalid-path' };
+    if (parts.includes('.git')) return { ok: false, error: 'git-metadata-denied' };
+    const resolved = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+    if (resolved.error) return { ok: false, error: resolved.error };
+    const snapshot = readDocument(resolved.target, { fs: io });
+    if (!snapshot.ok) return snapshot;
+
+    const candidateGitPath = documentGitPath(resolved.selected, parts);
+    if (candidateGitPath.error) return { ok: false, error: candidateGitPath.error };
+    const gitPath = candidateGitPath.path;
+    const ignored = await gitIgnored(resolved.selected, [gitPath]);
+    if (ignored.error) return { ok: false, error: ignored.error };
+    const current = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+    if (current.error) return { ok: false, error: current.error };
+    if (current.target.real !== resolved.target.real) return { ok: false, error: 'unreadable' };
+
+    return {
+      ok: true,
+      path: request.path,
+      content: snapshot.content,
+      revision: snapshot.revision,
+      ignored: ignored.ignored.has(gitPath),
+      language: languageHint(request.path),
+      format: snapshot.format,
+    };
+  }
+
+  async function write(request = {}) {
+    const parts = relativeParts(request.path);
+    if (!parts) return { ok: false, error: 'invalid-path' };
+    if (parts.includes('.git')) return { ok: false, error: 'git-metadata-denied' };
+    if (typeof request.content !== 'string' || !/^[0-9a-f]{64}$/i.test(request.expectedRevision)
+      || typeof request.overwrite !== 'boolean') {
+      return { ok: false, error: 'invalid-request' };
+    }
+    const resolved = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+    if (resolved.error) return { ok: false, error: resolved.error };
+    return writeDocument(resolved.target, request, {
+      fs: io,
+      beforeReplace: options.beforeReplace,
+      revalidate: async () => {
+        const current = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+        return current.error ? { error: current.error } : current.target;
+      },
+    });
+  }
+
   return {
     admitProject,
     replaceAdmissions,
@@ -470,6 +540,8 @@ function createProjectFiles(options = {}) {
     openProject,
     describeWorktrees,
     list,
+    read,
+    write,
   };
 }
 
