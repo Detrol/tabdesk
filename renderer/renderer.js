@@ -57,6 +57,25 @@ panels.appendChild(overviewEl);
 let overviewCwd = null;      // the project the overview is showing, if any
 let stripOverview = null;    // its tab in the strip, while one is rendered
 
+const fileView = window.TabDeskFiles.createFileView({
+  api: window.api,
+  t: (key, vars) => window.t(key, vars),
+  confirmDiscard: (path) => window.confirm(window.t('files.discard', { path })),
+  confirmReload: (path) => window.confirm(window.t('files.reloadConfirm', { path })),
+  copyText: (text) => window.api.copySelection(text),
+  toast,
+  theme: window.ui.theme,
+});
+panels.appendChild(fileView.element);
+let filesCwd = null;
+let stripFiles = null;
+
+window.addEventListener('beforeunload', (event) => {
+  if (!fileView.hasUnsavedChanges()) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
 // ---- System tray mirror ----------------------------------------------------
 // The tray menu in the main process is a mirror of the rail. Push a snapshot on
 // every change that the menu shows: which tabs exist, their names, which is
@@ -440,12 +459,22 @@ function revealClippedStripTab(id) {
   if (!tabVisible) t.tabEl.scrollIntoView({ block: 'nearest', inline: 'center' });
 }
 
-function setActive(id) {
+function leaveFiles() {
+  if (!filesCwd) return true;
+  if (!fileView.canLeave()) return false;
+  filesCwd = null;
+  fileView.deactivate().catch(() => {});
+  return true;
+}
+
+function setActive(id, { skipFileGuard = false } = {}) {
   const t = tabs.get(id);
-  if (!t) return;
+  if (!t) return false;
+  if (!skipFileGuard && !leaveFiles()) return false;
   // A session names its own project: reaching one from the tray, or from a
   // strip the rail has not caught up with, has to move the rail too.
-  if (activeCwd !== t.projectCwd) selectProject(t.projectCwd, { open: false });
+  if (activeCwd !== t.projectCwd
+    && !selectProject(t.projectCwd, { open: false, skipFileGuard: true })) return false;
   overviewCwd = null;
   if (!t.materialized) materialize(t);
 
@@ -472,6 +501,19 @@ function setActive(id) {
     else if (t.term) t.term.focus();
   });
   syncTray();
+  return true;
+}
+
+// A terminal already visible beside Overview or Files can take keyboard focus
+// without navigating away from that special view. Keep every direct panel
+// focus path on this one state transition so none of them tears down Files.
+function focusVisibleTerminal(id) {
+  if (!tabs.has(id) || activeId === id) return false;
+  activeId = id;
+  applyLayout();
+  revealClippedStripTab(id);
+  syncTray();
+  return true;
 }
 
 // ---- Dropping files onto a pane ----
@@ -514,7 +556,7 @@ function wireDrop(panelEl, id, deliver) {
     if (!paths.length) return;
 
     // Drop on a pane you weren't in: that pane is what you meant.
-    if (activeId !== id) { activeId = id; applyLayout(); revealClippedStripTab(id); }
+    focusVisibleTerminal(id);
 
     // Trailing space, so a second drop appends another argument rather than
     // gluing itself to the first.
@@ -589,7 +631,8 @@ if (EMBED_NATIVE) {
 // sessions you pinned rather than replacing them.
 function applyLayout() {
   const ids = shownIds();
-  const n = ids.length + (overviewCwd ? 1 : 0);
+  const specialCwd = filesCwd || overviewCwd;
+  const n = ids.length + (specialCwd ? 1 : 0);
   emptyState.classList.toggle('hidden', n > 0);
 
   const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
@@ -599,6 +642,8 @@ function applyLayout() {
 
   overviewEl.classList.toggle('shown', !!overviewCwd);
   overviewEl.classList.toggle('focused', !!overviewCwd && n > 1);
+  fileView.element.classList.toggle('shown', !!filesCwd);
+  fileView.element.classList.toggle('focused', !!filesCwd && n > 1);
 
   for (const [tid, tt] of tabs) {
     const shown = ids.includes(tid);
@@ -616,6 +661,7 @@ function applyLayout() {
     p.el.classList.toggle('pinned', sessionsOf(cwd).some((t) => pinned.has(t.id)));
   }
   if (stripOverview) stripOverview.classList.toggle('focused', !!overviewCwd);
+  if (stripFiles) stripFiles.classList.toggle('focused', !!filesCwd);
   // The model, the effort and the agent belong to the session in focus, so
   // all three follow it. So does the place readout (project / worktree).
   renderPlace();
@@ -1041,7 +1087,7 @@ function materialize(t) {
     const ro = new ResizeObserver(() => scheduleSync());
     ro.observe(panelEl);
     panelEl.addEventListener('mousedown', () => {
-      if (activeId !== id) { activeId = id; applyLayout(); revealClippedStripTab(id); }
+      focusVisibleTerminal(id);
     });
     wireDrop(panelEl, id, (text) => window.api.insertIntoEmbed(id, text));
     window.api.createEmbedTerminal(id, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null, t.name);
@@ -1180,7 +1226,7 @@ function materialize(t) {
 
   // Clicking a panel makes it the focused one (screenshot / keyboard target).
   panelEl.addEventListener('mousedown', () => {
-    if (activeId !== id) { activeId = id; applyLayout(); revealClippedStripTab(id); }
+    focusVisibleTerminal(id);
   });
 
   // In-app backend: the pty is ours, so the path goes straight down it.
@@ -1241,13 +1287,17 @@ function closeTab(id) {
   // project's terminal, which is not where you were.
   if (activeId === id) {
     activeId = null;
-    const left = sessionsOf(owner);
-    if (left.length) { setActive(left[left.length - 1].id); return; }
-    if (p) { showOverview(owner); return; }
+    // A terminal focused directly beside a special panel does not make that
+    // special view go away. Closing it therefore clears only terminal focus.
+    if (!overviewCwd && !filesCwd) {
+      const left = sessionsOf(owner);
+      if (left.length) { setActive(left[left.length - 1].id); return; }
+      if (p) { showOverview(owner); return; }
+    }
   }
   applyLayout();
   syncTray();
-  if (!tabs.size && !overviewCwd) emptyState.classList.remove('hidden');
+  if (!tabs.size && !overviewCwd && !filesCwd) emptyState.classList.remove('hidden');
 }
 
 // ---- Starting a session ----------------------------------------------------
@@ -1286,6 +1336,7 @@ function worktreeFolder(cwd) {
 // stays unnumbered — unless a session that hasn't started yet is already
 // promised that plain name, which only main can tell once it knows the slug.
 async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
+  if (!leaveFiles()) return null;
   const owner = projectCwd || ownerOf(cwd);
   const agent = agentFor({ cwd, agent: agentId });
   const siblings = sessionsOf(owner).filter((x) => x.cwd === cwd);
@@ -1336,11 +1387,15 @@ addBtn.addEventListener('click', async () => {
   if (!choice) return;
 
   if (choice.kind === 'shell') {
+    if (!leaveFiles()) return;
     // A loose terminal is the shell of the project you are in, not a project
     // of its own — it opens in that project's strip and is gone when closed.
-    setActive(buildTab({ name: `Terminal ${++adHoc}`, cwd: null, projectCwd: activeCwd }));
+    setActive(buildTab({ name: `Terminal ${++adHoc}`, cwd: null, projectCwd: activeCwd }),
+      { skipFileGuard: true });
     return;
   }
+
+  if (!leaveFiles()) return;
 
   // "Starts with" from the picker: an explicit override, stored against the
   // project exactly like the rail's agent menu stores it. Left untouched there,
@@ -1354,18 +1409,18 @@ addBtn.addEventListener('click', async () => {
   // the rail again at the next start.
   window.api.setProjectClosed(choice.path, false);
 
-  const owner = ownerOf(choice.path);
+  const owner = choice.projectPath || ownerOf(choice.path);
   if (!projects.has(owner)) {
     buildProject({ name: owner.split('/').pop(), path: owner, worktrees: [] }, { atTop: true });
   }
-  selectProject(owner, { open: false });
+  selectProject(owner, { open: false, skipFileGuard: true });
 
   // A named runtime, or a worktree, is an ask to start something; a project on
   // its own is an ask to look at it.
   if (choice.agent || choice.path !== owner) {
     await newSession(choice.path, choice.agent, { projectCwd: owner });
   } else {
-    selectProject(owner);
+    selectProject(owner, { skipFileGuard: true });
   }
 });
 
@@ -1405,22 +1460,25 @@ function buildProject(p, { atTop } = {}) {
 // Clicking a project shows what it has. Something running is what you meant to
 // get back to — the session you were last in — and nothing running means the
 // overview, which is where one is started or an earlier one picked up.
-function selectProject(cwd, { open = true } = {}) {
-  if (!projects.has(cwd)) return;
+function selectProject(cwd, { open = true, skipFileGuard = false } = {}) {
+  if (!projects.has(cwd)) return false;
+  const navigates = open || cwd !== activeCwd;
+  if (!skipFileGuard && navigates && !leaveFiles()) return false;
   activeCwd = cwd;
   renderStrip();
-  if (!open) { applyLayout(); return; }
+  if (!open) { applyLayout(); return true; }
   const p = projects.get(cwd);
   const mine = sessionsOf(cwd);
   const last = p.lastId && tabs.has(p.lastId)
     ? p.lastId
     : (mine.length ? mine[mine.length - 1].id : null);
-  if (last) setActive(last);
-  else showOverview(cwd);
+  if (last) return setActive(last, { skipFileGuard: true });
+  return showOverview(cwd, { skipFileGuard: true });
 }
 
-function showOverview(cwd) {
-  if (!projects.has(cwd)) return;
+function showOverview(cwd, { skipFileGuard = false } = {}) {
+  if (!projects.has(cwd)) return false;
+  if (!skipFileGuard && !leaveFiles()) return false;
   activeCwd = cwd;
   overviewCwd = cwd;
   activeId = null;
@@ -1428,6 +1486,21 @@ function showOverview(cwd) {
   renderOverview(cwd);
   applyLayout();
   syncTray();
+  return true;
+}
+
+function showFiles(cwd) {
+  if (!projects.has(cwd)) return false;
+  if (filesCwd && filesCwd !== cwd && !leaveFiles()) return false;
+  overviewCwd = null;
+  activeCwd = cwd;
+  activeId = null;
+  filesCwd = cwd;
+  renderStrip();
+  applyLayout();
+  syncTray();
+  fileView.activate(cwd).catch(() => {});
+  return true;
 }
 
 // ---- The strip: the selected project's sessions -----------------------------
@@ -1437,6 +1510,7 @@ function renderStrip() {
   const mine = sessionsOf(activeCwd);
   strip.textContent = '';
   stripOverview = null;
+  stripFiles = null;
   strip.classList.toggle('hidden', !p && !mine.length);
 
   if (p) {
@@ -1448,6 +1522,15 @@ function renderStrip() {
     strip.appendChild(ov);
     stripOverview = ov;
     if (overviewCwd === p.path) ov.classList.add('focused');
+
+    const files = document.createElement('button');
+    files.className = 'stab files';
+    files.textContent = `▤ ${t('strip.files')}`;
+    files.title = t('strip.files.title', { project: p.name });
+    files.addEventListener('click', () => showFiles(p.path));
+    strip.appendChild(files);
+    stripFiles = files;
+    if (filesCwd === p.path) files.classList.add('focused');
   }
 
   for (const s of mine) strip.appendChild(s.tabEl);
@@ -2491,7 +2574,7 @@ window.api.listProjects().then((list) => {
   return window.api.restoreTabs();
 }).then((records) => {
   for (const rec of records || []) {
-    const owner = ownerOf(rec.cwd);
+    const owner = rec.projectPath || ownerOf(rec.cwd);
     if (!projects.has(owner)) {
       buildProject({ name: owner.split('/').pop(), path: owner, worktrees: [] });
     }
@@ -3127,6 +3210,7 @@ function tickClock() {
 // the desktop's theme or language changes under us.
 window.ui.onChange((kind, payload) => {
   if (kind === 'language') {
+    fileView.onLanguage();
     syncGridBtn();
     renderPlace();
     renderModelBtn();
@@ -3146,9 +3230,12 @@ window.ui.onChange((kind, payload) => {
     renderStrip();
     if (overviewCwd) renderOverview(overviewCwd);
     if (!instrEl.classList.contains('hidden')) instrFillScopes();
-  } else if (kind === 'theme' && payload.terminal) {
-    for (const t of tabs.values()) {
-      if (t.term) t.term.options.theme = payload.terminal;
+  } else if (kind === 'theme') {
+    fileView.onTheme(payload);
+    if (payload.terminal) {
+      for (const t of tabs.values()) {
+        if (t.term) t.term.options.theme = payload.terminal;
+      }
     }
   }
 });

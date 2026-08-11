@@ -1,6 +1,55 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const State = require('../renderer/file-state');
+
+const readJSON = (relativePath) => JSON.parse(fs.readFileSync(
+  path.join(__dirname, '..', relativePath), 'utf8',
+));
+
+const REQUIRED_FILE_KEYS = [
+  'strip.files',
+  'strip.files.title',
+  'files.panel',
+  'files.root',
+  'files.showIgnored',
+  'files.tree',
+  'files.save',
+  'files.saved',
+  'files.noFile',
+  'files.loading',
+  'files.dirty',
+  'files.conflict',
+  'files.deleted',
+  'files.ignored',
+  'files.watchFailed',
+  'files.reload',
+  'files.reloadConfirm',
+  'files.overwrite',
+  'files.copy',
+  'files.copied',
+  'files.discard',
+  'files.rootGone',
+  'files.retry',
+  'files.symlink',
+  'files.unavailable.outside-root',
+  'files.unavailable.unreadable',
+  'files.unavailable.not-file',
+  'files.error.project-unavailable',
+  'files.error.root-unavailable',
+  'files.error.invalid-path',
+  'files.error.git-metadata-denied',
+  'files.error.not-file',
+  'files.error.not-text',
+  'files.error.too-large',
+  'files.error.permission-denied',
+  'files.error.unreadable',
+  'files.error.deleted',
+  'files.error.conflict',
+  'files.error.write-failed',
+  'files.error.watch-failed',
+];
 
 const loading = State.reduce(State.initial(), {
   type: 'open-start', request: 1, path: 'src/app.js',
@@ -8,6 +57,26 @@ const loading = State.reduce(State.initial(), {
 const opened = State.reduce(loading, {
   type: 'open-success', request: 1, path: 'src/app.js',
   content: 'one\n', revision: 'a', ignored: false,
+});
+
+test('file editor locale contract is complete and identical in English and Swedish', () => {
+  const locales = [readJSON('i18n/en.json'), readJSON('i18n/sv.json')];
+  const relevantKeys = (locale) => Object.keys(locale)
+    .filter((key) => key.startsWith('files.') || key.startsWith('strip.files'))
+    .sort();
+
+  for (const locale of locales) {
+    for (const key of REQUIRED_FILE_KEYS) {
+      assert.equal(typeof locale[key], 'string', `missing locale key: ${key}`);
+      assert.notEqual(locale[key], '', `empty locale key: ${key}`);
+    }
+  }
+  assert.deepEqual(relevantKeys(locales[0]), relevantKeys(locales[1]));
+});
+
+test('packaged app includes the project file service', () => {
+  const pkg = readJSON('package.json');
+  assert.ok(pkg.build.files.includes('project-files/**'));
 });
 
 test('initial state has no live or disk document', () => {

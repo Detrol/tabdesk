@@ -68,6 +68,7 @@
       "activity.js",
       "asking.js",
       "projects-root.js",
+      "project-files/**",
       "app-runner.js",
       "usage-worker.js",
       "usage-limits.js",
