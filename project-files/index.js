@@ -23,12 +23,28 @@ function hasGitComponent(root, target) {
   return path.relative(root, target).split(path.sep).includes('.git');
 }
 
+function relativeGitPath(root, target) {
+  return path.relative(root, target).split(path.sep).join('/');
+}
+
+function sameDirectory(left, right) {
+  return Boolean(left && right && left.real === right.real && left.dev === right.dev
+    && left.ino === right.ino && left.birthtimeMs === right.birthtimeMs);
+}
+
 function safeDirectory(io, dir) {
   if (typeof dir !== 'string' || !dir) return null;
   const logical = path.resolve(dir);
   try {
-    if (!io.statSync(logical).isDirectory()) return null;
-    return { logical, real: io.realpathSync(logical) };
+    const stats = io.statSync(logical);
+    if (!stats.isDirectory()) return null;
+    return {
+      logical,
+      real: io.realpathSync(logical),
+      dev: stats.dev,
+      ino: stats.ino,
+      birthtimeMs: stats.birthtimeMs,
+    };
   } catch (_) {
     return null;
   }
@@ -56,12 +72,15 @@ function createProjectFiles(options = {}) {
     if (!dir) return { ok: false, error: 'project-unavailable' };
 
     let project = byPath.get(dir.logical);
-    if (!project || project.real !== dir.real) {
+    if (!project || !sameDirectory(project, dir)) {
       if (project) byId.delete(project.id);
       project = {
         id: crypto.randomUUID(),
         logical: dir.logical,
         real: dir.real,
+        dev: dir.dev,
+        ino: dir.ino,
+        birthtimeMs: dir.birthtimeMs,
         sources: new Set(),
         rootsByKey: new Map(),
         rootsById: new Map(),
@@ -149,7 +168,7 @@ function createProjectFiles(options = {}) {
 
   function refreshProject(project) {
     const current = safeDirectory(io, project.logical);
-    if (!current || current.real !== project.real) {
+    if (!sameDirectory(project, current)) {
       revoke(project);
       return null;
     }
@@ -160,28 +179,38 @@ function createProjectFiles(options = {}) {
     if (!refreshProject(project)) return false;
     for (const worktree of worktrees) {
       const current = safeDirectory(io, worktree.logical);
-      if (!current || current.real !== worktree.real) return false;
+      if (!sameDirectory(worktree, current)) return false;
     }
     return Boolean(refreshProject(project));
   }
 
   function refreshRoots(project, worktrees) {
     const rootDirectories = [
-      { logical: project.logical, real: project.real, kind: 'project', label: path.basename(project.logical) },
+      {
+        logical: project.logical,
+        real: project.real,
+        dev: project.dev,
+        ino: project.ino,
+        birthtimeMs: project.birthtimeMs,
+        kind: 'project',
+        label: path.basename(project.logical),
+      },
       ...worktrees.map((worktree) => ({ ...worktree, kind: 'worktree' })),
     ];
     const nextByKey = new Map();
     const nextById = new Map();
 
     for (const directory of rootDirectories) {
-      const key = `${directory.logical}\0${directory.real}`;
+      const key = `${directory.logical}\0${directory.real}\0${directory.dev}\0${directory.ino}\0${directory.birthtimeMs}`;
       const root = project.rootsByKey.get(key) || { id: crypto.randomUUID(), ...directory };
       nextByKey.set(key, root);
       nextById.set(root.id, root);
     }
     project.rootsByKey = nextByKey;
     project.rootsById = nextById;
-    return rootDirectories.map((directory) => project.rootsByKey.get(`${directory.logical}\0${directory.real}`));
+    return rootDirectories.map((directory) => project.rootsByKey.get(
+      `${directory.logical}\0${directory.real}\0${directory.dev}\0${directory.ino}\0${directory.birthtimeMs}`,
+    ));
   }
 
   async function openProject(projectPath) {
@@ -241,7 +270,7 @@ function createProjectFiles(options = {}) {
     const root = typeof rootId === 'string' && project.rootsById.get(rootId);
     if (!root) return { error: 'project-unavailable' };
     const current = safeDirectory(io, root.logical);
-    if (!current || current.real !== root.real) return { error: 'project-unavailable' };
+    if (!sameDirectory(root, current)) return { error: 'project-unavailable' };
 
     if (root.kind === 'worktree') {
       const projectCommonDir = await gitCommonDir(project.logical);
@@ -252,7 +281,7 @@ function createProjectFiles(options = {}) {
       const refreshedRoot = refreshed && refreshed.rootsById.get(rootId);
       const refreshedCurrent = refreshedRoot && safeDirectory(io, refreshedRoot.logical);
       if (refreshed !== project || refreshedRoot !== root || !refreshProject(project)
-        || !refreshedCurrent || refreshedCurrent.real !== root.real) {
+        || !sameDirectory(root, refreshedCurrent)) {
         return { error: 'project-unavailable' };
       }
     }
@@ -271,6 +300,43 @@ function createProjectFiles(options = {}) {
     if (!contained(root.real, real)) return { error: 'outside-root' };
     if (hasGitComponent(root.real, real)) return { error: 'git-metadata-denied' };
     return { logical, real };
+  }
+
+  function directorySnapshot(root, parts) {
+    const target = resolveContained(root, parts);
+    if (target.error) return target;
+    let stats;
+    try {
+      stats = io.statSync(target.real);
+    } catch (_) {
+      return { error: 'unreadable' };
+    }
+    if (!stats.isDirectory()) return { error: 'not-directory' };
+    const current = resolveContained(root, parts);
+    if (current.error) return current;
+    if (current.real !== target.real) return { error: 'unreadable' };
+    let currentStats;
+    try {
+      currentStats = io.statSync(current.real);
+    } catch (_) {
+      return { error: 'unreadable' };
+    }
+    if (!currentStats.isDirectory() || currentStats.dev !== stats.dev || currentStats.ino !== stats.ino
+      || currentStats.birthtimeMs !== stats.birthtimeMs) {
+      return { error: 'unreadable' };
+    }
+    return { target, identity: { dev: stats.dev, ino: stats.ino, birthtimeMs: stats.birthtimeMs } };
+  }
+
+  function currentDirectory(root, parts, snapshot) {
+    const current = directorySnapshot(root, parts);
+    if (current.error) return current;
+    if (current.target.real !== snapshot.target.real
+      || current.identity.dev !== snapshot.identity.dev || current.identity.ino !== snapshot.identity.ino
+      || current.identity.birthtimeMs !== snapshot.identity.birthtimeMs) {
+      return { error: 'unreadable' };
+    }
+    return current;
   }
 
   function inspectEntry(root, directoryParts, directoryReal, name) {
@@ -317,11 +383,18 @@ function createProjectFiles(options = {}) {
     } catch (_) {
       entry.unavailable = 'unreadable';
     }
+    entry.gitPath = relativeGitPath(root.real, real);
     return entry;
   }
 
   function gitIgnored(root, paths) {
-    if (!paths.length) return Promise.resolve(new Set());
+    if (!paths.length) return Promise.resolve({ ignored: new Set() });
+    try {
+      io.lstatSync(path.join(root.real, '.git'));
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return Promise.resolve({ ignored: new Set() });
+      return Promise.resolve({ error: 'git-unavailable' });
+    }
     return new Promise((resolve) => {
       let child;
       try {
@@ -329,16 +402,16 @@ function createProjectFiles(options = {}) {
           stdio: ['pipe', 'pipe', 'ignore'],
         });
       } catch (_) {
-        resolve(new Set());
+        resolve({ error: 'git-unavailable' });
         return;
       }
       const output = [];
       child.stdout.on('data', (chunk) => output.push(chunk));
-      child.on('error', () => resolve(new Set()));
+      child.on('error', () => resolve({ error: 'git-unavailable' }));
       child.on('close', (code) => {
-        if (code !== 0 && code !== 1) return resolve(new Set());
+        if (code !== 0 && code !== 1) return resolve({ error: 'git-unavailable' });
         const ignored = Buffer.concat(output).toString('utf8').split('\0').filter(Boolean);
-        return resolve(new Set(ignored));
+        return resolve({ ignored: new Set(ignored) });
       });
       child.stdin.end(Buffer.from(`${paths.join('\0')}\0`, 'utf8'));
     });
@@ -350,33 +423,32 @@ function createProjectFiles(options = {}) {
     if (parts.includes('.git')) return { ok: false, error: 'git-metadata-denied' };
     const selected = await selectedRoot(projectId, rootId);
     if (selected.error) return { ok: false, error: selected.error };
-    const target = resolveContained(selected, parts);
-    if (target.error) return { ok: false, error: target.error };
-    let directoryStats;
-    try {
-      directoryStats = io.statSync(target.real);
-    } catch (_) {
-      return { ok: false, error: 'unreadable' };
-    }
-    if (!directoryStats.isDirectory()) return { ok: false, error: 'not-directory' };
+    const snapshot = directorySnapshot(selected, parts);
+    if (snapshot.error) return { ok: false, error: snapshot.error };
 
     let names;
     try {
-      names = io.readdirSync(target.real);
+      names = io.readdirSync(snapshot.target.real);
     } catch (_) {
       return { ok: false, error: 'unreadable' };
     }
     const entries = names
-      .map((name) => inspectEntry(selected, parts, target.real, name))
+      .map((name) => inspectEntry(selected, parts, snapshot.target.real, name))
       .filter(Boolean);
-    const ignored = await gitIgnored(selected, entries.map((entry) => entry.path));
-    for (const entry of entries) entry.ignored = ignored.has(entry.path);
+    const beforeGit = currentDirectory(selected, parts, snapshot);
+    if (beforeGit.error) return { ok: false, error: beforeGit.error };
+    const ignored = await gitIgnored(selected, [...new Set(entries.map((entry) => entry.gitPath).filter(Boolean))]);
+    if (ignored.error) return { ok: false, error: ignored.error };
+    const afterGit = currentDirectory(selected, parts, snapshot);
+    if (afterGit.error) return { ok: false, error: afterGit.error };
+    for (const entry of entries) entry.ignored = Boolean(entry.gitPath && ignored.ignored.has(entry.gitPath));
     entries.sort((left, right) => (left.kind === 'directory') === (right.kind === 'directory')
       ? left.name.localeCompare(right.name)
       : left.kind === 'directory' ? -1 : 1);
+    const publicEntries = entries.map(({ gitPath, ...entry }) => entry);
     return {
       ok: true,
-      entries: showIgnored === true ? entries : entries.filter((entry) => !entry.ignored),
+      entries: showIgnored === true ? publicEntries : publicEntries.filter((entry) => !entry.ignored),
     };
   }
 

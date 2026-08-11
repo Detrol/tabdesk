@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile, execFileSync } = require('child_process');
+const { EventEmitter } = require('events');
 const { createProjectFiles } = require('../project-files');
 
 function fixture() {
@@ -434,4 +435,182 @@ test('uses Git ignore rules in one listing while retaining tracked matches', asy
   const nestedAll = await files.list({ ...ids, directory: 'nested', showIgnored: true });
   assert.equal(nestedAll.entries.find(({ name }) => name === 'hidden.log').ignored, true);
   assert.equal(nestedAll.entries.find(({ name }) => name === 'keep.log').ignored, false);
+});
+
+test('checks internal directory aliases through their canonical Git paths', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, '.gitignore'), '*.tmp\n');
+  fs.mkdirSync(path.join(fx.project, 'target'));
+  fs.writeFileSync(path.join(fx.project, 'target', 'secret.tmp'), 'secret');
+  fs.symlinkSync('target', path.join(fx.project, 'alias'), 'dir');
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  const hidden = await files.list({ ...ids, directory: 'alias' });
+  assert.equal(hidden.ok, true);
+  assert.equal(hidden.entries.some(({ name }) => name === 'secret.tmp'), false);
+  const shown = await files.list({ ...ids, directory: 'alias', showIgnored: true });
+  assert.deepEqual(shown.entries.find(({ name }) => name === 'secret.tmp'), {
+    name: 'secret.tmp', path: 'alias/secret.tmp', kind: 'file', hidden: false, ignored: true,
+    symlink: false, unavailable: undefined,
+  });
+});
+
+test('uses one NUL Git batch, distinguishes fatal errors, and skips verified non-Git roots', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  const spawns = [];
+  let status = 1;
+  function fakeSpawn(file, args, options) {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stdin = {
+      end(input) {
+        spawns.push({ file, args, options, input: Buffer.from(input) });
+        process.nextTick(() => child.emit('close', status));
+      },
+    };
+    return child;
+  }
+  const files = createProjectFiles({ spawn: fakeSpawn });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  const noMatches = await files.list({ ...ids, directory: '' });
+  assert.equal(noMatches.ok, true);
+  assert.equal(spawns.length, 1);
+  assert.deepEqual(spawns[0].args, ['-C', fx.project, 'check-ignore', '--stdin', '-z']);
+  assert.deepEqual(spawns[0].options, { stdio: ['pipe', 'pipe', 'ignore'] });
+  assert.equal(spawns[0].input.at(-1), 0);
+  assert.match(spawns[0].input.toString('utf8'), /normal\.txt\0/);
+
+  status = 128;
+  assert.deepEqual(await files.list({ ...ids, directory: '' }), { ok: false, error: 'git-unavailable' });
+
+  const plain = path.join(fx.base, 'plain');
+  fs.mkdirSync(plain);
+  fs.writeFileSync(path.join(plain, 'normal.txt'), 'normal');
+  const plainFiles = createProjectFiles({ spawn: () => { throw new Error('must not spawn'); } });
+  plainFiles.admitProject(plain, 'configured');
+  const plainIds = await openedRoot(plainFiles, plain);
+  assert.deepEqual(await plainFiles.list({ ...plainIds, directory: '' }), {
+    ok: true,
+    entries: [{
+      name: 'normal.txt', path: 'normal.txt', kind: 'file', hidden: false, ignored: false,
+      symlink: false, unavailable: undefined,
+    }],
+  });
+});
+
+test('fails closed when a directory is retargeted between containment and enumeration', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const directory = path.join(fx.project, 'changing-directory');
+  const outside = path.join(fx.base, 'outside');
+  fs.mkdirSync(directory);
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(directory, 'inside.txt'), 'inside');
+  fs.writeFileSync(path.join(outside, 'outside-only.txt'), 'outside');
+  let retargeted = false;
+  const files = createProjectFiles({
+    fs: {
+      statSync: fs.statSync,
+      lstatSync: fs.lstatSync,
+      readdirSync: fs.readdirSync,
+      realpathSync(value) {
+        const resolved = fs.realpathSync(value);
+        if (!retargeted && value === directory) {
+          fs.rmSync(directory, { recursive: true, force: true });
+          fs.symlinkSync(outside, directory, 'dir');
+          retargeted = true;
+        }
+        return resolved;
+      },
+    },
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  const listed = await files.list({ ...ids, directory: 'changing-directory' });
+  assert.equal(retargeted, true);
+  assert.deepEqual(listed, { ok: false, error: 'outside-root' });
+  assert.notEqual(listed.entries?.some(({ name }) => name === 'outside-only.txt'), true);
+});
+
+test('denies cross-project, revoked, vanished, and repointed root IDs', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const other = path.join(fx.base, 'other-project');
+  fs.mkdirSync(other);
+  const files = createProjectFiles();
+  files.replaceAdmissions('configured', [fx.project, other]);
+  const first = await openedRoot(files, fx.project);
+  const second = await openedRoot(files, other);
+
+  assert.deepEqual(await files.list({ projectId: second.projectId, rootId: first.rootId, directory: '' }), {
+    ok: false, error: 'project-unavailable',
+  });
+  files.replaceAdmissions('configured', [other]);
+  assert.deepEqual(await files.list({ ...first, directory: '' }), { ok: false, error: 'project-unavailable' });
+
+  files.replaceAdmissions('configured', [fx.project]);
+  const reAdmitted = await openedRoot(files, fx.project);
+  fs.rmSync(fx.project, { recursive: true, force: true });
+  fs.mkdirSync(fx.project);
+  assert.deepEqual(await files.list({ ...reAdmitted, directory: '' }), { ok: false, error: 'project-unavailable' });
+
+  const replacement = path.join(fx.base, 'replacement');
+  const link = path.join(fx.base, 'project-link');
+  fs.mkdirSync(replacement);
+  fs.symlinkSync(fx.project, link, 'dir');
+  const linkedFiles = createProjectFiles();
+  linkedFiles.admitProject(link, 'configured');
+  const linked = await openedRoot(linkedFiles, link);
+  fs.unlinkSync(link);
+  fs.symlinkSync(replacement, link, 'dir');
+  assert.deepEqual(await linkedFiles.list({ ...linked, directory: '' }), { ok: false, error: 'project-unavailable' });
+});
+
+test('denies a worktree root after its Git common-directory relationship changes', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const opened = await files.openProject(fx.project);
+  const worktreeId = opened.roots.find(({ kind }) => kind === 'worktree').id;
+
+  fs.writeFileSync(path.join(worktree, '.git'), 'gitdir: /definitely-not-a-worktree\n');
+  assert.deepEqual(await files.list({ projectId: opened.projectId, rootId: worktreeId, directory: '' }), {
+    ok: false, error: 'project-unavailable',
+  });
+});
+
+test('labels FIFO entries as unavailable and exposes only public entry keys', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const fifo = path.join(fx.project, 'pipe');
+  execFileSync('mkfifo', [fifo]);
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  const listed = await files.list({ ...ids, directory: '' });
+  const entry = listed.entries.find(({ name }) => name === 'pipe');
+  assert.deepEqual(entry, {
+    name: 'pipe', path: 'pipe', kind: 'other', hidden: false, ignored: false, symlink: false,
+    unavailable: 'not-file',
+  });
+  assert.deepEqual(Object.keys(entry).sort(), [
+    'hidden', 'ignored', 'kind', 'name', 'path', 'symlink', 'unavailable',
+  ]);
+  assert.equal(Object.values(entry).some((value) => typeof value === 'string' && value.includes(fx.project)), false);
 });
