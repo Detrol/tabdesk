@@ -311,14 +311,24 @@ test('post-override terminal paths require navigation or renderer/window death',
   }
 });
 
-test('post-override timeout replaces the live renderer before reporting committed success', async () => {
+test('timeout-induced process death stays pending until the owner is actually closed', async () => {
   const harness = leaveHarness({ navigation: 'deferred' });
   const ownerWindow = new EventEmitter();
-  ownerWindow.isDestroyed = () => false;
+  let ownerDestroyed = false;
+  ownerWindow.isDestroyed = () => ownerDestroyed;
+  ownerWindow.destroy = () => {
+    ownerDestroyed = true;
+    ownerWindow.emit('closed');
+  };
   let rendererDeaths = 0;
+  let resultResolved = false;
+  let pendingAtRendererDeath = false;
   harness.sender.forcefullyCrashRenderer = () => {
     rendererDeaths += 1;
-    queueMicrotask(() => harness.sender.emit('render-process-gone', {}, { reason: 'killed' }));
+    queueMicrotask(() => {
+      harness.sender.emit('render-process-gone', {}, { reason: 'killed' });
+      queueMicrotask(() => { pendingAtRendererDeath = !resultResolved; });
+    });
   };
   const effects = [];
   const gate = createGate(harness, ['leave-token'], { navigationTimeoutMs: 5 });
@@ -328,6 +338,7 @@ test('post-override timeout replaces the live renderer before reporting committe
     rollback: () => { effects.push('rollback'); return { ok: true }; },
     finalize: () => { effects.push('finalize'); },
   });
+  resultPromise.then(() => { resultResolved = true; });
   await new Promise((resolve) => setImmediate(resolve));
   harness.sender.emit('will-prevent-unload', { preventDefault() {} });
 
@@ -337,6 +348,45 @@ test('post-override timeout replaces the live renderer before reporting committe
   assert.deepEqual(result, { ok: true, path: '/new-root' });
   assert.equal(rendererDeaths, 1);
   assert.equal(harness.reloads(), 2);
+  assert.equal(pendingAtRendererDeath, true);
+  assert.equal(ownerDestroyed, true);
+  assert.deepEqual(effects, ['persist', 'finalize']);
+});
+
+test('unrelated post-override process death reloads and waits for exact replacement navigation', async () => {
+  const harness = leaveHarness({ navigation: 'deferred' });
+  const ownerWindow = new EventEmitter();
+  ownerWindow.isDestroyed = () => false;
+  let recoveryCrashes = 0;
+  let resultResolved = false;
+  harness.sender.forcefullyCrashRenderer = () => { recoveryCrashes += 1; };
+  const effects = [];
+  const gate = createGate(harness, ['leave-token'], { navigationTimeoutMs: 30 });
+  const resultPromise = gate.run(harness.sender, {
+    ownerWindow,
+    commit: () => { effects.push('persist'); return { ok: true, path: '/new-root' }; },
+    rollback: () => { effects.push('rollback'); return { ok: true }; },
+    finalize: () => { effects.push('finalize'); },
+  });
+  resultPromise.then(() => { resultResolved = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.sender.emit('will-prevent-unload', { preventDefault() {} });
+  harness.sender.emit('render-process-gone', {}, { reason: 'crashed' });
+  await Promise.resolve();
+  const pendingAtRendererDeath = !resultResolved;
+  harness.sender.emit('did-start-navigation', {
+    url: harness.sender.getURL(),
+    isMainFrame: true,
+    isSameDocument: false,
+  });
+
+  const result = await resultPromise;
+  gate.close();
+
+  assert.equal(pendingAtRendererDeath, true);
+  assert.equal(recoveryCrashes, 0);
+  assert.equal(harness.reloads(), 2);
+  assert.deepEqual(result, { ok: true, path: '/new-root' });
   assert.deepEqual(effects, ['persist', 'finalize']);
 });
 

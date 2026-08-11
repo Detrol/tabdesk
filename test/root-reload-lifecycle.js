@@ -23,9 +23,11 @@ app.whenReady().then(async () => {
   let window;
   let interleavedWindow;
   let closeWindow;
+  let crashWindow;
   let gate;
   let interleavedGate;
   let closeGate;
+  let crashGate;
   try {
     fs.writeFileSync(FIXTURE, `<!doctype html><meta charset="utf-8"><script>
       const { ipcRenderer } = require('electron');
@@ -97,10 +99,13 @@ app.whenReady().then(async () => {
     const interleavedEffects = [];
     let matchingNavigations = 0;
     let rendererDeaths = 0;
+    let timeoutWindowClosed = false;
+    let timeoutResultResolved = false;
+    let timeoutPendingAtDeath = false;
+    interleavedWindow.once('closed', () => { timeoutWindowClosed = true; });
     interleavedWindow.webContents.on('did-start-navigation', (details) => {
       if (details.isMainFrame && !details.isSameDocument) matchingNavigations += 1;
     });
-    interleavedWindow.webContents.on('render-process-gone', () => { rendererDeaths += 1; });
     interleavedGate = createRendererLeaveGate({
       ipcMain,
       decisionTimeoutMs: 1000,
@@ -113,21 +118,81 @@ app.whenReady().then(async () => {
       rollback: () => { interleavedEffects.push('rollback'); return { ok: true }; },
       finalize: () => { interleavedEffects.push('finalize'); },
     });
+    interleavedResultPromise.then(() => { timeoutResultResolved = true; });
+    interleavedWindow.webContents.on('render-process-gone', () => {
+      rendererDeaths += 1;
+      interleavedWindow.webContents.stop();
+      queueMicrotask(() => { timeoutPendingAtDeath = !timeoutResultResolved; });
+    });
     let timeoutOverrideObserved = false;
     interleavedWindow.webContents.once('will-prevent-unload', () => {
       timeoutOverrideObserved = true;
       interleavedWindow.webContents.stop();
     });
     const interleavedResult = await interleavedResultPromise;
-    ok('post-override timeout replaces the real renderer before reporting success',
+    ok('post-override timeout closes the owner when replacement navigation is withheld',
       interleavedResult.ok === true
         && interleavedResult.path === '/timeout-root'
         && timeoutOverrideObserved
-        && matchingNavigations === 0
-        && (rendererDeaths > 0 || interleavedWindow.webContents.isDestroyed())
+        && rendererDeaths > 0
+        && timeoutPendingAtDeath
+        && timeoutWindowClosed
+        && interleavedWindow.isDestroyed()
         && interleavedEffects.join(',') === 'persist,finalize',
       JSON.stringify({ interleavedResult, interleavedEffects, timeoutOverrideObserved,
-        matchingNavigations, rendererDeaths, destroyed: interleavedWindow.webContents.isDestroyed() }));
+        matchingNavigations, rendererDeaths, timeoutPendingAtDeath, timeoutWindowClosed,
+        destroyed: interleavedWindow.isDestroyed() }));
+
+    crashWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { contextIsolation: false, nodeIntegration: true },
+    });
+    await crashWindow.loadFile(FIXTURE);
+    await crashWindow.webContents.executeJavaScript('document.body.click(); true', true);
+    const crashEffects = [];
+    let crashNavigations = 0;
+    let crashRendererDeaths = 0;
+    let crashResultResolved = false;
+    let crashPendingAtDeath = false;
+    crashWindow.webContents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) crashNavigations += 1;
+    });
+    crashGate = createRendererLeaveGate({
+      ipcMain,
+      decisionTimeoutMs: 1000,
+      navigationTimeoutMs: 500,
+      makeToken: () => 'real-unrelated-crash-token',
+    });
+    // Observe the event before the gate. Electron may synchronously emit the
+    // recovery did-start-navigation from reload() inside the later gate listener.
+    crashWindow.webContents.on('render-process-gone', () => {
+      crashRendererDeaths += 1;
+      crashPendingAtDeath = !crashResultResolved;
+    });
+    const crashResultPromise = crashGate.run(crashWindow.webContents, {
+      ownerWindow: crashWindow,
+      commit: () => { crashEffects.push('persist'); return { ok: true, path: '/crash-root' }; },
+      rollback: () => { crashEffects.push('rollback'); return { ok: true }; },
+      finalize: () => { crashEffects.push('finalize'); },
+    });
+    crashResultPromise.then(() => { crashResultResolved = true; });
+    crashWindow.webContents.once('will-prevent-unload', () => {
+      crashWindow.webContents.stop();
+      setImmediate(() => {
+        if (!crashWindow.webContents.isDestroyed()) crashWindow.webContents.forcefullyCrashRenderer();
+      });
+    });
+    const crashResult = await crashResultPromise;
+    ok('unrelated post-override renderer death waits for real replacement navigation',
+      crashResult.ok === true
+        && crashResult.path === '/crash-root'
+        && crashRendererDeaths > 0
+        && crashPendingAtDeath
+        && crashNavigations > 0
+        && !crashWindow.isDestroyed()
+        && crashEffects.join(',') === 'persist,finalize',
+      JSON.stringify({ crashResult, crashEffects, crashRendererDeaths,
+        crashPendingAtDeath, crashNavigations, destroyed: crashWindow.isDestroyed() }));
 
     closeWindow = new BrowserWindow({
       show: false,
@@ -172,9 +237,11 @@ app.whenReady().then(async () => {
     if (gate) gate.close();
     if (interleavedGate) interleavedGate.close();
     if (closeGate) closeGate.close();
+    if (crashGate) crashGate.close();
     if (window && !window.isDestroyed()) window.destroy();
     if (interleavedWindow && !interleavedWindow.isDestroyed()) interleavedWindow.destroy();
     if (closeWindow && !closeWindow.isDestroyed()) closeWindow.destroy();
+    if (crashWindow && !crashWindow.isDestroyed()) crashWindow.destroy();
     try { fs.rmSync(PROFILE, { recursive: true, force: true }); } catch (_) { /* gone */ }
     app.exit(failures ? 1 : 0);
   }

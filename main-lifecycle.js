@@ -119,12 +119,12 @@ function createRendererLeaveGate({
     });
   }
 
-  function beginRendererRecovery(request) {
+  function beginRendererRecovery(request, { rendererGone = false } = {}) {
     if (active !== request || request.phase === 'recovering' || request.phase === 'closing') return;
     request.phase = 'recovering';
     startTimer(request, navigationTimeoutMs, () => beginForcedClose(request));
     try {
-      request.sender.forcefullyCrashRenderer();
+      if (!rendererGone) request.sender.forcefullyCrashRenderer();
       if (active !== request) return;
       request.sender.reload();
     } catch (_) {
@@ -236,9 +236,12 @@ function createRendererLeaveGate({
         else fail(request, { ok: false, error: 'renderer-unavailable' });
       };
       request.onRenderProcessGone = () => {
-        if (awaitsOwnerClose(request)) return;
-        if (request.unloadAllowed) settleCommitted(request);
-        else fail(request, { ok: false, error: 'renderer-unavailable' });
+        if (!request.unloadAllowed) {
+          fail(request, { ok: false, error: 'renderer-unavailable' });
+          return;
+        }
+        if (request.phase === 'recovering' || request.phase === 'closing') return;
+        beginRendererRecovery(request, { rendererGone: true });
       };
       request.onOwnerClosed = () => {
         if (request.unloadAllowed) settleCommitted(request);
