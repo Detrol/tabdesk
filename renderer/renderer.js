@@ -446,9 +446,11 @@ function setActive(id) {
   if (p) p.lastId = id;                  // where this project reopens next time
   applyLayout();
   // The strip is shared between projects. A shorter project can clamp its
-  // horizontal scroll, so bring the restored tab back without moving one that
-  // is already visible.
-  t.tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  // horizontal scroll, so bring a clipped restored tab toward the center.
+  const tabRect = t.tabEl.getBoundingClientRect();
+  const stripRect = strip.getBoundingClientRect();
+  const tabVisible = tabRect.left >= stripRect.left && tabRect.right <= stripRect.right;
+  if (!tabVisible) t.tabEl.scrollIntoView({ block: 'nearest', inline: 'center' });
   for (const vid of shownIds()) fitSoon(vid);
   scheduleSync();
   // The dock is fixed and does not belong to any one tab, so switching projects
