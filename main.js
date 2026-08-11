@@ -40,7 +40,13 @@ const syncKeys = require('./sync/keys');
 const syncInvite = require('./sync/invite');
 const tabOrder = require('./renderer/tab-order');
 const { createProjectFiles } = require('./project-files');
-const { createRendererLeaveGate, createShutdownLifecycle } = require('./main-lifecycle');
+const {
+  commitRootTransition,
+  createRendererLeaveGate,
+  createRootTransitionFinalizer,
+  createShutdownLifecycle,
+  rollbackRootTransition,
+} = require('./main-lifecycle');
 
 const projectFiles = createProjectFiles();
 const shutdownLifecycle = createShutdownLifecycle();
@@ -762,31 +768,41 @@ app.whenReady().then(async () => {
   // page reload: every piece of rail state derives from projects:list +
   // tabs:restore, the running tmux sessions survive their ptys (see
   // did-start-navigation), and restore re-adopts them on the way back up.
-  const applyRoot = (dir) => {
-    try {
-      projectsRoot.setRoot(dir);
-    } catch (err) {
-      return { ok: false, error: String(err.message || err) };
-    }
-    projectFiles.replaceAdmissions('configured', []);
-    // Child windows hold pre-change state (picker's project list, settings'
-    // shown path); the main window survives the reload, they just close.
-    for (const w of BrowserWindow.getAllWindows()) {
-      if (w !== win && !w.isDestroyed()) w.close();
-    }
-    if (!win.isDestroyed()) win.webContents.reload();
-    return { ok: true, path: rootDir() };
-  };
+  let rootChoicePending = false;
 
   ipcMain.handle('projects:choose-root', async (event) => {
-    const owner = BrowserWindow.fromWebContents(event.sender);
-    const base = rootDir();
-    const res = await dialog.showOpenDialog(owner, {
-      properties: ['openDirectory', 'createDirectory'],
-      defaultPath: base && fs.existsSync(base) ? base : os.homedir(),
-    });
-    if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
-    return rendererLeaveGate.run(win.webContents, () => applyRoot(res.filePaths[0]));
+    if (rootChoicePending) return { ok: false, error: 'root-change-in-progress' };
+    rootChoicePending = true;
+    try {
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const base = rootDir();
+      const res = await dialog.showOpenDialog(owner, {
+        properties: ['openDirectory', 'createDirectory'],
+        defaultPath: base && fs.existsSync(base) ? base : os.homedir(),
+      });
+      if (res.canceled || !res.filePaths.length) {
+        return { ok: false, canceled: true, error: 'canceled' };
+      }
+      let transaction;
+      try {
+        transaction = projectsRoot.prepareRoot(res.filePaths[0]);
+      } catch (_) {
+        return { ok: false, error: 'invalid-root' };
+      }
+      const finalize = createRootTransitionFinalizer({
+        mainWindow: win,
+        replaceAdmissions: () => projectFiles.replaceAdmissions('configured', []),
+        getWindows: () => BrowserWindow.getAllWindows(),
+      });
+      return await rendererLeaveGate.run(win.webContents, {
+        reload: () => win.webContents.reload(),
+        commit: () => commitRootTransition(transaction),
+        rollback: () => rollbackRootTransition(transaction),
+        finalize,
+      });
+    } finally {
+      rootChoicePending = false;
+    }
   });
 
   // ---- Claude model, per project ----

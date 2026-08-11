@@ -86,6 +86,8 @@ if (window.api && typeof window.api.onProjectsRootLeaveRequested === 'function')
 }
 
 window.addEventListener('beforeunload', (event) => {
+  if (typeof window.api.consumeProjectsRootUnloadPermit === 'function'
+      && window.api.consumeProjectsRootUnloadPermit()) return;
   if (!fileView.hasUnsavedChanges()) return;
   event.preventDefault();
   event.returnValue = '';
@@ -2677,13 +2679,11 @@ if (!bootRoot.configured) {
   document.getElementById('first-run').classList.remove('hidden');
   emptyState.classList.add('hidden');
   const frError = document.getElementById('fr-error');
-  document.getElementById('fr-choose').addEventListener('click', async () => {
-    const res = await window.api.chooseProjectsRoot();
-    // Success reloads the whole window from main; only failure comes back.
-    if (res && !res.ok && !res.canceled) {
-      frError.textContent = res.error || '';
-      frError.classList.remove('hidden');
-    }
+  window.TabDeskRootChange.bindPicker({
+    button: document.getElementById('fr-choose'),
+    error: frError,
+    choose: () => window.api.chooseProjectsRoot(),
+    t: (key) => window.t(key),
   });
 } else {
 window.api.listProjects().then((list) => {

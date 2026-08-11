@@ -46,6 +46,7 @@ function setup(stage) {
       rootLeaveSubscriptions: 0,
       rootLeaveChecks: 0,
       rootLeaveDecision: null,
+      rootUnloadPermitConsumes: 0,
       tray: null,
     };
     const stage = ${JSON.stringify(stage)};
@@ -58,7 +59,7 @@ function setup(stage) {
         element.className = 'panel files-test';
         return {
           element,
-          hasUnsavedChanges: () => false,
+          hasUnsavedChanges: () => true,
           canLeave: () => true,
           confirmLeave: () => false,
           deactivate: async () => {},
@@ -139,6 +140,10 @@ function setup(stage) {
         state.rootLeaveChecks += 1;
         return () => {};
       },
+      consumeProjectsRootUnloadPermit: () => {
+        state.rootUnloadPermitConsumes += 1;
+        return state.rootUnloadPermitConsumes === 1;
+      },
       getUsageLimits: async () => ({ ok: false, reason: 'network' }),
       getUsageStats: async () => null,
       getSystemStats: async () => null,
@@ -178,12 +183,18 @@ async function runScenario(stage) {
 
     return await window.webContents.executeJavaScript(`(() => {
       const state = window.__sessionTest;
+      const rootUnload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(rootUnload);
+      const nextUnload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(nextUnload);
       const beforeClose = {
         tabs: document.querySelectorAll('.stab:not(.ov):not(.files):not(.add)').length,
         terminalPanels: document.querySelectorAll('#panels > .panel:not(.overview):not(.files-test)').length,
         projectCount: document.querySelector('.tab.project .count').textContent,
         overviewShown: document.querySelector('.overview').classList.contains('shown'),
         trayTabs: state.tray ? state.tray.tabs.length : -1,
+        rootUnloadPermitted: !rootUnload.defaultPrevented,
+        nextUnloadPrevented: nextUnload.defaultPrevented,
       };
       const close = document.querySelector('.stab .close');
       if (close) close.click();
@@ -222,6 +233,11 @@ app.whenReady().then(async () => {
       early.rootLeaveSubscriptions === 1
         && early.rootLeaveChecks === 1
         && early.rootLeaveDecision === false,
+      JSON.stringify(early));
+    ok('matching root unload permit bypasses the dirty beforeunload exactly once',
+      early.rootUnloadPermitConsumes === 2
+        && early.beforeClose.rootUnloadPermitted
+        && early.beforeClose.nextUnloadPrevented,
       JSON.stringify(early));
 
     const late = await runScenario('after-listener');

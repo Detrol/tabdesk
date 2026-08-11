@@ -127,8 +127,11 @@ async function loadLanguages() {
 // reloads the rail, so there is nothing to re-read here.
 const projDirEl = document.getElementById('st-projects-dir');
 projDirEl.value = ((window.api.boot && window.api.boot.projectsRoot) || {}).path || '';
-document.getElementById('st-projects-pick').addEventListener('click', () => {
-  window.api.chooseProjectsRoot();
+window.TabDeskRootChange.bindPicker({
+  button: document.getElementById('st-projects-pick'),
+  error: document.getElementById('st-projects-error'),
+  choose: () => window.api.chooseProjectsRoot(),
+  t: (key) => window.t(key),
 });
 
 const glowBox = document.getElementById('st-glow');

@@ -43,15 +43,59 @@ function configured() {
   try { return Boolean(root) && fs.statSync(root).isDirectory(); } catch (_) { return false; }
 }
 
+function rootError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+// Validate without publishing so main can first obtain the dirty renderer's
+// leave decision. Commit and rollback keep this module's memo and the settings
+// cache on the same root while main arms and starts that exact approved reload;
+// settings.set's existing semantics for every other caller stay intact.
+function prepareRoot(dir) {
+  const resolved = path.resolve(String(dir || ''));
+  if (!fs.statSync(resolved).isDirectory()) throw new Error(`not a directory: ${resolved}`);
+  const previousRoot = resolve();
+  const previousSetting = settings.get('projectsDir');
+  let committed = false;
+
+  return {
+    commit() {
+      if (committed) return resolved;
+      try {
+        if (!fs.statSync(resolved).isDirectory()) throw new Error('not a directory');
+      } catch (_) {
+        throw rootError('invalid-root', `not a directory: ${resolved}`);
+      }
+      if (!settings.set('projectsDir', resolved)) {
+        // settings.set updates its in-memory cache before attempting disk I/O.
+        // A second call restores that cache even if the same disk error remains.
+        settings.set('projectsDir', previousSetting);
+        memo = previousRoot;
+        throw rootError('persist-failed', 'could not persist projects root');
+      }
+      memo = resolved;
+      committed = true;
+      return resolved;
+    },
+    rollback() {
+      if (!committed) return previousRoot;
+      const persisted = settings.set('projectsDir', previousSetting);
+      memo = previousRoot;
+      committed = false;
+      if (!persisted) throw rootError('rollback-failed', 'could not restore projects root');
+      return previousRoot;
+    },
+  };
+}
+
 // Throws on anything that is not an existing directory — the caller turns
 // that into a message. path.resolve also strips the trailing-slash spelling
 // that would silently break slugFor's prefix match.
 function setRoot(dir) {
-  const resolved = path.resolve(String(dir || ''));
-  if (!fs.statSync(resolved).isDirectory()) throw new Error(`not a directory: ${resolved}`);
-  settings.set('projectsDir', resolved);
-  memo = resolved;
-  return resolved;
+  const transition = prepareRoot(dir);
+  return transition.commit();
 }
 
 // Rewrite a physical path to the projects folder's spelling of it. `entries`
@@ -70,4 +114,4 @@ function logicalizeCwd(cwd, entries) {
   return cwd;
 }
 
-module.exports = { resolve, configured, setRoot, logicalizeCwd };
+module.exports = { resolve, configured, prepareRoot, setRoot, logicalizeCwd };

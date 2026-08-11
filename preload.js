@@ -7,6 +7,10 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 let boot = { theme: null, i18n: null, settings: {} };
 try { boot = ipcRenderer.sendSync('app:boot') || boot; } catch (_) { /* main not ready */ }
 
+let rootDecisionToken = null;
+let rootApprovedToken = null;
+let rootUnloadPermit = null;
+
 contextBridge.exposeInMainWorld('api', {
   boot,
 
@@ -105,13 +109,45 @@ contextBridge.exposeInMainWorld('api', {
   listProjects: () => ipcRenderer.invoke('projects:list'),
   chooseProjectsRoot: () => ipcRenderer.invoke('projects:choose-root'),
   onProjectsRootLeaveRequested: (cb) => {
-    const listener = async (_event, { token } = {}) => {
+    const onDecision = async (_event, { token } = {}) => {
+      rootDecisionToken = token;
+      rootApprovedToken = null;
+      rootUnloadPermit = null;
       let approved = false;
       try { approved = await cb() === true; } catch (_) { /* cancellation is the safe default */ }
+      if (rootDecisionToken !== token) return;
+      rootApprovedToken = approved ? token : null;
       ipcRenderer.send('projects:root-leave-response', { token, approved });
     };
-    ipcRenderer.on('projects:root-leave-request', listener);
-    return () => ipcRenderer.removeListener('projects:root-leave-request', listener);
+    const onPermit = (_event, { token } = {}) => {
+      const armed = rootDecisionToken === token && rootApprovedToken === token;
+      if (armed) rootUnloadPermit = token;
+      ipcRenderer.send('projects:root-unload-ack', { token, armed });
+    };
+    const onAbort = (_event, { token } = {}) => {
+      if (rootDecisionToken !== token && rootApprovedToken !== token && rootUnloadPermit !== token) return;
+      rootDecisionToken = null;
+      rootApprovedToken = null;
+      rootUnloadPermit = null;
+    };
+    ipcRenderer.on('projects:root-leave-request', onDecision);
+    ipcRenderer.on('projects:root-unload-permit', onPermit);
+    ipcRenderer.on('projects:root-transition-abort', onAbort);
+    return () => {
+      ipcRenderer.removeListener('projects:root-leave-request', onDecision);
+      ipcRenderer.removeListener('projects:root-unload-permit', onPermit);
+      ipcRenderer.removeListener('projects:root-transition-abort', onAbort);
+      rootDecisionToken = null;
+      rootApprovedToken = null;
+      rootUnloadPermit = null;
+    };
+  },
+  consumeProjectsRootUnloadPermit: () => {
+    if (!rootUnloadPermit) return false;
+    rootDecisionToken = null;
+    rootApprovedToken = null;
+    rootUnloadPermit = null;
+    return true;
   },
   openProjectFiles: (projectPath) => ipcRenderer.invoke('project-files:open', projectPath),
   listProjectFiles: (args) => ipcRenderer.invoke('project-files:list', args),
