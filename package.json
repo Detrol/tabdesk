@@ -8,7 +8,7 @@
     "icons": "./build/render-icons.sh",
     "build:editor": "esbuild renderer/files-entry.js --bundle --format=iife --global-name=TabDeskFiles --platform=browser --target=chrome126 --minify --legal-comments=none --outfile=renderer/files.bundle.js",
     "postinstall": "electron-rebuild -f -w node-pty && npm run build:editor",
-    "test": "npm run build:editor && node --test test/project-files.test.js test/file-state.test.js && electron test/main.js",
+    "test": "npm run build:editor && node --test test/project-files.test.js test/file-state.test.js && electron test/editor-controller.js && electron test/main.js",
     "dist": "npm run build:editor && electron-builder --linux deb tar.gz"
   },
   "author": {

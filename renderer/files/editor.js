@@ -92,13 +92,23 @@ function clampPosition(value, length, fallback) {
   return Math.max(0, Math.min(length, position));
 }
 
-export function createEditor({ parent, onChange, onSave, theme, label } = {}) {
+export function createEditor({
+  parent,
+  onChange,
+  onSave,
+  theme,
+  label,
+  languageMatcher,
+} = {}) {
   const language = new Compartment();
   const appearance = new Compartment();
   const editability = new Compartment();
   let suppressChange = false;
   let languageRequest = 0;
   let destroyed = false;
+  let currentLanguage = [];
+  let currentTheme = editorTheme(theme);
+  let currentReadOnly = false;
 
   const change = typeof onChange === 'function' ? onChange : () => {};
   const save = typeof onSave === 'function' ? onSave : () => {};
@@ -111,17 +121,21 @@ export function createEditor({ parent, onChange, onSave, theme, label } = {}) {
     },
   };
 
-  const view = new EditorView({
-    parent,
-    state: EditorState.create({
-      doc: '',
+  function editabilityExtension() {
+    return [
+      EditorState.readOnly.of(currentReadOnly),
+      EditorView.editable.of(!currentReadOnly),
+    ];
+  }
+
+  function createState(doc, selection) {
+    return EditorState.create({
+      doc,
+      selection,
       extensions: [
-        language.of([]),
-        appearance.of(editorTheme(theme)),
-        editability.of([
-          EditorState.readOnly.of(false),
-          EditorView.editable.of(true),
-        ]),
+        language.of(currentLanguage),
+        appearance.of(currentTheme),
+        editability.of(editabilityExtension()),
         lineNumbers(),
         highlightActiveLineGutter(),
         history(),
@@ -148,7 +162,12 @@ export function createEditor({ parent, onChange, onSave, theme, label } = {}) {
           }
         }),
       ],
-    }),
+    });
+  }
+
+  const view = new EditorView({
+    parent,
+    state: createState('', { anchor: 0, head: 0 }),
   });
 
   function reconfigure(compartment, extension) {
@@ -166,10 +185,7 @@ export function createEditor({ parent, onChange, onSave, theme, label } = {}) {
 
       suppressChange = true;
       try {
-        view.dispatch({
-          changes: { from: 0, to: view.state.doc.length, insert: nextContent },
-          selection: { anchor, head },
-        });
+        view.setState(createState(nextContent, { anchor, head }));
       } finally {
         suppressChange = false;
       }
@@ -180,31 +196,43 @@ export function createEditor({ parent, onChange, onSave, theme, label } = {}) {
     },
 
     setReadOnly(readOnly) {
-      const locked = Boolean(readOnly);
-      reconfigure(editability, [
-        EditorState.readOnly.of(locked),
-        EditorView.editable.of(!locked),
-      ]);
+      currentReadOnly = Boolean(readOnly);
+      reconfigure(editability, editabilityExtension());
     },
 
     async setLanguage(filename) {
       const token = ++languageRequest;
-      const description = LanguageDescription.matchFilename(languages, filename || '');
+      const matchDefault = (candidate) => (
+        LanguageDescription.matchFilename(languages, candidate || '')
+      );
+      const description = typeof languageMatcher === 'function'
+        ? languageMatcher(filename || '', matchDefault)
+        : LanguageDescription.matchFilename(languages, filename || '');
       if (!description) {
-        if (token === languageRequest) reconfigure(language, []);
+        if (token === languageRequest) {
+          currentLanguage = [];
+          reconfigure(language, currentLanguage);
+        }
         return;
       }
 
       try {
         const support = await description.load();
-        if (token === languageRequest) reconfigure(language, support);
+        if (token === languageRequest) {
+          currentLanguage = support;
+          reconfigure(language, currentLanguage);
+        }
       } catch {
-        if (token === languageRequest) reconfigure(language, []);
+        if (token === languageRequest) {
+          currentLanguage = [];
+          reconfigure(language, currentLanguage);
+        }
       }
     },
 
     setTheme(nextTheme) {
-      reconfigure(appearance, editorTheme(nextTheme));
+      currentTheme = editorTheme(nextTheme);
+      reconfigure(appearance, currentTheme);
     },
 
     getSelection() {
