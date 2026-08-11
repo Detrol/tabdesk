@@ -134,6 +134,16 @@ function createProjectFiles(options = {}) {
     }
   }
 
+  function gitRepository(directory) {
+    return new Promise((resolve) => {
+      run('git', ['-C', directory, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' }, (error, stdout, stderr) => {
+        if (!error) return resolve(String(stdout).trim() === 'true' ? { git: true } : { error: 'git-unavailable' });
+        if (error.code === 128 && /not a git repository/i.test(String(stderr))) return resolve({ git: false });
+        return resolve({ error: 'git-unavailable' });
+      });
+    });
+  }
+
   function conventionCandidates(project) {
     const candidates = [];
     for (const folder of ['.worktrees', path.join('.claude', 'worktrees')]) {
@@ -383,18 +393,16 @@ function createProjectFiles(options = {}) {
     } catch (_) {
       entry.unavailable = 'unreadable';
     }
-    entry.gitPath = relativeGitPath(root.real, real);
+    const directoryGitPath = relativeGitPath(root.real, directoryReal);
+    entry.gitPath = directoryGitPath ? `${directoryGitPath}/${name}` : name;
     return entry;
   }
 
-  function gitIgnored(root, paths) {
+  async function gitIgnored(root, paths) {
     if (!paths.length) return Promise.resolve({ ignored: new Set() });
-    try {
-      io.lstatSync(path.join(root.real, '.git'));
-    } catch (error) {
-      if (error && error.code === 'ENOENT') return Promise.resolve({ ignored: new Set() });
-      return Promise.resolve({ error: 'git-unavailable' });
-    }
+    const repository = await gitRepository(root.real);
+    if (repository.error) return repository;
+    if (!repository.git) return { ignored: new Set() };
     return new Promise((resolve) => {
       let child;
       try {

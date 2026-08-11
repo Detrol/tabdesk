@@ -459,6 +459,46 @@ test('checks internal directory aliases through their canonical Git paths', asyn
   });
 });
 
+test('keeps a symlink entry on its logical Git path while canonicalizing its children', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.mkdirSync(path.join(fx.project, 'target'));
+  fs.writeFileSync(path.join(fx.project, 'target', 'secret.tmp'), 'secret');
+  fs.symlinkSync('target', path.join(fx.project, 'alias'), 'dir');
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  fs.writeFileSync(path.join(fx.project, '.gitignore'), 'alias\n*.tmp\n');
+  assert.equal((await files.list({ ...ids, directory: '' })).entries.some(({ name }) => name === 'alias'), false);
+  assert.equal((await files.list({ ...ids, directory: '', showIgnored: true }))
+    .entries.find(({ name }) => name === 'alias').ignored, true);
+  assert.equal((await files.list({ ...ids, directory: 'alias' })).entries.some(({ name }) => name === 'secret.tmp'), false);
+
+  fs.writeFileSync(path.join(fx.project, '.gitignore'), 'target\n');
+  const targetOnly = await files.list({ ...ids, directory: '', showIgnored: true });
+  assert.equal(targetOnly.entries.find(({ name }) => name === 'alias').ignored, false);
+});
+
+test('applies parent-repository ignore rules to an admitted project subdirectory', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const selected = path.join(fx.project, 'selected-project');
+  fs.mkdirSync(selected);
+  fs.writeFileSync(path.join(fx.project, '.gitignore'), '*.tmp\n');
+  fs.writeFileSync(path.join(selected, 'hidden.tmp'), 'hidden');
+  const files = createProjectFiles();
+  files.admitProject(selected, 'configured');
+  const ids = await openedRoot(files, selected);
+
+  const hidden = await files.list({ ...ids, directory: '' });
+  assert.equal(hidden.entries.some(({ name }) => name === 'hidden.tmp'), false);
+  const shown = await files.list({ ...ids, directory: '', showIgnored: true });
+  assert.equal(shown.entries.find(({ name }) => name === 'hidden.tmp').ignored, true);
+});
+
 test('uses one NUL Git batch, distinguishes fatal errors, and skips verified non-Git roots', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
