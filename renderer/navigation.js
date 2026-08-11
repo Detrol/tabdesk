@@ -19,14 +19,24 @@
       allocate,
       load,
       release,
-      commit,
+      create,
+      activate,
+      rollback,
     }) {
       let allocation = null;
       let released = false;
+      let created;
+      let hasCreated = false;
+      let rolledBack = false;
       const releaseOnce = () => {
         if (released || !allocation || !allocation.session) return;
         released = true;
         try { release(allocation); } catch (_) { /* reservation cleanup is best effort */ }
+      };
+      const rollbackOnce = () => {
+        if (rolledBack || !hasCreated) return;
+        rolledBack = true;
+        try { rollback(created); } catch (_) { /* release still has to run */ }
       };
 
       try {
@@ -40,10 +50,16 @@
           releaseOnce();
           return null;
         }
-        const result = commit(allocation, details);
-        if (!result) releaseOnce();
+        created = create(allocation, details);
+        hasCreated = true;
+        const result = activate(created);
+        if (!result) {
+          rollbackOnce();
+          releaseOnce();
+        }
         return result || null;
       } catch (_) {
+        rollbackOnce();
         releaseOnce();
         return null;
       }
@@ -63,5 +79,9 @@
     return pinnedIds.slice(0, limit);
   }
 
-  return { createNavigation, shownTerminalIds };
+  function isTerminalWatched({ id, pinned, activeId, hasTab, maximum }) {
+    return shownTerminalIds({ pinned, activeId, hasTab, maximum }).includes(id);
+  }
+
+  return { createNavigation, shownTerminalIds, isTerminalWatched };
 });

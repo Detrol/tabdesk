@@ -39,7 +39,17 @@ const MAX_PANELS = 6;
 const IDLE_MS = 1500;
 
 // A session is "watched" while it has a panel on screen — no need to flag it.
-function isWatched(id) { return pinned.has(id) || id === activeId; }
+function terminalSelection() {
+  return {
+    pinned,
+    activeId,
+    hasTab: (id) => tabs.has(id),
+    maximum: MAX_PANELS,
+  };
+}
+function isWatched(id) {
+  return window.TabDeskNavigation.isTerminalWatched({ id, ...terminalSelection() });
+}
 
 // The sessions belonging to a project, in the user-selected order. A
 // worktree session belongs to the project it branches from, not to a rail row
@@ -443,12 +453,7 @@ if (window.api.onSessionActivity) window.api.onSessionActivity(applyActivity);
 // What the panel area holds: everything pinned to the grid, plus the session
 // in focus. Pinning nothing therefore still shows the one you are working in.
 function shownIds() {
-  return window.TabDeskNavigation.shownTerminalIds({
-    pinned,
-    activeId,
-    hasTab: (id) => tabs.has(id),
-    maximum: MAX_PANELS,
-  });
+  return window.TabDeskNavigation.shownTerminalIds(terminalSelection());
 }
 
 // A pinned panel can belong to a project other than the strip currently in
@@ -1061,18 +1066,23 @@ function fullName(t) {
 // Create the actual xterm instance + backing pty for a tab on first use.
 function materialize(t) {
   const id = t.id;
-  // The model this terminal is actually launching with — a later pick can't
-  // reach the running process, so the bar compares against this.
-  t.runningModel = t.model;
-  t.runningEffort = t.effort;
-  // Same for the agent: once this tab is running one, that is what it is,
-  // whatever the project is set to open next.
-  t.agent = agentFor(t);
-  // When this tab's terminal started — what its conversation's store file is
-  // matched against when no id is known yet (refreshTitles).
-  t.bornAt = Date.now();
+  // These describe the terminal actually launched. Keep them local until all
+  // resources are installed so a failed first start leaves the tab unchanged.
+  const runningModel = t.model;
+  const runningEffort = t.effort;
+  const runningAgent = agentFor(t);
+  const bornAt = Date.now();
+  const launchTab = { ...t, agent: runningAgent };
+  let panelEl = null;
+  let term = null;
+  let ro = null;
+  let offSelect = null;
+  let offData = null;
+  let offExit = null;
+  let backendStarted = false;
 
-  const panelEl = document.createElement('div');
+  try {
+  panelEl = document.createElement('div');
   panelEl.className = 'panel';
   const termEl = document.createElement('div');
   termEl.className = 'term';
@@ -1096,22 +1106,25 @@ function materialize(t) {
   if (EMBED_NATIVE) {
     termEl.classList.add('embed');
     termEl.innerHTML = `<span class="term-loading">${window.t('panel.loading')}</span>`;
-    const ro = new ResizeObserver(() => scheduleSync());
+    ro = new ResizeObserver(() => scheduleSync());
     ro.observe(panelEl);
     panelEl.addEventListener('mousedown', () => {
       focusVisibleTerminal(id);
     });
     wireDrop(panelEl, id, (text) => window.api.insertIntoEmbed(id, text));
-    window.api.createEmbedTerminal(id, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null, t.name);
+    window.api.createEmbedTerminal(id, t.cwd, startCmdFor(launchTab),
+      tmuxAgentFor(launchTab), t.session || null, t.name);
+    backendStarted = true;
+    scheduleSync();
     Object.assign(t, {
+      runningModel, runningEffort, agent: runningAgent, bornAt,
       materialized: true, embed: true, panelEl,
       cleanup: () => ro.disconnect(),
     });
-    scheduleSync();
     return;
   }
 
-  const term = new Terminal({
+  term = new Terminal({
     fontFamily: 'Menlo, "DejaVu Sans Mono", monospace',
     fontSize: 13,
     cursorBlink: true,
@@ -1138,7 +1151,7 @@ function materialize(t) {
   // that button presses stop reaching the program inside; the wheel is a
   // separate path and still scrolls tmux. Private API, so it is guarded: a
   // version bump drops it back to Shift-only rather than breaking.
-  if (!SELECTS_ITSELF.has(t.agent)) {
+  if (!SELECTS_ITSELF.has(runningAgent)) {
     try { term._core._selectionService.shouldForceSelection = () => true; } catch (_) { /* Shift still works */ }
   }
 
@@ -1186,7 +1199,7 @@ function materialize(t) {
   termEl.addEventListener('mouseup', (e) => { if (e.button === 0) copyNow(); }, true);
   // Selections made without a drag (double-click word select, select-all)
   // still announce themselves here.
-  const offSelect = term.onSelectionChange(copyNow);
+  offSelect = term.onSelectionChange(copyNow);
 
   // The wheel is left to tmux, drag or no drag. Keeping it here to extend a
   // selection past the window was tried and is a dead end: under tmux this
@@ -1233,7 +1246,7 @@ function materialize(t) {
   termEl.addEventListener('mouseup', rightPaste, true);
   termEl.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); }, true);
 
-  const ro = new ResizeObserver(() => fitTerm(id));
+  ro = new ResizeObserver(() => fitTerm(id));
   ro.observe(panelEl);
 
   // Clicking a panel makes it the focused one (screenshot / keyboard target).
@@ -1244,25 +1257,84 @@ function materialize(t) {
   // In-app backend: the pty is ours, so the path goes straight down it.
   wireDrop(panelEl, id, (text) => { window.api.sendInput(id, text); return true; });
 
-  window.api.createTerminal(id, term.cols, term.rows, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null, t.name);
+  window.api.createTerminal(id, term.cols, term.rows, t.cwd, startCmdFor(launchTab),
+    tmuxAgentFor(launchTab), t.session || null, t.name);
+  backendStarted = true;
   term.onData((data) => window.api.sendInput(id, data));
   let firstData = true;
-  const offData = window.api.onData(id, (data) => {
+  offData = window.api.onData(id, (data) => {
     term.write(data);
     markActivity(id);
     // Once the shell/TUI first emits, the terminal has rendered — refit so a
     // full-screen app (Claude Code) gets resized to fill the panel.
     if (firstData) { firstData = false; fitSoon(id); }
   });
-  const offExit = window.api.onExit(id, () => {
+  offExit = window.api.onExit(id, () => {
     markDead(t);
     term.write(`\r\n\x1b[31m${window.t('panel.exited')}\x1b[0m\r\n`);
   });
 
   Object.assign(t, {
+    runningModel, runningEffort, agent: runningAgent, bornAt,
     materialized: true, term, fit, panelEl,
     cleanup: () => { offData(); offExit(); offSelect.dispose(); ro.disconnect(); },
   });
+  } catch (error) {
+    const clean = (action) => { try { action(); } catch (_) { /* continue cleanup */ } };
+    if (offData) clean(offData);
+    if (offExit) clean(offExit);
+    if (offSelect) clean(() => offSelect.dispose());
+    if (ro) clean(() => ro.disconnect());
+    if (backendStarted) {
+      clean(() => {
+        if (EMBED_NATIVE) window.api.killEmbedTerminal(id);
+        else window.api.killTerminal(id);
+      });
+    }
+    if (term) clean(() => term.dispose());
+    if (panelEl) clean(() => panelEl.remove());
+    throw error;
+  }
+}
+
+// A failed first activation never owns its reserved session. Remove every
+// renderer trace of the just-created tab, but leave release to runSession,
+// which remains the reservation's sole owner until activation succeeds.
+function rollbackCreatedTab(created) {
+  const { id, activeBefore, cwdBefore, overviewBefore, lastIdBefore } = created;
+  const t = tabs.get(id);
+  if (t) {
+    const clean = (action) => { try { action(); } catch (_) { /* continue rollback */ } };
+    clearTimeout(t.idleTimer);
+    if (t.materialized) {
+      clean(() => {
+        if (t.embed) window.api.killEmbedTerminal(id);
+        else window.api.killTerminal(id);
+      });
+      if (t.cleanup) clean(t.cleanup);
+      if (t.term) clean(() => t.term.dispose());
+      if (t.panelEl) clean(() => t.panelEl.remove());
+    }
+    if (t.tabEl) clean(() => t.tabEl.remove());
+    Object.assign(t, {
+      materialized: false, embed: false, panelEl: null, term: null, fit: null,
+      cleanup: null, session: null,
+    });
+    tabs.delete(id);
+  }
+  const orderIndex = tabOrder.indexOf(id);
+  if (orderIndex >= 0) tabOrder.splice(orderIndex, 1);
+  pinned.delete(id);
+  const owner = created.owner;
+  const project = projects.get(owner);
+  if (project) project.lastId = lastIdBefore;
+  activeId = activeBefore;
+  activeCwd = cwdBefore;
+  overviewCwd = overviewBefore;
+  renderProject(owner);
+  renderStrip();
+  applyLayout();
+  syncTray();
 }
 
 function closeTab(id) {
@@ -1367,12 +1439,20 @@ async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
       window.api.getEffort(cwd, agent),
     ]),
     release: (allocation) => window.api.releaseSession(allocation.session),
-    commit: (allocation, [model, effort]) => {
+    create: (allocation, [model, effort]) => {
       let name = base;
       if (allocation && allocation.session && allocation.suffix) {
         name = `${base} ·${allocation.suffix}`;
       }
+      const created = {
+        activeBefore: activeId,
+        cwdBefore: activeCwd,
+        overviewBefore: overviewCwd,
+        lastIdBefore: projects.get(owner) ? projects.get(owner).lastId : null,
+        owner,
+      };
       const id = buildTab({ name, cwd, projectCwd: owner, model, effort, agent, resume });
+      created.id = id;
       const tab = tabs.get(id);
       if (allocation && allocation.session) tab.session = allocation.session;
       if (resume) {
@@ -1382,10 +1462,12 @@ async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
         const titled = resume.title && titledName(resume.title, cwd, owner);
         if (titled) renameTab(id, titled);
       }
-      return setActive(id, {
-        skipFileGuard: true, navigationToken,
-      }) ? id : null;
+      return created;
     },
+    activate: (created) => (setActive(created.id, {
+        skipFileGuard: true, navigationToken,
+      }) ? created.id : null),
+    rollback: rollbackCreatedTab,
   });
 }
 
