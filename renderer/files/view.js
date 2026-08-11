@@ -195,10 +195,9 @@ export function createFileView({
         overwrite: false,
       });
     } catch { result = null; }
-    if (!operationCurrent(operation) || operation.content !== documentState.content
-      || operation.revision !== documentState.revision || documentState.status !== 'dirty') return;
+    if (!operationCurrent(operation)) return;
     if (result && result.ok) {
-      await reconcileWrite(operation, result, 'save-success');
+      await reconcileWrite(operation, result);
     } else if (result && result.error === 'conflict') {
       dispatch({ type: 'disk-changed', exists: true });
       finishDocumentOperation(operation);
@@ -252,8 +251,12 @@ export function createFileView({
         path: operation.path,
       });
     } catch { result = null; }
-    if (!operationCurrent(operation) || !identityMatches(operation, token)
-      || operation.content !== documentState.content || operation.status !== documentState.status) return;
+    if (!operationCurrent(operation)) return;
+    if (!identityMatches(operation, token) || operation.content !== documentState.content
+      || operation.status !== documentState.status) {
+      finishDocumentOperation(operation);
+      return;
+    }
     if (!result || !result.ok) {
       if (result && result.error === 'deleted') dispatch({ type: 'disk-changed', exists: false });
       else setViewMessage(result && result.error);
@@ -289,10 +292,9 @@ export function createFileView({
         overwrite: true,
       });
     } catch { result = null; }
-    if (!operationCurrent(operation) || operation.content !== documentState.content
-      || documentState.status !== 'conflict') return;
+    if (!operationCurrent(operation)) return;
     if (result && result.ok) {
-      await reconcileWrite(operation, result, 'overwrite-success');
+      await reconcileWrite(operation, result);
     } else if (result && result.error === 'deleted') {
       dispatch({ type: 'disk-changed', exists: false });
       finishDocumentOperation(operation);
@@ -302,7 +304,7 @@ export function createFileView({
     }
   }
 
-  async function reconcileWrite(operation, writeResult, successType) {
+  async function reconcileWrite(operation, writeResult) {
     let snapshot;
     try {
       snapshot = await api.readProjectFile({
@@ -311,11 +313,16 @@ export function createFileView({
         path: operation.path,
       });
     } catch { snapshot = null; }
-    if (!operationCurrent(operation) || operation.content !== documentState.content) return;
+    if (!operationCurrent(operation)) return;
     if (snapshot && snapshot.ok && snapshot.revision === writeResult.revision
       && snapshot.content === operation.content) {
       viewMessageKey = null;
-      dispatch({ type: successType, revision: writeResult.revision });
+      dispatch({
+        type: 'write-snapshot',
+        content: snapshot.content,
+        revision: snapshot.revision,
+        ignored: snapshot.ignored,
+      });
     } else if (snapshot && snapshot.ok) {
       dispatch({
         type: 'disk-snapshot',

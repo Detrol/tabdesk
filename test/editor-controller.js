@@ -588,6 +588,333 @@ app.on('ready', async () => {
         && !overwriteView.hasUnsavedChanges();
       await overwriteView.destroy();
 
+      const concurrentSaveWrite = deferred();
+      const concurrentSaveCalls = [];
+      let concurrentSaveReads = 0;
+      const concurrentSaveApi = makeFilesApi({
+        entries: [fileEntry('concurrent-save.txt')],
+        read: async ({ path }) => {
+          concurrentSaveReads += 1;
+          return concurrentSaveReads === 1
+            ? { ok: true, path, content: 'disk', revision: 'd'.repeat(64), ignored: false }
+            : {
+              ok: true, path, content: 'saved-1', revision: '1'.repeat(64), ignored: false,
+            };
+        },
+      });
+      concurrentSaveApi.writeProjectFile = (request) => {
+        concurrentSaveCalls.push(request);
+        return concurrentSaveCalls.length === 1
+          ? concurrentSaveWrite.promise
+          : Promise.resolve({ ok: false, error: 'write-failed' });
+      };
+      const concurrentSaveView = TabDeskFiles.createFileView({
+        api: concurrentSaveApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(concurrentSaveView.element);
+      await concurrentSaveView.activate('/concurrent-save');
+      treeItem(concurrentSaveView, 'concurrent-save.txt').click();
+      await wait(10);
+      await replaceFileText(concurrentSaveView, 'saved-1');
+      concurrentSaveView.element.querySelector('.files-save').click();
+      await replaceFileText(concurrentSaveView, 'newer-2');
+      concurrentSaveWrite.resolve({ ok: true, revision: '1'.repeat(64) });
+      await wait(30);
+      const concurrentSaveKeepsLaterEdit = concurrentSaveReads === 2
+        && concurrentSaveView.element.querySelector('.files-status').textContent === 'files.dirty'
+        && concurrentSaveView.element.querySelector('.cm-content').textContent === 'newer-2'
+        && !concurrentSaveView.element.querySelector('.files-save').disabled;
+      concurrentSaveView.element.querySelector('.files-save').click();
+      await wait(20);
+      const concurrentSaveAdvancesRevision = concurrentSaveCalls.length === 2
+        && concurrentSaveCalls[1].content === 'newer-2'
+        && concurrentSaveCalls[1].expectedRevision === '1'.repeat(64)
+        && concurrentSaveView.element.querySelector('.cm-content').textContent === 'newer-2'
+        && !concurrentSaveView.element.querySelector('.files-save').disabled;
+      await concurrentSaveView.destroy();
+
+      const saveWriteError = deferred();
+      const saveWriteErrorApi = makeFilesApi({
+        entries: [fileEntry('save-write-error.txt')],
+        read: async ({ path }) => ({
+          ok: true, path, content: 'disk', revision: 'd'.repeat(64), ignored: false,
+        }),
+      });
+      saveWriteErrorApi.writeProjectFile = () => saveWriteError.promise;
+      const saveWriteErrorView = TabDeskFiles.createFileView({
+        api: saveWriteErrorApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(saveWriteErrorView.element);
+      await saveWriteErrorView.activate('/save-write-error');
+      treeItem(saveWriteErrorView, 'save-write-error.txt').click();
+      await wait(10);
+      await replaceFileText(saveWriteErrorView, 'first');
+      saveWriteErrorView.element.querySelector('.files-save').click();
+      await replaceFileText(saveWriteErrorView, 'newer-write-error');
+      saveWriteError.resolve({ ok: false, error: 'write-failed' });
+      await wait(20);
+      const saveWriteErrorUnlocks = saveWriteErrorView.element.querySelector('.files-status').textContent
+        === 'files.error.write-failed'
+        && saveWriteErrorView.element.querySelector('.cm-content').textContent === 'newer-write-error'
+        && !saveWriteErrorView.element.querySelector('.files-save').disabled
+        && saveWriteErrorView.hasUnsavedChanges();
+      await saveWriteErrorView.destroy();
+
+      const saveReadWrite = deferred();
+      const saveReadError = deferred();
+      let saveReadErrorCalls = 0;
+      const saveReadErrorApi = makeFilesApi({
+        entries: [fileEntry('save-read-error.txt')],
+        read: async ({ path }) => {
+          saveReadErrorCalls += 1;
+          return saveReadErrorCalls === 1
+            ? { ok: true, path, content: 'disk', revision: 'd'.repeat(64), ignored: false }
+            : saveReadError.promise;
+        },
+      });
+      saveReadErrorApi.writeProjectFile = () => saveReadWrite.promise;
+      const saveReadErrorView = TabDeskFiles.createFileView({
+        api: saveReadErrorApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(saveReadErrorView.element);
+      await saveReadErrorView.activate('/save-read-error');
+      treeItem(saveReadErrorView, 'save-read-error.txt').click();
+      await wait(10);
+      await replaceFileText(saveReadErrorView, 'written-before-read-error');
+      saveReadErrorView.element.querySelector('.files-save').click();
+      saveReadWrite.resolve({ ok: true, revision: '1'.repeat(64) });
+      await wait();
+      await replaceFileText(saveReadErrorView, 'newer-read-error');
+      saveReadError.resolve({ ok: false, error: 'unreadable' });
+      await wait(20);
+      const saveReadErrorUnlocks = saveReadErrorCalls === 2
+        && saveReadErrorView.element.querySelector('.files-status').textContent
+          === 'files.error.unreadable'
+        && saveReadErrorView.element.querySelector('.cm-content').textContent === 'newer-read-error'
+        && !saveReadErrorView.element.querySelector('.files-save').disabled
+        && saveReadErrorView.hasUnsavedChanges();
+      await saveReadErrorView.destroy();
+
+      const concurrentReloadRead = deferred();
+      let concurrentReloadPhase = 'initial';
+      const concurrentReloadApi = makeFilesApi({
+        entries: [fileEntry('concurrent-reload.txt')],
+        read: async ({ path }) => {
+          if (concurrentReloadPhase === 'reload') return concurrentReloadRead.promise;
+          if (concurrentReloadPhase === 'external') {
+            return { ok: true, path, content: 'external', revision: 'e'.repeat(64), ignored: false };
+          }
+          return { ok: true, path, content: 'disk', revision: 'd'.repeat(64), ignored: false };
+        },
+      });
+      const concurrentReloadView = TabDeskFiles.createFileView({
+        api: concurrentReloadApi, t: (key) => key, confirmReload: () => true,
+      });
+      document.querySelector('#test-root').append(concurrentReloadView.element);
+      await concurrentReloadView.activate('/concurrent-reload');
+      treeItem(concurrentReloadView, 'concurrent-reload.txt').click();
+      await wait(10);
+      await replaceFileText(concurrentReloadView, 'local-conflict');
+      concurrentReloadPhase = 'external';
+      concurrentReloadApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: 'concurrent-reload.txt', kind: 'changed',
+      });
+      await wait(20);
+      concurrentReloadPhase = 'reload';
+      [...concurrentReloadView.element.querySelectorAll('.files-conflict button')]
+        .find((button) => button.textContent === 'files.reload').click();
+      await replaceFileText(concurrentReloadView, 'newer-during-reload');
+      concurrentReloadRead.resolve({
+        ok: true, path: 'concurrent-reload.txt', content: 'external',
+        revision: 'e'.repeat(64), ignored: false,
+      });
+      await wait(20);
+      const concurrentReloadPreservesEdit = concurrentReloadView.element
+        .querySelector('.files-status').textContent === 'files.conflict'
+        && concurrentReloadView.element.querySelector('.cm-content').textContent
+          === 'newer-during-reload'
+        && [...concurrentReloadView.element.querySelectorAll('.files-conflict button')]
+          .every((button) => !button.disabled)
+        && concurrentReloadView.hasUnsavedChanges();
+      await concurrentReloadView.destroy();
+
+      const overwriteDuringWriteGate = deferred();
+      const overwriteDuringWriteCalls = [];
+      let overwriteDuringWritePhase = 'initial';
+      const overwriteDuringWriteApi = makeFilesApi({
+        entries: [fileEntry('overwrite-during-write.txt')],
+        read: async ({ path }) => {
+          if (overwriteDuringWritePhase === 'external') {
+            return { ok: true, path, content: 'external', revision: 'e'.repeat(64), ignored: false };
+          }
+          if (overwriteDuringWritePhase === 'post') {
+            return {
+              ok: true, path, content: 'overwrite-base',
+              revision: '1'.repeat(64), ignored: false,
+            };
+          }
+          return { ok: true, path, content: 'disk', revision: 'd'.repeat(64), ignored: false };
+        },
+      });
+      overwriteDuringWriteApi.writeProjectFile = (request) => {
+        overwriteDuringWriteCalls.push(request);
+        return overwriteDuringWriteCalls.length === 1
+          ? overwriteDuringWriteGate.promise
+          : Promise.resolve({ ok: false, error: 'write-failed' });
+      };
+      const overwriteDuringWriteView = TabDeskFiles.createFileView({
+        api: overwriteDuringWriteApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(overwriteDuringWriteView.element);
+      await overwriteDuringWriteView.activate('/overwrite-during-write');
+      treeItem(overwriteDuringWriteView, 'overwrite-during-write.txt').click();
+      await wait(10);
+      await replaceFileText(overwriteDuringWriteView, 'overwrite-base');
+      overwriteDuringWritePhase = 'external';
+      overwriteDuringWriteApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: 'overwrite-during-write.txt', kind: 'changed',
+      });
+      await wait(20);
+      overwriteDuringWritePhase = 'post';
+      [...overwriteDuringWriteView.element.querySelectorAll('.files-conflict button')]
+        .find((button) => button.textContent === 'files.overwrite').click();
+      await replaceFileText(overwriteDuringWriteView, 'newer-during-overwrite-write');
+      overwriteDuringWriteGate.resolve({ ok: true, revision: '1'.repeat(64) });
+      await wait(30);
+      const overwriteWriteEditBecomesDirty = overwriteDuringWriteView.element
+        .querySelector('.files-status').textContent === 'files.dirty'
+        && overwriteDuringWriteView.element.querySelector('.cm-content').textContent
+          === 'newer-during-overwrite-write'
+        && !overwriteDuringWriteView.element.querySelector('.files-save').disabled;
+      overwriteDuringWriteView.element.querySelector('.files-save').click();
+      await wait(20);
+      const overwriteWriteEditAdvancesRevision = overwriteDuringWriteCalls.length === 2
+        && overwriteDuringWriteCalls[1].expectedRevision === '1'.repeat(64)
+        && overwriteDuringWriteCalls[1].content === 'newer-during-overwrite-write';
+      await overwriteDuringWriteView.destroy();
+
+      const overwriteDuringReadGate = deferred();
+      const overwriteDuringReadCalls = [];
+      let overwriteDuringReadPhase = 'initial';
+      let overwriteDuringReadPostReads = 0;
+      const overwriteDuringReadApi = makeFilesApi({
+        entries: [fileEntry('overwrite-during-read.txt')],
+        read: async ({ path }) => {
+          if (overwriteDuringReadPhase === 'external') {
+            return { ok: true, path, content: 'external', revision: 'e'.repeat(64), ignored: false };
+          }
+          if (overwriteDuringReadPhase === 'post') {
+            overwriteDuringReadPostReads += 1;
+            return overwriteDuringReadGate.promise;
+          }
+          return { ok: true, path, content: 'disk', revision: 'd'.repeat(64), ignored: false };
+        },
+      });
+      overwriteDuringReadApi.writeProjectFile = (request) => {
+        overwriteDuringReadCalls.push(request);
+        return overwriteDuringReadCalls.length === 1
+          ? Promise.resolve({ ok: true, revision: '1'.repeat(64) })
+          : Promise.resolve({ ok: false, error: 'write-failed' });
+      };
+      const overwriteDuringReadView = TabDeskFiles.createFileView({
+        api: overwriteDuringReadApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(overwriteDuringReadView.element);
+      await overwriteDuringReadView.activate('/overwrite-during-read');
+      treeItem(overwriteDuringReadView, 'overwrite-during-read.txt').click();
+      await wait(10);
+      await replaceFileText(overwriteDuringReadView, 'overwrite-read-base');
+      overwriteDuringReadPhase = 'external';
+      overwriteDuringReadApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: 'overwrite-during-read.txt', kind: 'changed',
+      });
+      await wait(20);
+      overwriteDuringReadPhase = 'post';
+      [...overwriteDuringReadView.element.querySelectorAll('.files-conflict button')]
+        .find((button) => button.textContent === 'files.overwrite').click();
+      await wait();
+      await replaceFileText(overwriteDuringReadView, 'newer-during-overwrite-read');
+      overwriteDuringReadGate.resolve({
+        ok: true, path: 'overwrite-during-read.txt', content: 'overwrite-read-base',
+        revision: '1'.repeat(64), ignored: false,
+      });
+      await wait(20);
+      const overwriteReadEditBecomesDirty = overwriteDuringReadPostReads === 1
+        && overwriteDuringReadView.element.querySelector('.files-status').textContent
+          === 'files.dirty'
+        && overwriteDuringReadView.element.querySelector('.cm-content').textContent
+          === 'newer-during-overwrite-read'
+        && !overwriteDuringReadView.element.querySelector('.files-save').disabled
+        && overwriteDuringReadView.hasUnsavedChanges();
+      overwriteDuringReadView.element.querySelector('.files-save').click();
+      await wait(20);
+      const overwriteReadEditAdvancesRevision = overwriteDuringReadCalls.length === 2
+        && overwriteDuringReadCalls[1].expectedRevision === '1'.repeat(64)
+        && overwriteDuringReadCalls[1].content === 'newer-during-overwrite-read';
+      await overwriteDuringReadView.destroy();
+
+      const overwriteMismatchRead = deferred();
+      const overwriteMismatchCalls = [];
+      let overwriteMismatchPhase = 'initial';
+      let overwriteMismatchPostReads = 0;
+      const overwriteMismatchApi = makeFilesApi({
+        entries: [fileEntry('overwrite-mismatch.txt')],
+        read: async ({ path }) => {
+          if (overwriteMismatchPhase === 'external') {
+            return { ok: true, path, content: 'external', revision: 'e'.repeat(64), ignored: false };
+          }
+          if (overwriteMismatchPhase === 'post') {
+            overwriteMismatchPostReads += 1;
+            return overwriteMismatchRead.promise;
+          }
+          return { ok: true, path, content: 'disk', revision: 'd'.repeat(64), ignored: false };
+        },
+      });
+      overwriteMismatchApi.writeProjectFile = (request) => {
+        overwriteMismatchCalls.push(request);
+        return overwriteMismatchCalls.length === 1
+          ? Promise.resolve({ ok: true, revision: '1'.repeat(64) })
+          : Promise.resolve({ ok: false, error: 'write-failed' });
+      };
+      const overwriteMismatchView = TabDeskFiles.createFileView({
+        api: overwriteMismatchApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(overwriteMismatchView.element);
+      await overwriteMismatchView.activate('/overwrite-mismatch');
+      treeItem(overwriteMismatchView, 'overwrite-mismatch.txt').click();
+      await wait(10);
+      await replaceFileText(overwriteMismatchView, 'overwrite-r1');
+      overwriteMismatchPhase = 'external';
+      overwriteMismatchApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: 'overwrite-mismatch.txt', kind: 'changed',
+      });
+      await wait(20);
+      overwriteMismatchPhase = 'post';
+      [...overwriteMismatchView.element.querySelectorAll('.files-conflict button')]
+        .find((button) => button.textContent === 'files.overwrite').click();
+      await wait();
+      await replaceFileText(overwriteMismatchView, 'newer-before-r2');
+      overwriteMismatchRead.resolve({
+        ok: true, path: 'overwrite-mismatch.txt', content: 'external-r2',
+        revision: '2'.repeat(64), ignored: false,
+      });
+      await wait(20);
+      const overwriteMismatchRemainsConflict = overwriteMismatchPostReads === 1
+        && overwriteMismatchView.element.querySelector('.files-status').textContent
+          === 'files.conflict'
+        && overwriteMismatchView.element.querySelector('.cm-content').textContent
+          === 'newer-before-r2'
+        && [...overwriteMismatchView.element.querySelectorAll('.files-conflict button')]
+          .every((button) => !button.disabled)
+        && overwriteMismatchView.hasUnsavedChanges();
+      [...overwriteMismatchView.element.querySelectorAll('.files-conflict button')]
+        .find((button) => button.textContent === 'files.overwrite').click();
+      await wait(20);
+      const overwriteMismatchAdvancesRevision = overwriteMismatchCalls.length === 2
+        && overwriteMismatchCalls[1].expectedRevision === '2'.repeat(64)
+        && overwriteMismatchCalls[1].content === 'newer-before-r2';
+      await overwriteMismatchView.destroy();
+
       return {
         suppressed,
         clamped,
@@ -626,6 +953,17 @@ app.on('ready', async () => {
         buttonsReenabledAfterFailure,
         overwriteWaitsForReread,
         overwriteExactRereadClean,
+        concurrentSaveKeepsLaterEdit,
+        concurrentSaveAdvancesRevision,
+        saveWriteErrorUnlocks,
+        saveReadErrorUnlocks,
+        concurrentReloadPreservesEdit,
+        overwriteWriteEditBecomesDirty,
+        overwriteWriteEditAdvancesRevision,
+        overwriteReadEditBecomesDirty,
+        overwriteReadEditAdvancesRevision,
+        overwriteMismatchRemainsConflict,
+        overwriteMismatchAdvancesRevision,
       };
     })()`);
 
@@ -671,6 +1009,24 @@ app.on('ready', async () => {
     ok('document action buttons re-enable after reload failure', result.buttonsReenabledAfterFailure);
     ok('overwrite remains pending until its exact semantic reread', result.overwriteWaitsForReread);
     ok('overwrite becomes clean only after matching revision and content', result.overwriteExactRereadClean);
+    ok('save reconciliation preserves a later edit and unlocks dirty state',
+      result.concurrentSaveKeepsLaterEdit);
+    ok('next save uses the verified concurrent-save revision', result.concurrentSaveAdvancesRevision);
+    ok('save write failure unlocks without dropping a later edit', result.saveWriteErrorUnlocks);
+    ok('save reread failure unlocks without dropping a later edit', result.saveReadErrorUnlocks);
+    ok('stale reload unlocks without applying over a later edit', result.concurrentReloadPreservesEdit);
+    ok('edit during overwrite write becomes dirty against the verified write base',
+      result.overwriteWriteEditBecomesDirty);
+    ok('save after concurrent overwrite uses the verified overwrite revision',
+      result.overwriteWriteEditAdvancesRevision);
+    ok('edit during overwrite reread becomes dirty against the verified write base',
+      result.overwriteReadEditBecomesDirty);
+    ok('save after concurrent overwrite reread uses the verified overwrite revision',
+      result.overwriteReadEditAdvancesRevision);
+    ok('newer disk snapshot during overwrite reread preserves the later edit in conflict',
+      result.overwriteMismatchRemainsConflict);
+    ok('retry after overwrite mismatch uses the newer disk revision',
+      result.overwriteMismatchAdvancesRevision);
   } catch (error) {
     failures += 1;
     console.error(error && error.stack ? error.stack : error);

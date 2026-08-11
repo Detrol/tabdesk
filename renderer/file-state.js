@@ -95,6 +95,16 @@
           error: null,
         });
 
+      case 'write-snapshot':
+        if (!['dirty', 'conflict'].includes(state.status)) return state;
+        return withStatus(state, state.content === event.content ? 'clean' : 'dirty', {
+          diskContent: event.content,
+          revision: event.revision,
+          exists: true,
+          ignored: Boolean(event.ignored),
+          error: null,
+        });
+
       case 'disk-changed':
         if (state.status === 'clean' && event.exists === false) {
           return withStatus(state, 'deleted', { exists: false, error: null });

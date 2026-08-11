@@ -305,3 +305,34 @@ test('a clean ignored file survives hiding ignored tree entries', () => {
   assert.equal(ignored.content, 'generated\n');
   assert.equal(ignored.ignored, true);
 });
+
+test('verified write snapshot updates the disk base while preserving a later local edit', () => {
+  const firstEdit = State.reduce(opened, { type: 'edit', content: 'saved\n' });
+  const laterEdit = State.reduce(firstEdit, { type: 'edit', content: 'newer\n' });
+  const reconciled = State.reduce(laterEdit, {
+    type: 'write-snapshot', content: 'saved\n', revision: 'r1', ignored: true,
+  });
+
+  assert.equal(reconciled.status, 'dirty');
+  assert.equal(reconciled.content, 'newer\n');
+  assert.equal(reconciled.diskContent, 'saved\n');
+  assert.equal(reconciled.revision, 'r1');
+  assert.equal(reconciled.exists, true);
+  assert.equal(reconciled.ignored, true);
+  assert.equal(State.needsDiscard(reconciled), true);
+});
+
+test('verified overwrite snapshot converts a later conflicted edit into dirty against the new base', () => {
+  const dirty = State.reduce(opened, { type: 'edit', content: 'overwritten\n' });
+  const conflict = State.reduce(dirty, { type: 'disk-changed', exists: true });
+  const laterEdit = State.reduce(conflict, { type: 'edit', content: 'newer\n' });
+  const reconciled = State.reduce(laterEdit, {
+    type: 'write-snapshot', content: 'overwritten\n', revision: 'r1', ignored: false,
+  });
+
+  assert.equal(reconciled.status, 'dirty');
+  assert.equal(reconciled.content, 'newer\n');
+  assert.equal(reconciled.diskContent, 'overwritten\n');
+  assert.equal(reconciled.revision, 'r1');
+  assert.equal(reconciled.exists, true);
+});
