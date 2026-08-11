@@ -197,13 +197,15 @@ require.cache[ptyPath].exports = {
   },
 };
 
-// wrapStartCmd must take the persistent-session branch even on a host where
-// tmux is absent from the GUI PATH. No tmux client is actually launched.
+// Most cases need wrapStartCmd's persistent-session branch. The plain-PTY
+// regressions toggle this at runtime while retaining a real durable
+// reservation from tabs:allocate.
 const agentsPath = require.resolve(path.join(ROOT, 'agents'));
 const agentsModule = require(agentsPath);
+let tmuxAvailable = true;
 require.cache[agentsPath].exports = {
   ...agentsModule,
-  onPath(bin) { return bin === 'tmux' || agentsModule.onPath(bin); },
+  onPath(bin) { return bin === 'tmux' ? tmuxAvailable : agentsModule.onPath(bin); },
 };
 
 // Observe real registry transitions without replacing the registry or its
@@ -227,6 +229,10 @@ settingsModule.set = (key, value) => {
 };
 
 require(path.join(ROOT, 'main'));
+
+let holdRendererDeclines = false;
+let sendToRenderer = null;
+const heldRendererDeclines = [];
 
 let passed = 0;
 let failed = 0;
@@ -272,8 +278,12 @@ async function reserveSession(sender, label) {
   }
 }
 
-async function declinedIds(sender) {
+async function declinedPayloads(sender) {
   return sender.executeJavaScript('[...window.__tabdeskPendingStartDeclines]');
+}
+
+async function declinedIds(sender) {
+  return (await declinedPayloads(sender)).map(({ id }) => id);
 }
 
 async function waitForStartOutcome(sender, id, unhandledBefore) {
@@ -281,6 +291,22 @@ async function waitForStartOutcome(sender, id, unhandledBefore) {
     const declined = await declinedIds(sender);
     return declined.includes(id) || unhandledRejections.length > unhandledBefore;
   }, `${id} start outcome`);
+}
+
+function holdDeclines() {
+  holdRendererDeclines = true;
+}
+
+async function waitForHeldDecline(id) {
+  return waitFor(() => heldRendererDeclines.find((entry) => entry.payload?.id === id),
+    `${id} held decline`);
+}
+
+function deliverHeldDecline(entry) {
+  const index = heldRendererDeclines.indexOf(entry);
+  if (index >= 0) heldRendererDeclines.splice(index, 1);
+  holdRendererDeclines = false;
+  sendToRenderer(entry.channel, entry.payload);
 }
 
 const eventFor = (sender) => ({ sender });
@@ -315,6 +341,31 @@ function releaseSessions(sender, ...sessions) {
   for (const session of sessions) {
     ipcMain.emit('tabs:release', eventFor(sender), { session });
   }
+}
+
+function startLiveTmux(session) {
+  childProcess.execFileSync('tmux', ['new-session', '-d', '-s', session], {
+    env: process.env,
+    stdio: 'ignore',
+  });
+}
+
+function hasLiveTmux(session) {
+  try {
+    childProcess.execFileSync('tmux', ['has-session', '-t', '=' + session], {
+      env: process.env,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function killTestTmuxServer() {
+  try {
+    childProcess.execFileSync('tmux', ['kill-server'], { env: process.env, stdio: 'ignore' });
+  } catch (_) { /* no isolated server */ }
 }
 
 function backendSnapshot(backend) {
@@ -538,64 +589,241 @@ async function chainEmbedReplacementDuringStart(sender) {
   releaseSessions(sender, ...sessions);
 }
 
-async function failedResourceStart(sender, backend) {
-  const id = `${backend}-resource-failure`;
-  const session = await reserveSession(sender, `${backend} resource failure`);
+function failNextResourceStart(backend, label) {
+  const error = new Error(`${backend} injected ${label}`);
+  if (backend === 'term') nextPtyFailure = error;
+  else nextEmbedFailure = error;
+}
+
+function failedResourceClean(backend, id, before) {
+  const delta = backendDelta(backend, before);
+  if (backend === 'term') return delta.attempts === 1 && delta.starts === 0;
+  const failed = embedStarts.slice(before.starts);
+  return delta.attempts === 1 && delta.starts === 1
+    && !embeds.has(id) && failed.length === 1 && failed[0].kills === 1;
+}
+
+async function failedReservedStart(sender, backend, closeBeforeDecline) {
+  const boundary = closeBeforeDecline ? 'before' : 'after';
+  const id = `${backend}-failed-${boundary}-decline`;
+  const session = await reserveSession(sender, `${backend} failed ${boundary} decline`);
   const removalBefore = removalCount(session);
   const tmuxBefore = tmuxKillCount(session);
   const backendBefore = backendSnapshot(backend);
   const unhandledBefore = unhandledRejections.length;
-  const error = new Error(`${backend} injected resource start failure`);
-  if (backend === 'term') nextPtyFailure = error;
-  else nextEmbedFailure = error;
+  failNextResourceStart(backend, `failure ${boundary} decline`);
+  holdDeclines();
 
   const gate = await begin(sender, backend, id, session);
   await release(gate);
+  const held = await waitForHeldDecline(id);
+  await settle();
+  const competingSession = closeBeforeDecline
+    ? null
+    : await reserveSession(sender, 'after failed start');
+  if (closeBeforeDecline) kill(sender, backend, id);
+  deliverHeldDecline(held);
   await waitForStartOutcome(sender, id, unhandledBefore);
+  if (!closeBeforeDecline) releaseSessions(sender, session);
   await settle();
 
-  const declines = await declinedIds(sender);
-  const delta = backendDelta(backend, backendBefore);
-  const failedEmbeds = backend === 'embed' ? embedStarts.slice(backendBefore.starts) : [];
-  const resourceClean = backend === 'term'
-    ? delta.attempts === 1 && delta.starts === 0
-    : delta.attempts === 1 && delta.starts === 1
-      && !embeds.has(id) && failedEmbeds.length === 1 && failedEmbeds[0].kills === 1;
-  check(`${backend}:resource start failure rolls back to a retryable tab`,
-    declines.includes(id)
-      && unhandledRejections.length === unhandledBefore
+  const payloads = await declinedPayloads(sender);
+  check(`${backend}:${closeBeforeDecline ? 'backend close before' : 'renderer release after'} decline consumes failed ownership once`,
+    (!competingSession || competingSession !== session)
+      && (closeBeforeDecline
+        || payloads.some((payload) => payload.id === id && payload.session === session))
       && !hasRecord(session)
       && removalCount(session) - removalBefore === 1
-      && tmuxKillCount(session) === tmuxBefore
-      && resourceClean,
+      && tmuxKillCount(session) - tmuxBefore === 1
+      && unhandledRejections.length === unhandledBefore
+      && failedResourceClean(backend, id, backendBefore),
     JSON.stringify({
-      declined: declines.includes(id),
-      unhandled: unhandledRejections.length - unhandledBefore,
+      record: hasRecord(session),
+      allocation: competingSession,
+      removals: removalCount(session) - removalBefore,
+      tmuxKills: tmuxKillCount(session) - tmuxBefore,
+      delta: backendDelta(backend, backendBefore),
+    }));
+
+  kill(sender, backend, id);
+  if (competingSession) releaseSessions(sender, competingSession);
+  await settle();
+}
+
+async function failedStartsWithLiveTmux(sender) {
+  const cases = [];
+  for (const backend of ['term', 'embed']) {
+    const id = `${backend}-failed-live-tmux`;
+    const session = await reserveSession(sender, `${backend} failed live tmux`);
+    cases.push({
+      backend, id, session,
+      removalBefore: removalCount(session),
+      tmuxBefore: tmuxKillCount(session),
+      backendBefore: backendSnapshot(backend),
+    });
+  }
+  for (const item of cases) startLiveTmux(item.session);
+  holdDeclines();
+  failNextResourceStart('term', 'live tmux failure');
+  failNextResourceStart('embed', 'live tmux failure');
+  const gates = [];
+  for (const item of cases) {
+    gates.push(await begin(sender, item.backend, item.id, item.session));
+  }
+  for (const gate of gates) await release(gate);
+  const declines = [];
+  for (const item of cases) declines.push(await waitForHeldDecline(item.id));
+  for (const item of cases) kill(sender, item.backend, item.id);
+  await Promise.all(cases.map((item) => waitFor(
+    () => !hasLiveTmux(item.session), `${item.backend} existing tmux teardown`).catch(() => false)));
+  for (const decline of declines) deliverHeldDecline(decline);
+  await settle();
+
+  for (const item of cases) {
+    check(`${item.backend}:failed close tears down an existing tmux session once`,
+      !hasRecord(item.session)
+        && removalCount(item.session) - item.removalBefore === 1
+        && tmuxKillCount(item.session) - item.tmuxBefore === 1
+        && !hasLiveTmux(item.session)
+        && failedResourceClean(item.backend, item.id, item.backendBefore),
+      JSON.stringify({
+        record: hasRecord(item.session),
+        removals: removalCount(item.session) - item.removalBefore,
+        tmuxKills: tmuxKillCount(item.session) - item.tmuxBefore,
+        live: hasLiveTmux(item.session),
+        delta: backendDelta(item.backend, item.backendBefore),
+      }));
+  }
+}
+
+async function retryFailedStart(sender, backend) {
+  const id = `${backend}-failed-retry`;
+  const session = await reserveSession(sender, `${backend} failed retry`);
+  const removalBefore = removalCount(session);
+  const tmuxBefore = tmuxKillCount(session);
+  const backendBefore = backendSnapshot(backend);
+  const unhandledBefore = unhandledRejections.length;
+  failNextResourceStart(backend, 'failure before retry');
+
+  const failedGate = await begin(sender, backend, id, session);
+  await release(failedGate);
+  await waitForStartOutcome(sender, id, unhandledBefore);
+  const retainedBeforeRetry = hasRecord(session)
+    && removalCount(session) === removalBefore
+    && tmuxKillCount(session) === tmuxBefore;
+
+  const retryGate = await begin(sender, backend, id, session);
+  await release(retryGate);
+  await settle();
+  const retainedThroughRetry = hasRecord(session)
+    && removalCount(session) === removalBefore
+    && tmuxKillCount(session) === tmuxBefore;
+  kill(sender, backend, id);
+  await settle();
+
+  const delta = backendDelta(backend, backendBefore);
+  check(`${backend}:retry takes failed ownership without releasing its session`,
+    retainedBeforeRetry && retainedThroughRetry
+      && !hasRecord(session)
+      && removalCount(session) - removalBefore === 1
+      && tmuxKillCount(session) - tmuxBefore === 1
+      && delta.attempts === 2 && delta.starts === (backend === 'term' ? 1 : 2),
+    JSON.stringify({
+      retainedBeforeRetry,
+      retainedThroughRetry,
       record: hasRecord(session),
       removals: removalCount(session) - removalBefore,
       tmuxKills: tmuxKillCount(session) - tmuxBefore,
       delta,
-      embedPresent: embeds.has(id),
-      embedKills: failedEmbeds.map((record) => record.kills),
     }));
-
-  // A close can race the decline or land just after it. Either renderer path
-  // must be idempotent and explicitly closing the tab may now kill tmux once.
   releaseSessions(sender, session);
-  kill(sender, backend, id);
+}
+
+async function generatedSessionDecline(sender, backend) {
+  const id = `${backend}-generated-decline`;
+  const backendBefore = backendSnapshot(backend);
+  const unhandledBefore = unhandledRejections.length;
+  failNextResourceStart(backend, 'generated session failure');
+  holdDeclines();
+  const gate = await begin(sender, backend, id, null);
+  await release(gate);
+  const held = await waitForHeldDecline(id);
+  const session = held.payload?.session;
+  const valid = typeof session === 'string' && /^td-[A-Za-z0-9_-]+$/.test(session);
+  const retained = valid && hasRecord(session);
+  deliverHeldDecline(held);
+  await waitForStartOutcome(sender, id, unhandledBefore);
+  if (valid) releaseSessions(sender, session);
   await settle();
-  check(`${backend}:close after failed start cannot double-clean or leak`,
+
+  check(`${backend}:decline returns its main-generated durable session`,
+    valid && retained && !hasRecord(session)
+      && failedResourceClean(backend, id, backendBefore),
+    JSON.stringify({ payload: held.payload, retained, record: valid && hasRecord(session) }));
+  kill(sender, backend, id);
+}
+
+async function closePlainPending(sender) {
+  const id = 'term-plain-pending';
+  const session = await reserveSession(sender, 'plain pending');
+  const removalBefore = removalCount(session);
+  const tmuxBefore = tmuxKillCount(session);
+  const backendBefore = backendSnapshot('term');
+  tmuxAvailable = false;
+  const gate = await begin(sender, 'term', id, session);
+  kill(sender, 'term', id);
+  await release(gate);
+  await settle();
+  tmuxAvailable = true;
+
+  check('term:pending plain PTY close releases only its durable reservation',
     !hasRecord(session)
       && removalCount(session) - removalBefore === 1
-      && tmuxKillCount(session) - tmuxBefore === 1
-      && (backend !== 'embed' || (failedEmbeds[0]?.kills === 1 && !embeds.has(id))),
+      && tmuxKillCount(session) === tmuxBefore
+      && backendDelta('term', backendBefore).attempts === 0,
     JSON.stringify({
       record: hasRecord(session),
       removals: removalCount(session) - removalBefore,
       tmuxKills: tmuxKillCount(session) - tmuxBefore,
-      embedPresent: embeds.has(id),
-      embedKills: failedEmbeds.map((record) => record.kills),
+      delta: backendDelta('term', backendBefore),
     }));
+  releaseSessions(sender, session);
+}
+
+async function closePlainStarted(sender, naturalExit) {
+  const label = naturalExit ? 'exit' : 'close';
+  const id = `term-plain-${label}`;
+  const session = await reserveSession(sender, `plain ${label}`);
+  const removalBefore = removalCount(session);
+  const tmuxBefore = tmuxKillCount(session);
+  const backendBefore = backendSnapshot('term');
+  tmuxAvailable = false;
+  const gate = await begin(sender, 'term', id, session);
+  await release(gate);
+  const started = ptyStarts.at(-1);
+  const scrollback = await sender.executeJavaScript(
+    `window.api.scrollback({ id: ${JSON.stringify(id)} })`);
+  if (naturalExit) started.exit();
+  else kill(sender, 'term', id);
+  await settle();
+  tmuxAvailable = true;
+
+  check(`term:successful plain PTY ${label} releases reservation without tmux ownership`,
+    !hasRecord(session)
+      && removalCount(session) - removalBefore === 1
+      && tmuxKillCount(session) === tmuxBefore
+      && scrollback?.ok === false && scrollback?.reason === 'no-session'
+      && backendDelta('term', backendBefore).starts === 1
+      && (naturalExit || started.kills === 1),
+    JSON.stringify({
+      record: hasRecord(session),
+      removals: removalCount(session) - removalBefore,
+      tmuxKills: tmuxKillCount(session) - tmuxBefore,
+      scrollback,
+      kills: started.kills,
+      delta: backendDelta('term', backendBefore),
+    }));
+  releaseSessions(sender, session);
 }
 
 async function run() {
@@ -609,9 +837,17 @@ async function run() {
   }, 'renderer preload API');
   await win.webContents.executeJavaScript(`
     window.__tabdeskPendingStartDeclines = [];
-    window.api.onTerminalDeclined(({ id }) => window.__tabdeskPendingStartDeclines.push(id));
+    window.api.onTerminalDeclined((payload) => window.__tabdeskPendingStartDeclines.push(payload));
     true;
   `);
+  sendToRenderer = win.webContents.send.bind(win.webContents);
+  win.webContents.send = (channel, payload) => {
+    if (channel === 'term:declined' && holdRendererDeclines) {
+      heldRendererDeclines.push({ channel, payload });
+      return;
+    }
+    sendToRenderer(channel, payload);
+  };
 
   console.log('== projects:list Git scheduling ==');
   const listings = await win.webContents.executeJavaScript(
@@ -632,10 +868,16 @@ async function run() {
     await closeReservedPending(sender, backend, 'pre-owner');
     await closeReservedPending(sender, backend, 'post-owner');
     await replaceReservedPending(sender, backend);
-    await failedResourceStart(sender, backend);
+    await failedReservedStart(sender, backend, true);
+    await failedReservedStart(sender, backend, false);
+    await retryFailedStart(sender, backend);
+    await generatedSessionDecline(sender, backend);
     await canceledStart(sender, backend, (id) => kill(sender, backend, id), 'kill');
     await reusedId(sender, backend, (id) => kill(sender, backend, id), 'kill');
   }
+  await closePlainPending(sender);
+  await closePlainStarted(sender, false);
+  await closePlainStarted(sender, true);
   await chainEmbedReplacementDuringStart(sender);
 
   const navigate = () => sender.emit('did-start-navigation', {
@@ -683,11 +925,14 @@ async function run() {
   kill(sender, 'embed', 'embed-destroyed');
   releaseSessions(sender, termSession, embedSession);
 
+  await failedStartsWithLiveTmux(sender);
+
   check('navigation cleanup kills embeds at most once per started resource',
     embedStarts.every((record) => record.kills <= 1),
     JSON.stringify({ embedKillAllCalls, kills: embedStarts.map((record) => record.kills) }));
 
   console.log(`main pending/list regressions: ${passed}/${passed + failed} passing`);
+  killTestTmuxServer();
   projectFiles.close();
   for (const window of BrowserWindow.getAllWindows()) window.destroy();
   app.exit(failed ? 1 : 0);
@@ -695,6 +940,7 @@ async function run() {
 
 run().catch((error) => {
   console.error(error && error.stack ? error.stack : error);
+  killTestTmuxServer();
   try { projectFiles?.close(); } catch (_) {}
   try { for (const window of BrowserWindow.getAllWindows()) window.destroy(); } catch (_) {}
   app.exit(1);

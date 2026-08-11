@@ -34,6 +34,7 @@ function setup(stage) {
   return `(() => {
     const state = window.__sessionTest = {
       releases: 0,
+      releasedSessions: [],
       terminalCreates: 0,
       terminalDisposes: 0,
       selectionDisposes: 0,
@@ -121,7 +122,10 @@ function setup(stage) {
       allocateSession: async () => ({ session: 'reserved-session', suffix: 0 }),
       getModel: async () => 'default',
       getEffort: async () => 'default',
-      releaseSession: () => { state.releases += 1; },
+      releaseSession: (session) => {
+        state.releases += 1;
+        state.releasedSessions.push(session);
+      },
       createTerminal: () => { state.backendStarts += 1; },
       killTerminal: () => { state.backendKills += 1; },
       onData: () => {
@@ -131,6 +135,10 @@ function setup(stage) {
       onExit: () => {
         if (stage === 'after-listener') throw new Error('expected listener failure');
         return () => {};
+      },
+      onTerminalDeclined: (callback) => {
+        window.__declineTerminal = callback;
+        return () => { window.__declineTerminal = null; };
       },
       syncTray: (snapshot) => { state.tray = snapshot; },
       onProjectsRootLeaveRequested: (callback) => {
@@ -158,20 +166,46 @@ function setup(stage) {
   })();`;
 }
 
-async function runScenario(stage) {
+async function createRenderer(stage) {
   const window = new BrowserWindow({
     show: false,
     webPreferences: { contextIsolation: false, nodeIntegration: false, sandbox: false },
   });
   windows.push(window);
-    await window.loadFile(FIXTURE, { query: { stage } });
-    await window.webContents.executeJavaScript([
-      setup(stage),
-      source('renderer/tab-order.js'),
-      source('renderer/navigation.js'),
-      source('renderer/renderer.js'),
-      'void 0;',
-    ].join('\n'));
+  await window.loadFile(FIXTURE, { query: { stage } });
+  await window.webContents.executeJavaScript([
+    setup(stage),
+    source('renderer/tab-order.js'),
+    source('renderer/navigation.js'),
+    source('renderer/renderer.js'),
+    'void 0;',
+  ].join('\n'));
+  return window;
+}
+
+async function runGeneratedDeclineScenario() {
+  const window = await createRenderer('declined-generated');
+  return window.webContents.executeJavaScript(`(() => {
+    const state = window.__sessionTest;
+    const generated = 'td-shell-main-generated';
+    const id = buildTab({ name: 'Shell', cwd: '/fixture', projectCwd: '/fixture', agent: 'shell' });
+    const tab = tabs.get(id);
+    tab.materialized = true;
+    window.__declineTerminal({ id, session: generated });
+    const sessionBeforeClose = tab && tab.session;
+    const close = tab && tab.tabEl.querySelector('.close');
+    if (close) close.click();
+    return {
+      ...state,
+      generated,
+      sessionBeforeClose,
+      tabsAfterClose: document.querySelectorAll('.stab:not(.ov):not(.files):not(.add)').length,
+    };
+  })()`);
+}
+
+async function runScenario(stage) {
+  const window = await createRenderer(stage);
     await waitFor(window, "document.querySelector('.ov-chip') !== null", 'overview start chip');
     await window.webContents.executeJavaScript("document.querySelector('.ov-chip').click();");
     await waitFor(window, 'window.__sessionTest.releases === 1', 'failed start release');
@@ -254,6 +288,15 @@ app.whenReady().then(async () => {
         && late.beforeClose.trayTabs === 0
         && late.beforeClose.overviewShown,
       JSON.stringify(late));
+
+    const declined = await runGeneratedDeclineScenario();
+    ok('main-generated failed session remains attached to the retryable tab',
+      declined.sessionBeforeClose === declined.generated, JSON.stringify(declined));
+    ok('closing a declined generated session releases that exact reservation once',
+      declined.releases === 1
+        && declined.releasedSessions[0] === declined.generated
+        && declined.tabsAfterClose === 0,
+      JSON.stringify(declined));
   } catch (error) {
     failures += 1;
     console.error(error && error.stack ? error.stack : error);

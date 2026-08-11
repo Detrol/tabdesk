@@ -162,12 +162,6 @@ function killTmuxSessionByName(session) {
   try { execFile('tmux', ['kill-session', '-t', '=' + session], () => {}); } catch (_) {}
 }
 
-function killTmuxSession(id) {
-  const session = tmuxSessions.get(id);
-  tmuxSessions.delete(id);
-  killTmuxSessionByName(session);
-}
-
 // Session names currently spoken for: the registry plus whatever tmux itself
 // is holding. Used to pick the next free suffix for a second tab on the same
 // project — reserving in the registry is what keeps two fast clicks apart.
@@ -230,16 +224,90 @@ const terminals = new Map();
 // renderer may close that tab, navigate, or reuse its id in the meantime, so
 // each backend/sender owns only its newest generation for an id.
 const pendingStarts = { term: new WeakMap(), embed: new WeakMap() };
+const startSessionOwnerships = { term: new WeakMap(), embed: new WeakMap() };
 let pendingStartGeneration = 0;
 
-function releasePendingStartSession(token, { killTmux = false } = {}) {
-  if (!token?.session || token.sessionReleased) return;
-  token.sessionReleased = true;
-  if (killTmux) killTmuxSessionByName(token.session);
-  else forgetTab(token.session);
+function validTabSession(session) {
+  return typeof session === 'string' && /^td-[A-Za-z0-9_-]+$/.test(session)
+    ? session
+    : null;
 }
 
-function beginPendingStart(backend, sender, id, session) {
+function senderOwnerships(backend, sender, create = false) {
+  let byId = startSessionOwnerships[backend].get(sender);
+  if (!byId && create) {
+    byId = new Map();
+    startSessionOwnerships[backend].set(sender, byId);
+  }
+  return byId || null;
+}
+
+function releaseSessionOwnership(ownership, { killTmux = false } = {}) {
+  if (!ownership?.session || ownership.released) return;
+  ownership.released = true;
+  if (killTmux && ownership.tmuxSession) killTmuxSessionByName(ownership.session);
+  else if (ownership.durable) forgetTab(ownership.session);
+}
+
+function acquireSessionOwnership(backend, sender, id, session, tmuxSession) {
+  const byId = senderOwnerships(backend, sender, Boolean(session));
+  if (!byId) return null;
+  let ownership = byId.get(id) || null;
+  if (ownership && ownership.session !== session) {
+    byId.delete(id);
+    releaseSessionOwnership(ownership, { killTmux: true });
+    ownership = null;
+  }
+  if (!session) {
+    if (!byId.size) startSessionOwnerships[backend].delete(sender);
+    return null;
+  }
+  if (!ownership) {
+    ownership = {
+      backend,
+      sender,
+      id,
+      session,
+      tmuxSession: tmuxSession || null,
+      durable: openTabs().some((record) => record.session === session),
+      released: false,
+    };
+    byId.set(id, ownership);
+  } else {
+    ownership.tmuxSession = tmuxSession || null;
+  }
+  return ownership;
+}
+
+function takeSessionOwnership(backend, sender, id) {
+  const byId = senderOwnerships(backend, sender);
+  if (!byId) return null;
+  const ownership = byId.get(id) || null;
+  byId.delete(id);
+  if (!byId.size) startSessionOwnerships[backend].delete(sender);
+  return ownership;
+}
+
+function takeSessionOwnershipByName(sender, session) {
+  for (const backend of ['term', 'embed']) {
+    const byId = senderOwnerships(backend, sender);
+    if (!byId) continue;
+    for (const [id, ownership] of byId) {
+      if (ownership.session !== session) continue;
+      byId.delete(id);
+      if (!byId.size) startSessionOwnerships[backend].delete(sender);
+      return ownership;
+    }
+  }
+  return null;
+}
+
+function clearSessionOwnerships(sender) {
+  startSessionOwnerships.term.delete(sender);
+  startSessionOwnerships.embed.delete(sender);
+}
+
+function beginPendingStart(backend, sender, id, session, tmuxSession) {
   let byId = pendingStarts[backend].get(sender);
   if (!byId) {
     byId = new Map();
@@ -250,17 +318,13 @@ function beginPendingStart(backend, sender, id, session) {
     backend,
     sender,
     id,
-    session: session || null,
-    sessionReleased: false,
+    ownership: acquireSessionOwnership(backend, sender, id, session, tmuxSession),
     generation: ++pendingStartGeneration,
     predecessorStart: null,
     resourceStart: null,
   };
   byId.set(id, token);
   if (previous) {
-    if (previous.session !== token.session) {
-      releasePendingStartSession(previous, { killTmux: true });
-    }
     if (backend === 'embed') {
       token.predecessorStart = previous.resourceStart || previous.predecessorStart;
       try { termEmbed.kill(id); } catch (_) { /* absent or already gone */ }
@@ -300,6 +364,42 @@ function cancelPendingStart(backend, sender, id) {
 function cancelPendingStarts(sender) {
   pendingStarts.term.delete(sender);
   pendingStarts.embed.delete(sender);
+}
+
+function failPendingStart(token) {
+  const ownership = token?.ownership;
+  if (!ownership) return null;
+  if (!ownership.durable) {
+    const current = senderOwnerships(token.backend, token.sender)?.get(token.id);
+    if (current === ownership) takeSessionOwnership(token.backend, token.sender, token.id);
+    return null;
+  }
+  return ownership.session;
+}
+
+function markPendingSessionDurable(token) {
+  if (token?.ownership) token.ownership.durable = true;
+}
+
+function sendTerminalDeclined(sender, id, session) {
+  try {
+    if (sender.isDestroyed()) return;
+    sender.send('term:declined', session ? { id, session } : { id });
+  } catch (_) { /* renderer is already gone */ }
+}
+
+function closeTerminalOwnership(backend, sender, id) {
+  const ownership = takeSessionOwnership(backend, sender, id);
+  const runtimeSession = tmuxSessions.get(id) || null;
+  tmuxSessions.delete(id);
+  if (ownership) {
+    releaseSessionOwnership(ownership, { killTmux: true });
+    if (runtimeSession && runtimeSession !== ownership.tmuxSession) {
+      killTmuxSessionByName(runtimeSession);
+    }
+  } else {
+    killTmuxSessionByName(runtimeSession);
+  }
 }
 
 // Currently resolved theme + language, shared with the renderer over IPC.
@@ -405,6 +505,7 @@ function createWindow() {
   win.webContents.on('did-start-navigation', (details) => {
     if (!details.isMainFrame || details.isSameDocument) return;
     cancelPendingStarts(win.webContents);
+    clearSessionOwnerships(win.webContents);
     projectFiles.unwatch(win.webContents.id);
     termEmbed.killAll();
     tmuxSessions.clear();
@@ -418,6 +519,7 @@ function createWindow() {
   const contentsId = contents.id;
   contents.once('destroyed', () => {
     cancelPendingStarts(contents);
+    clearSessionOwnerships(contents);
     projectFiles.unwatch(contentsId);
   });
 
@@ -1001,8 +1103,10 @@ app.whenReady().then(async () => {
   // rest of the tree is still material the agent will read and act on, so the
   // same question is asked here as before Run and Preview.
   ipcMain.on('embed:create', async (event, { id, cwd, startCmd, agent, session, name }) => {
+    const incomingSession = validTabSession(session);
     const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
-    const pending = beginPendingStart('embed', event.sender, id, wrapped.session);
+    const pending = beginPendingStart(
+      'embed', event.sender, id, incomingSession || wrapped.session, wrapped.session);
     if (pending.predecessorStart) {
       try { await pending.predecessorStart; } catch (_) { /* replacement owns cleanup */ }
       if (!pendingStartCurrent(pending)) return;
@@ -1012,20 +1116,21 @@ app.whenReady().then(async () => {
       if (!pendingStartCurrent(pending)) return;
       if (!allowed) {
         finishPendingStart(pending);
-        if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+        sendTerminalDeclined(event.sender, id, failPendingStart(pending));
         return;
       }
     }
-    if (wrapped.session) {
+    if (pending.ownership?.session) {
       const owned = await sessionOwnership.rememberCurrent({
-        session: wrapped.session, cwd, agent, name,
+        session: pending.ownership.session, cwd, agent, name,
       }, () => pendingStartCurrent(pending));
       if (!pendingStartCurrent(pending)) return;
       if (!owned) {
         finishPendingStart(pending);
-        if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+        sendTerminalDeclined(event.sender, id, failPendingStart(pending));
         return;
       }
+      markPendingSessionDurable(pending);
     }
     try {
       pending.resourceStart = Promise.resolve(termEmbed.create(id, {
@@ -1036,8 +1141,7 @@ app.whenReady().then(async () => {
     } catch (_) {
       if (!finishPendingStart(pending)) return;
       try { termEmbed.kill(id); } catch (_) { /* partial resource is best effort */ }
-      releasePendingStartSession(pending);
-      if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+      sendTerminalDeclined(event.sender, id, failPendingStart(pending));
       return;
     }
     if (!pendingStartCurrent(pending)) return;
@@ -1053,10 +1157,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('embed:insert', (event, { id, text }) =>
     termEmbed.insert(id, String(text || '')));
   ipcMain.on('embed:kill', (event, { id }) => {
-    const pending = cancelPendingStart('embed', event.sender, id);
-    releasePendingStartSession(pending, { killTmux: true });
+    cancelPendingStart('embed', event.sender, id);
     termEmbed.kill(id);
-    killTmuxSession(id);
+    closeTerminalOwnership('embed', event.sender, id);
   });
 
   // ---- Tab sessions ----
@@ -1239,9 +1342,17 @@ app.whenReady().then(async () => {
   }));
 
   ipcMain.on('tabs:release', (event, { session }) => {
-    if (typeof session !== 'string' || !/^td-[A-Za-z0-9_-]+$/.test(session)) return;
-    forgetTab(session);
-    try { execFile('tmux', ['kill-session', '-t', '=' + session], () => {}); } catch (_) {}
+    const validSession = validTabSession(session);
+    if (!validSession) return;
+    const ownership = takeSessionOwnershipByName(event.sender, validSession);
+    if (!ownership) {
+      killTmuxSessionByName(validSession);
+      return;
+    }
+    if (tmuxSessions.get(ownership.id) === ownership.tmuxSession) {
+      tmuxSessions.delete(ownership.id);
+    }
+    releaseSessionOwnership(ownership, { killTmux: true });
   });
 
   // A tab adopting its session's own generated name (and remembering which
@@ -2029,8 +2140,10 @@ app.whenReady().then(async () => {
 
   ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd, agent, session, name }) => {
     if (terminals.has(id)) return;
+    const incomingSession = validTabSession(session);
     const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
-    const pending = beginPendingStart('term', event.sender, id, wrapped.session);
+    const pending = beginPendingStart(
+      'term', event.sender, id, incomingSession || wrapped.session, wrapped.session);
     // Same gate as the embedded backend — this path is only taken when native
     // embedding is off, and it starts the same agent in the same directory.
     if (cwd) {
@@ -2038,7 +2151,7 @@ app.whenReady().then(async () => {
       if (!pendingStartCurrent(pending)) return;
       if (!allowed) {
         finishPendingStart(pending);
-        if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+        sendTerminalDeclined(event.sender, id, failPendingStart(pending));
         return;
       }
     }
@@ -2047,16 +2160,17 @@ app.whenReady().then(async () => {
       : (process.env.SHELL || '/bin/bash');
 
     const startDir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
-    if (wrapped.session) {
+    if (pending.ownership?.session) {
       const owned = await sessionOwnership.rememberCurrent({
-        session: wrapped.session, cwd, agent, name,
+        session: pending.ownership.session, cwd, agent, name,
       }, () => pendingStartCurrent(pending));
       if (!pendingStartCurrent(pending)) return;
       if (!owned) {
         finishPendingStart(pending);
-        if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+        sendTerminalDeclined(event.sender, id, failPendingStart(pending));
         return;
       }
+      markPendingSessionDurable(pending);
     }
     let term = null;
     try {
@@ -2074,7 +2188,8 @@ app.whenReady().then(async () => {
         terminals.delete(id);
         // The session ended with the agent (or the tab was closed) — unless the
         // main window has committed its close, in which case it is still waiting.
-        if (shutdownLifecycle.shouldForgetSession()) forgetTab(tmuxSessions.get(id));
+        const ownership = takeSessionOwnership('term', event.sender, id);
+        if (shutdownLifecycle.shouldForgetSession()) releaseSessionOwnership(ownership);
         tmuxSessions.delete(id);
         if (!win.isDestroyed()) win.webContents.send(`term:exit:${id}`);
       });
@@ -2084,8 +2199,7 @@ app.whenReady().then(async () => {
         try { term.kill(); } catch (_) { /* partial resource is best effort */ }
       }
       if (!owned) return;
-      releasePendingStartSession(pending);
-      if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+      sendTerminalDeclined(event.sender, id, failPendingStart(pending));
       return;
     }
     if (!pendingStartCurrent(pending) || !finishPendingStart(pending)) {
@@ -2114,14 +2228,13 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.on('term:kill', (event, { id }) => {
-    const pending = cancelPendingStart('term', event.sender, id);
-    releasePendingStartSession(pending, { killTmux: true });
+    cancelPendingStart('term', event.sender, id);
     const term = terminals.get(id);
     if (term) {
-      term.kill();
       terminals.delete(id);
+      try { term.kill(); } catch (_) { /* already exited */ }
     }
-    killTmuxSession(id);
+    closeTerminalOwnership('term', event.sender, id);
   });
 
   ipcMain.on('window:toggle-fullscreen', () => {

@@ -624,9 +624,12 @@ function syncEmbeds() {
 // Main declined to start a terminal for an untrusted synced project. Undo the
 // materialization so the panel is not left blank and pressing the tab again
 // asks once more, rather than the tab looking permanently broken.
-window.api.onTerminalDeclined(({ id }) => {
+window.api.onTerminalDeclined(({ id, session }) => {
   const t = tabs.get(id);
   if (!t) return;
+  if (!t.session && typeof session === 'string' && /^td-[A-Za-z0-9_-]+$/.test(session)) {
+    t.session = session;
+  }
   if (t.cleanup) { try { t.cleanup(); } catch (_) { /* already gone */ } }
   if (t.panelEl) t.panelEl.remove();
   Object.assign(t, { materialized: false, embed: false, panelEl: null, term: null, cleanup: null });
