@@ -402,9 +402,28 @@ test('resolveOwner rejects a worktree when its parent admission is revoked durin
   assert.deepEqual(await files.resolveOwner(worktree), {
     ok: false,
     error: 'project-unavailable',
+    verificationFailed: true,
   });
   assert.equal(revoked, true);
   assert.equal((await files.openProject(fx.project)).error, 'project-unavailable');
+});
+
+test('resolveOwner preserves a current-admission Git verification failure', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const candidate = path.join(fx.project, '.worktrees', 'candidate');
+  fs.mkdirSync(candidate, { recursive: true });
+  const files = createProjectFiles({
+    spawn: () => fakeGitProcess({ code: 1, stderr: 'fatal: expected test failure\n' }),
+  });
+  files.admitProject(fx.project, 'configured');
+
+  assert.deepEqual(await files.resolveOwner(candidate), {
+    ok: false,
+    error: 'project-unavailable',
+    verificationFailed: true,
+  });
 });
 
 test('restoreSelection re-admits an exact stored parent for its verified linked worktree', async (t) => {
@@ -427,6 +446,50 @@ test('restoreSelection re-admits an exact stored parent for its verified linked 
     { kind: 'worktree', label: 'topic' },
   ]);
   assert.equal((await files.openProject(worktree)).error, 'project-unavailable');
+});
+
+test('verifySelectionOwner verifies a linked worktree without changing admissions', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  const files = createProjectFiles();
+  const existing = path.join(fx.base, 'existing');
+  fs.mkdirSync(existing);
+  files.admitProject(existing, 'configured');
+
+  assert.deepEqual(await files.verifySelectionOwner(fx.project, worktree), {
+    ok: true,
+    projectPath: fx.project,
+    selectedPath: worktree,
+  });
+  assert.equal((await files.openProject(existing)).ok, true);
+  assert.equal((await files.openProject(fx.project)).error, 'project-unavailable');
+  assert.equal((await files.openProject(worktree)).error, 'project-unavailable');
+});
+
+test('verifySelectionOwner distinguishes a Git verification failure from an ordinary mismatch', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const candidate = path.join(fx.project, '.worktrees', 'candidate');
+  fs.mkdirSync(candidate, { recursive: true });
+  const files = createProjectFiles({
+    spawn: () => fakeGitProcess({ code: 1, stderr: 'fatal: expected test failure\n' }),
+  });
+
+  assert.deepEqual(await files.verifySelectionOwner(fx.project, candidate), {
+    ok: false,
+    error: 'project-unavailable',
+    verificationFailed: true,
+  });
+  assert.deepEqual(await files.verifySelectionOwner(fx.project, fx.base), {
+    ok: false,
+    error: 'project-unavailable',
+  });
+  assert.equal((await files.openProject(fx.project)).error, 'project-unavailable');
 });
 
 test('restoreSelection rejects a forged owner without leaving an admission', async (t) => {

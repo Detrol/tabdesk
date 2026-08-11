@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { EventEmitter } = require('events');
 const { createProjectFiles } = require('../project-files');
 const {
   classifyTmuxSessionList,
@@ -31,6 +32,20 @@ function fixture() {
     worktree,
     cleanup: () => fs.rmSync(base, { recursive: true, force: true }),
   };
+}
+
+function fatalGitProcess() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = new EventEmitter();
+  child.stdin.end = () => {};
+  child.kill = () => true;
+  process.nextTick(() => {
+    child.stderr.emit('data', Buffer.from('fatal: expected test failure\n'));
+    child.emit('close', 1, null);
+  });
+  return child;
 }
 
 function registry(initial, projectFiles, options = {}) {
@@ -184,6 +199,7 @@ test('transient attach verification failure preserves an existing stored claim f
   let legacyFallbacks = 0;
   const projectFiles = {
     resolveOwner: async () => ({ ok: false, error: 'project-unavailable' }),
+    verifySelectionOwner: async () => ({ ok: false, error: 'project-unavailable' }),
     restoreSelection: async () => ({ ok: false, error: 'project-unavailable' }),
     admitSelection: async () => {
       legacyFallbacks += 1;
@@ -209,6 +225,7 @@ test('transient attach verification failure preserves an existing stored claim f
 test('failed ownership verification for a new allocation leaves an empty registry unchanged', async () => {
   const projectFiles = {
     resolveOwner: async () => ({ ok: false, error: 'project-unavailable' }),
+    verifySelectionOwner: async () => ({ ok: false, error: 'project-unavailable' }),
     restoreSelection: async () => ({ ok: false, error: 'project-unavailable' }),
     admitSelection: async () => ({ ok: false, error: 'project-unavailable' }),
     replaceAdmissions() {},
@@ -413,6 +430,121 @@ test('all-legacy parent and worktree records restore under the parent in either 
     ]);
     assert.equal((await projectFiles.openProject(fx.worktree)).error, 'project-unavailable');
   }
+});
+
+test('legacy relationship discovery exposes no file authority before migration is durable', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(path.join(fx.project, 'safe.txt'), 'private');
+  const files = createProjectFiles();
+  let releasePause;
+  const pause = new Promise((resolve) => { releasePause = resolve; });
+  let signalPaused;
+  const paused = new Promise((resolve) => { signalPaused = resolve; });
+  let didPause = false;
+  async function pauseAfterRelationship(operation, candidateProjectPath, selectedPath) {
+    const result = await operation(candidateProjectPath, selectedPath);
+    if (!didPause && result.ok
+      && candidateProjectPath === fx.project && selectedPath === fx.worktree) {
+      didPause = true;
+      signalPaused();
+      await pause;
+    }
+    return result;
+  }
+  const guardedFiles = {
+    ...files,
+    verifySelectionOwner: (...args) => pauseAfterRelationship(
+      files.verifySelectionOwner,
+      ...args,
+    ),
+    restoreSelection: (...args) => pauseAfterRelationship(files.restoreSelection, ...args),
+  };
+  const initial = [
+    { session: 'td-codex-worktree', cwd: fx.worktree, name: 'Worktree' },
+    { session: 'td-claude-parent', cwd: fx.project, name: 'Parent' },
+  ];
+  const state = registry(initial, guardedFiles, { durable: false });
+  const restorePromise = state.ownership.restore(initial, {
+    persistedSessions: new Set(initial.map(({ session }) => session)),
+  });
+  t.after(() => releasePause());
+
+  assert.equal(await Promise.race([
+    paused.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 500)),
+  ]), true);
+  const opened = await files.openProject(fx.project);
+  const worktreeOpened = await files.openProject(fx.worktree);
+  const root = opened.ok && opened.roots.find(({ kind }) => kind === 'project');
+  const identity = opened.ok
+    ? { projectId: opened.projectId, rootId: root.id }
+    : { projectId: 'not-admitted', rootId: 'not-admitted' };
+  const listed = await files.list({ ...identity, directory: '' });
+  const read = await files.read({ ...identity, path: 'safe.txt' });
+  assert.deepEqual({ opened, worktreeOpened, listed, read }, {
+    opened: { ok: false, error: 'project-unavailable' },
+    worktreeOpened: { ok: false, error: 'project-unavailable' },
+    listed: { ok: false, error: 'project-unavailable' },
+    read: { ok: false, error: 'project-unavailable' },
+  });
+
+  releasePause();
+  assert.deepEqual(await restorePromise, []);
+  assert.deepEqual(state.records(), initial);
+  assert.equal((await files.openProject(fx.project)).error, 'project-unavailable');
+  assert.equal((await files.openProject(fx.worktree)).error, 'project-unavailable');
+});
+
+test('legacy migration persists its derived owner before a fresh final admission check', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const files = createProjectFiles();
+  let finalChecks = 0;
+  const guardedFiles = {
+    ...files,
+    restoreSelection: async () => {
+      finalChecks += 1;
+      return { ok: false, error: 'project-unavailable', verificationFailed: true };
+    },
+  };
+  const worktree = {
+    session: 'td-codex-worktree', cwd: fx.worktree, name: 'Worktree', marker: 'persisted',
+  };
+  const parentOrphan = {
+    session: 'td-claude-parent-orphan', cwd: fx.project, name: 'Parent', marker: 'orphan',
+  };
+  const state = registry([worktree], guardedFiles);
+
+  assert.deepEqual(await state.ownership.restore([worktree, parentOrphan], {
+    persistedSessions: new Set([worktree.session]),
+  }), []);
+  assert.equal(finalChecks >= 1, true);
+  assert.deepEqual(state.records(), [{ ...worktree, projectPath: fx.project }]);
+  assert.equal((await files.openProject(fx.project)).error, 'project-unavailable');
+  assert.equal((await files.openProject(fx.worktree)).error, 'project-unavailable');
+});
+
+test('current-admission Git failure cannot downgrade a legacy worktree to itself', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const candidate = fx.worktree;
+  const files = createProjectFiles({
+    spawn: fatalGitProcess,
+  });
+  files.admitProject(fx.project, 'configured');
+  const record = {
+    session: 'td-codex-worktree', cwd: candidate, name: 'Worktree', marker: 'legacy',
+  };
+  const state = registry([record], files);
+
+  assert.deepEqual(await state.ownership.restore([record], {
+    persistedSessions: new Set([record.session]),
+  }), []);
+  assert.deepEqual(state.records(), [record]);
+  assert.equal(state.writes(), 0);
+  files.replaceAdmissions('configured', []);
+  assert.equal((await files.openProject(candidate)).error, 'project-unavailable');
 });
 
 test('legacy relationship discovery rejects fake convention paths and different repositories', async (t) => {

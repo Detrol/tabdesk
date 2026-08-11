@@ -69,6 +69,7 @@ function createSessionRegistry({ read, write, upsert }) {
 
 function createSessionOwnership({ projectFiles, remember, forget }) {
   if (!projectFiles || typeof projectFiles.resolveOwner !== 'function'
+    || typeof projectFiles.verifySelectionOwner !== 'function'
     || typeof projectFiles.restoreSelection !== 'function'
     || typeof remember !== 'function' || typeof forget !== 'function') {
     throw new TypeError('session ownership dependencies are required');
@@ -120,14 +121,18 @@ function createSessionOwnership({ projectFiles, remember, forget }) {
       .filter((cwd) => typeof cwd === 'string' && cwd))]
       .sort((left, right) => left.localeCompare(right));
     const discoveredOwners = new Map();
+    const relationshipVerificationFailures = new Set();
     for (const parentPath of legacyPaths) {
       for (const childPath of legacyPaths) {
         if (parentPath === childPath) continue;
         let relationship;
         try {
-          relationship = await projectFiles.restoreSelection(parentPath, childPath);
+          relationship = await projectFiles.verifySelectionOwner(parentPath, childPath);
         } catch (_) {
           relationship = null;
+        }
+        if (relationship?.verificationFailed) {
+          relationshipVerificationFailures.add(childPath);
         }
         if (!relationship?.ok) continue;
         if (!discoveredOwners.has(parentPath)) {
@@ -138,27 +143,44 @@ function createSessionOwnership({ projectFiles, remember, forget }) {
         }
       }
     }
-    projectFiles.replaceAdmissions('restored', [
-      ...verifiedOwners(),
-      ...discoveredOwners.values(),
-    ]);
+
+    async function deriveLegacyOwner(cwd) {
+      let current;
+      try {
+        current = await projectFiles.resolveOwner(cwd);
+      } catch (_) {
+        current = null;
+      }
+      if (current?.ok) return current;
+      if (current?.verificationFailed || relationshipVerificationFailures.has(cwd)) return null;
+
+      const candidate = discoveredOwners.get(cwd) || cwd;
+      try {
+        const verified = await projectFiles.verifySelectionOwner(candidate, cwd);
+        return verified?.ok ? verified : null;
+      } catch (_) {
+        return null;
+      }
+    }
 
     for (const { record, index } of legacyCandidates) {
+      const owner = await deriveLegacyOwner(record.cwd);
+      if (!owner?.ok) {
+        projectFiles.replaceAdmissions('restored', verifiedOwners());
+        continue;
+      }
+      const verified = { ...record, projectPath: owner.projectPath };
+      if (persistedSessions.has(record.session) && remember(verified) !== true) {
+        projectFiles.replaceAdmissions('restored', verifiedOwners());
+        continue;
+      }
       let admitted;
       try {
-        const discoveredOwner = discoveredOwners.get(record.cwd);
-        admitted = discoveredOwner
-          ? await projectFiles.restoreSelection(discoveredOwner, record.cwd)
-          : await projectFiles.admitSelection(record.cwd, 'restored');
+        admitted = await projectFiles.restoreSelection(verified.projectPath, record.cwd);
       } catch (_) {
         admitted = null;
       }
       if (!admitted?.ok) {
-        projectFiles.replaceAdmissions('restored', verifiedOwners());
-        continue;
-      }
-      const verified = { ...record, projectPath: admitted.projectPath };
-      if (persistedSessions.has(record.session) && remember(verified) !== true) {
         projectFiles.replaceAdmissions('restored', verifiedOwners());
         continue;
       }

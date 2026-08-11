@@ -535,27 +535,45 @@ function createProjectFiles(options = {}) {
       if (resolved.ok) {
         return { ok: true, projectPath: exact.logical, selectedPath: selected.logical };
       }
+      if (resolved.verificationFailed) {
+        return { ok: false, error: 'project-unavailable', verificationFailed: true };
+      }
     }
 
     for (const project of [...byPath.values()]) {
       if (project === exact) continue;
       const resolved = await verifiedOwnerForSelection(project, selected, { admitted: true });
+      if (resolved.verificationFailed) {
+        return { ok: false, error: 'project-unavailable', verificationFailed: true };
+      }
       if (!resolved.ok) continue;
       return { ok: true, projectPath: project.logical, selectedPath: selected.logical };
     }
     return { ok: false, error: 'project-unavailable' };
   }
 
-  async function restoreSelection(storedProjectPath, selectedPath) {
-    const project = safeDirectory(io, storedProjectPath);
+  async function verifySelectionOwner(candidateProjectPath, selectedPath) {
+    const project = safeDirectory(io, candidateProjectPath);
     const selected = safeDirectory(io, selectedPath);
     if (!project || !selected) return { ok: false, error: 'project-unavailable' };
 
     const resolved = await verifiedOwnerForSelection(project, selected);
-    if (!resolved.ok) return { ok: false, error: 'project-unavailable' };
-    const admitted = admitProject(project.logical, 'restored');
-    if (!admitted.ok) return admitted;
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        error: 'project-unavailable',
+        ...(resolved.verificationFailed ? { verificationFailed: true } : {}),
+      };
+    }
     return { ok: true, projectPath: project.logical, selectedPath: selected.logical };
+  }
+
+  async function restoreSelection(storedProjectPath, selectedPath) {
+    const verified = await verifySelectionOwner(storedProjectPath, selectedPath);
+    if (!verified.ok) return { ok: false, error: 'project-unavailable' };
+    const admitted = admitProject(verified.projectPath, 'restored');
+    if (!admitted.ok) return admitted;
+    return verified;
   }
 
   async function admitSelection(selectedPath, source) {
@@ -927,6 +945,7 @@ function createProjectFiles(options = {}) {
     replaceAdmissions,
     admitSelection,
     resolveOwner,
+    verifySelectionOwner,
     restoreSelection,
     openProject,
     describeWorktrees,
