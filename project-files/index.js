@@ -114,12 +114,12 @@ function createProjectFiles(options = {}) {
     return candidates;
   }
 
-  async function verifiedWorktrees(project) {
+  async function verifiedWorktrees(project, candidates) {
     const projectCommonDir = await gitCommonDir(project.logical);
     if (!projectCommonDir) return [];
     const seen = new Set();
     const worktrees = [];
-    for (const candidate of conventionCandidates(project)) {
+    for (const candidate of candidates) {
       if (seen.has(candidate.real)) continue;
       if (!await isGitWorktree(candidate, projectCommonDir)) continue;
       seen.add(candidate.real);
@@ -172,8 +172,9 @@ function createProjectFiles(options = {}) {
 
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!refreshProject(project)) return { ok: false, error: 'project-unavailable' };
-      const worktrees = await verifiedWorktrees(project);
-      if (!rootsStillValid(project, worktrees)) {
+      const candidates = conventionCandidates(project);
+      const worktrees = await verifiedWorktrees(project, candidates);
+      if (!rootsStillValid(project, candidates)) {
         if (!byPath.has(project.logical)) return { ok: false, error: 'project-unavailable' };
         continue;
       }

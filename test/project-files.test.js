@@ -269,3 +269,41 @@ test('retries worktree discovery when a worktree symlink is repointed mid-refres
   assert.equal(repointed, true);
   assert.notEqual(refreshed.roots.find((root) => root.kind === 'worktree').id, oldWorktreeId);
 });
+
+test('retries when a worktree candidate is repointed before Git reads it', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const firstWorktree = path.join(fx.base, 'first-worktree');
+  const secondWorktree = path.join(fx.base, 'second-worktree');
+  const link = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(link));
+  git(fx.project, ['worktree', 'add', '-b', 'first-topic', firstWorktree]);
+  git(fx.project, ['worktree', 'add', '-b', 'second-topic', secondWorktree]);
+  fs.symlinkSync(firstWorktree, link, 'dir');
+  let repointBeforeGit = false;
+  let repointed = false;
+  const files = createProjectFiles({
+    fs: {
+      statSync: fs.statSync,
+      realpathSync: fs.realpathSync,
+      readdirSync: fs.readdirSync,
+    },
+    execFile(file, args, options, callback) {
+      if (repointBeforeGit && !repointed && args.includes('--show-toplevel')) {
+        fs.unlinkSync(link);
+        fs.symlinkSync(secondWorktree, link, 'dir');
+        repointed = true;
+      }
+      return execFile(file, args, options, callback);
+    },
+  });
+  files.admitProject(fx.project, 'configured');
+  const first = await files.openProject(fx.project);
+  const oldWorktreeId = first.roots.find((root) => root.kind === 'worktree').id;
+
+  repointBeforeGit = true;
+  const refreshed = await files.openProject(fx.project);
+  assert.equal(repointed, true);
+  assert.notEqual(refreshed.roots.find((root) => root.kind === 'worktree').id, oldWorktreeId);
+});
