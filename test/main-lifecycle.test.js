@@ -248,6 +248,70 @@ test('window close after the root reload is issued cannot consume its unload exc
   assert.deepEqual(effects, ['persist', 'rollback']);
 });
 
+test('post-override terminal paths keep the durable root committed and finalize once', async (t) => {
+  for (const scenario of ['close/app-quit', 'devtools-reload', 'gate-close', 'timeout', 'destroyed', 'wrong-navigation']) {
+    await t.test(scenario, async () => {
+      const harness = leaveHarness({ navigation: 'deferred' });
+      const ownerWindow = new EventEmitter();
+      let replayedCloses = 0;
+      let closePrevented = false;
+      let unloadAllowed = false;
+      ownerWindow.close = () => { replayedCloses += 1; };
+      ownerWindow.isDestroyed = () => false;
+      const effects = [];
+      const gate = createGate(harness, ['leave-token'], {
+        navigationTimeoutMs: scenario === 'timeout' ? 5 : 30,
+      });
+      const resultPromise = gate.run(harness.sender, {
+        ownerWindow,
+        commit: () => { effects.push('persist'); return { ok: true, path: '/new-root' }; },
+        rollback: () => { effects.push('rollback'); return { ok: true }; },
+        finalize: () => { effects.push('finalize'); },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      harness.sender.emit('will-prevent-unload', {
+        preventDefault() { unloadAllowed = true; },
+      });
+
+      if (scenario === 'close/app-quit') {
+        // BrowserWindow.close() and app.quit() converge on the same owner close
+        // event. Repeated attempts must queue only one close replay.
+        ownerWindow.emit('close', { preventDefault() { closePrevented = true; } });
+        ownerWindow.emit('close', { preventDefault() { closePrevented = true; } });
+      } else if (scenario === 'devtools-reload') {
+        harness.sender.emit('devtools-reload-page');
+      } else if (scenario === 'gate-close') {
+        gate.close();
+      } else if (scenario === 'destroyed') {
+        harness.destroy();
+      }
+
+      if (scenario === 'close/app-quit' || scenario === 'devtools-reload') {
+        harness.sender.emit('did-start-navigation', {
+          url: harness.sender.getURL(),
+          isMainFrame: true,
+          isSameDocument: false,
+        });
+      } else if (scenario === 'wrong-navigation') {
+        harness.sender.emit('did-start-navigation', {
+          url: 'file:///unrelated.html',
+          isMainFrame: true,
+          isSameDocument: false,
+        });
+      }
+      const result = await resultPromise;
+      await new Promise((resolve) => setImmediate(resolve));
+      gate.close();
+
+      assert.equal(unloadAllowed, true);
+      assert.deepEqual(result, { ok: true, path: '/new-root' });
+      assert.deepEqual(effects, ['persist', 'finalize']);
+      assert.equal(closePrevented, scenario === 'close/app-quit');
+      assert.equal(replayedCloses, scenario === 'close/app-quit' ? 1 : 0);
+    });
+  }
+});
+
 function createGate(harness, tokens = ['leave-token'], timeouts = {}) {
   return lifecycle.createRendererLeaveGate({
     ipcMain: harness.ipcMain,
@@ -308,7 +372,7 @@ test('persistence failure never arms unload permit or reloads the dirty renderer
 });
 
 test('reload start failure rolls back persisted root without finalizing admissions or children', async () => {
-  const harness = leaveHarness({ navigation: 'none' });
+  const harness = leaveHarness({ navigation: 'deferred' });
   let root = '/old-root';
   const effects = [];
   const gate = createGate(harness, ['leave-token'], { navigationTimeoutMs: 5 });
@@ -329,7 +393,7 @@ test('cancel stays non-mutating while post-decision failures roll persisted root
   assert.equal(typeof lifecycle.createRendererLeaveGate, 'function');
   for (const scenario of [
     { name: 'cancel', harness: leaveHarness({ decision: 'cancel' }), error: 'canceled' },
-    { name: 'reload timeout', harness: leaveHarness({ navigation: 'none' }), error: 'reload-start-timeout' },
+    { name: 'reload timeout', harness: leaveHarness({ navigation: 'deferred' }), error: 'reload-start-timeout' },
     { name: 'reload failure', harness: leaveHarness({ navigation: 'throw' }), error: 'reload-failed' },
   ]) {
     await t.test(scenario.name, async () => {

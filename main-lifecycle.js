@@ -48,6 +48,15 @@ function createRendererLeaveGate({
     request.sender.removeListener('will-frame-navigate', request.onFrameNavigate);
     request.sender.removeListener('will-prevent-unload', request.onPreventUnload);
     if (request.ownerWindow) request.ownerWindow.removeListener('close', request.onClose);
+    if (request.unloadAllowed) {
+      request.navigationAccepted = true;
+      result = request.commitResult;
+      abort = false;
+    }
+    if (request.navigationAccepted && !request.finalized) {
+      request.finalized = true;
+      try { request.finalize(); } catch (_) { /* unload is already committed */ }
+    }
     if (request.committed && !request.navigationAccepted) {
       request.committed = false;
       try {
@@ -59,6 +68,13 @@ function createRendererLeaveGate({
     }
     if (abort) sendAbort(request);
     request.resolve(result);
+    if (request.queuedClose && request.ownerWindow) {
+      queueMicrotask(() => {
+        try {
+          if (!request.ownerWindow.isDestroyed()) request.ownerWindow.close();
+        } catch (_) { /* owner disappeared with the committed unload */ }
+      });
+    }
   }
 
   function startTimer(request, timeoutMs, error) {
@@ -149,6 +165,8 @@ function createRendererLeaveGate({
         reloadIssued: false,
         unloadAllowed: false,
         navigationAccepted: false,
+        finalized: false,
+        queuedClose: false,
         timer: null,
         onDestroyed: null,
         onClose: null,
@@ -160,6 +178,10 @@ function createRendererLeaveGate({
       request.onDestroyed = () => complete(request, { ok: false, error: 'renderer-unavailable' });
       request.onClose = (event) => {
         event.preventDefault();
+        if (request.unloadAllowed) {
+          request.queuedClose = true;
+          return;
+        }
         if (request.phase === 'committing') {
           request.interrupted = true;
           return;
@@ -167,6 +189,7 @@ function createRendererLeaveGate({
         complete(request, { ok: false, error: 'navigation-changed' });
       };
       request.onExternalReload = () => {
+        if (request.unloadAllowed) return;
         if (request.phase === 'committing') {
           request.interrupted = true;
           return;
@@ -179,19 +202,26 @@ function createRendererLeaveGate({
           request.interrupted = true;
           return;
         }
-        if (request.phase !== 'reload' || !request.reloadIssued
-          || details.url !== request.expectedUrl) {
-          complete(request, { ok: false, error: 'navigation-changed' });
+        const matchesIssuedReload = request.phase === 'reload' && request.reloadIssued
+          && details.url === request.expectedUrl;
+        if (matchesIssuedReload) {
+          clearTimer(request);
+          request.navigationAccepted = true;
+          complete(request, request.commitResult, { abort: false });
           return;
         }
-        clearTimer(request);
-        request.navigationAccepted = true;
-        try { request.finalize(); } catch (_) { /* navigation is already committed */ }
-        complete(request, request.commitResult, { abort: false });
+        if (request.unloadAllowed) {
+          // Electron cannot identify which same-tick navigation consumed an
+          // already-granted unload. The durable commit is now irreversible.
+          complete(request, request.commitResult, { abort: false });
+          return;
+        }
+        complete(request, { ok: false, error: 'navigation-changed' });
       };
       request.onFrameNavigate = (details = {}) => {
         if (!details.isMainFrame) return;
         details.preventDefault();
+        if (request.unloadAllowed) return;
         if (request.phase === 'committing') {
           request.interrupted = true;
           return;
@@ -205,6 +235,7 @@ function createRendererLeaveGate({
         }
         if (request.phase === 'reload' && request.reloadIssued && !request.unloadAllowed) {
           request.unloadAllowed = true;
+          request.sender.removeListener('will-prevent-unload', request.onPreventUnload);
           event.preventDefault();
           return;
         }
