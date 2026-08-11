@@ -119,6 +119,28 @@ app.on('ready', async () => {
   ok('skrivfel varnas exakt en gang', warnings.length === 1
     && warnings[0].includes('[settings] could not persist')
     && warnings[0].includes('expected settings write failure'), warnings.join(' | '));
+  const { createSessionRegistry } = require(path.join(ROOT, 'session-ownership'));
+  const priorTabs = settings.get('openTabs');
+  const registryWarnings = [];
+  const registry = createSessionRegistry({
+    read: () => settings.get('openTabs'),
+    write: (records) => settings.set('openTabs', records),
+    upsert: TabOrder.upsertRecord,
+  });
+  let failedRegistryWrite;
+  try {
+    fsx.writeFileSync = () => { throw new Error('expected registry write failure'); };
+    console.warn = (...args) => registryWarnings.push(args.map(String).join(' '));
+    failedRegistryWrite = registry.remember({ session: 'new-session', cwd: '/new' });
+  } finally {
+    fsx.writeFileSync = originalWriteFileSync;
+    console.warn = originalWarn;
+  }
+  ok('registry skrivfel rapporteras till sessionsflodet', failedRegistryWrite === false);
+  ok('registry skrivfel aterstaller exakt tidigare cache',
+    JSON.stringify(settings.get('openTabs')) === JSON.stringify(priorTabs));
+  ok('registry rollback forsoker bada cachelagena', registryWarnings.length === 2,
+    registryWarnings.join(' | '));
   {
 
 

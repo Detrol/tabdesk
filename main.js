@@ -40,7 +40,7 @@ const syncKeys = require('./sync/keys');
 const syncInvite = require('./sync/invite');
 const tabOrder = require('./renderer/tab-order');
 const { createProjectFiles } = require('./project-files');
-const { createSessionOwnership } = require('./session-ownership');
+const { createSessionOwnership, createSessionRegistry } = require('./session-ownership');
 const {
   commitRootTransition,
   createRendererLeaveGate,
@@ -50,10 +50,15 @@ const {
 } = require('./main-lifecycle');
 
 const projectFiles = createProjectFiles();
+const sessionRegistry = createSessionRegistry({
+  read: () => settings.get('openTabs'),
+  write: (records) => settings.set('openTabs', records),
+  upsert: tabOrder.upsertRecord,
+});
 const sessionOwnership = createSessionOwnership({
   projectFiles,
-  remember: rememberTab,
-  forget: forgetTab,
+  remember: sessionRegistry.remember,
+  forget: sessionRegistry.forget,
 });
 const shutdownLifecycle = createShutdownLifecycle();
 const rendererLeaveGate = createRendererLeaveGate({ ipcMain });
@@ -135,19 +140,15 @@ let lastActivity = '';
 // Records are keyed by session name — the one identifier that is unique per
 // tab, unlike cwd.
 function openTabs() {
-  const v = settings.get('openTabs');
-  return Array.isArray(v) ? v.filter((r) => r && typeof r.session === 'string') : [];
+  return sessionRegistry.records();
 }
 
 function rememberTab(rec) {
-  const next = tabOrder.upsertRecord(openTabs(), rec);
-  if (next) settings.set('openTabs', next);
+  return sessionRegistry.remember(rec);
 }
 
 function forgetTab(session) {
-  if (!session) return;
-  const rest = openTabs().filter((r) => r.session !== session);
-  if (rest.length !== openTabs().length) settings.set('openTabs', rest);
+  return sessionRegistry.forget(session);
 }
 
 function killTmuxSession(id) {
@@ -1059,8 +1060,7 @@ app.whenReady().then(async () => {
         // that looks live and starts a brand new agent when clicked. Drop it —
         // the conversation itself is still offered under the overview's
         // "earlier", which is where starting it again belongs.
-        const keep = records.filter((r) => live.has(r.session));
-        for (const r of records) if (!live.has(r.session)) forgetTab(r.session);
+        const keep = sessionOwnership.reconcileLive(prepared, live);
         done(keep, orphans);
       });
     } catch (_) { done(records, []); }
