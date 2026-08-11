@@ -11,6 +11,7 @@ const GIT_MAX_ACTIVE = 4;
 const GIT_MAX_QUEUED = 16;
 const GIT_MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const GIT_MAX_OUTPUT_BYTES = 1024 * 1024;
+const GIT_KILL_FALLBACK_MS = 250;
 
 function relativeParts(value, { root = false } = {}) {
   if (typeof value !== 'string' || value.includes('\0') || value.includes('\\')) return null;
@@ -84,6 +85,8 @@ function createProjectFiles(options = {}) {
     ? options.gitMaxInputBytes : GIT_MAX_INPUT_BYTES;
   const gitMaxOutputBytes = Number.isInteger(options.gitMaxOutputBytes) && options.gitMaxOutputBytes >= 0
     ? options.gitMaxOutputBytes : GIT_MAX_OUTPUT_BYTES;
+  const gitKillFallbackMs = Number.isInteger(options.gitKillFallbackMs) && options.gitKillFallbackMs > 0
+    ? options.gitKillFallbackMs : GIT_KILL_FALLBACK_MS;
   const byPath = new Map();
   const byId = new Map();
   const watcherOwners = new Map();
@@ -227,7 +230,7 @@ function createProjectFiles(options = {}) {
       let child;
       let killTimer;
       let settled = false;
-      let timedOut = false;
+      let terminatingError;
       const stdout = [];
       const stderr = [];
       let stdoutBytes = 0;
@@ -239,13 +242,26 @@ function createProjectFiles(options = {}) {
         clearTimeout(killTimer);
         callback(value);
       };
+      const terminate = (error) => {
+        if (settled) {
+          killGit(child);
+          return;
+        }
+        if (!terminatingError) terminatingError = error;
+        clearTimeout(timeout);
+        killGit(child);
+        if (!child) {
+          finish(reject, terminatingError);
+        } else if (!killTimer) {
+          killTimer = setTimeout(() => finish(reject, terminatingError), gitKillFallbackMs);
+        }
+      };
       const collect = (chunks, chunk, stream) => {
-        if (settled) return;
+        if (settled || terminatingError) return;
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         const nextSize = (stream === 'stdout' ? stdoutBytes : stderrBytes) + bytes.length;
         if (nextSize > gitMaxOutputBytes) {
-          killGit(child);
-          finish(reject, gitFailure(`${stream} too large`));
+          terminate(gitFailure(`${stream} too large`));
           return;
         }
         if (stream === 'stdout') stdoutBytes = nextSize;
@@ -253,17 +269,10 @@ function createProjectFiles(options = {}) {
         chunks.push(bytes);
       };
       const timeout = setTimeout(() => {
-        timedOut = true;
-        killGit(child);
-        if (!child) {
-          finish(reject, gitFailure('timed out'));
-          return;
-        }
-        killTimer = setTimeout(() => finish(reject, gitFailure('timed out')), 250);
+        terminate(gitFailure('timed out'));
       }, gitTimeoutMs);
       setCancel(() => {
-        killGit(child);
-        finish(reject, gitFailure('runner closed'));
+        terminate(gitFailure('runner closed'));
       });
 
       try {
@@ -273,8 +282,7 @@ function createProjectFiles(options = {}) {
           detached: process.platform !== 'win32',
         });
         const failStream = () => {
-          killGit(child);
-          finish(reject, gitFailure('stream failed'));
+          terminate(gitFailure('stream failed'));
         };
         child.stdout?.on('data', (chunk) => collect(stdout, chunk, 'stdout'));
         child.stdout?.on('error', failStream);
@@ -282,12 +290,11 @@ function createProjectFiles(options = {}) {
         child.stderr?.on('error', failStream);
         child.stdin?.on?.('error', failStream);
         child.on('error', () => {
-          killGit(child);
-          finish(reject, gitFailure('failed to start'));
+          terminate(gitFailure('failed to start'));
         });
         child.on('close', (code, signal) => {
-          if (timedOut) {
-            finish(reject, gitFailure('timed out'));
+          if (terminatingError) {
+            finish(reject, terminatingError);
             return;
           }
           finish(resolve, {
@@ -297,14 +304,12 @@ function createProjectFiles(options = {}) {
           });
         });
         if (!child?.stdin || typeof child.stdin.end !== 'function') {
-          killGit(child);
-          finish(reject, gitFailure('has no stdin'));
+          terminate(gitFailure('has no stdin'));
           return;
         }
         child.stdin.end(input);
       } catch (_) {
-        killGit(child);
-        finish(reject, gitFailure('failed to start'));
+        terminate(gitFailure('failed to start'));
       }
     }));
   }

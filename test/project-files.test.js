@@ -1063,6 +1063,164 @@ test('kills a real Git child whose output exceeds the limit and then releases it
   assert.equal((await files.list({ ...ids, directory: '' })).ok, true);
 });
 
+test('retains a Git slot until the killed child reports close', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let intercept = false;
+  let interceptedSpawns = 0;
+  let noisyChild;
+  let actualClosed = false;
+  let releaseClose;
+  function controlledSpawn(file, args, options) {
+    if (!intercept) return spawn(file, args, options);
+    interceptedSpawns += 1;
+    if (interceptedSpawns > 1) return spawn(file, args, options);
+    noisyChild = spawn(process.execPath, [
+      '-e',
+      "process.stdout.write('x'.repeat(1025)); setInterval(() => {}, 1000)",
+    ], options);
+    const child = new EventEmitter();
+    child.pid = noisyChild.pid;
+    child.stdin = noisyChild.stdin;
+    child.stdout = noisyChild.stdout;
+    child.stderr = noisyChild.stderr;
+    child.kill = noisyChild.kill.bind(noisyChild);
+    let closeArgs;
+    noisyChild.on('error', (error) => child.emit('error', error));
+    noisyChild.on('close', (code, signal) => {
+      actualClosed = true;
+      closeArgs = [code, signal];
+    });
+    releaseClose = () => child.emit('close', ...closeArgs);
+    return child;
+  }
+  t.after(() => forceKillTestProcess(noisyChild));
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitMaxOutputBytes: 1024,
+    gitTimeoutMs: 1_000,
+    gitMaxActive: 1,
+    gitMaxQueued: 1,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  intercept = true;
+  const noisyRequest = files.list({ ...ids, directory: '' });
+  const queuedRequest = files.list({ ...ids, directory: '' });
+  await waitForCondition(() => actualClosed, 100, 5);
+  assert.equal(interceptedSpawns, 1);
+  releaseClose();
+
+  assert.deepEqual(await noisyRequest, { ok: false, error: 'git-unavailable' });
+  await waitForCondition(() => interceptedSpawns === 2);
+  assert.equal(interceptedSpawns, 2);
+  assert.equal((await queuedRequest).ok, true);
+  assert.equal(interceptedSpawns, 3);
+});
+
+test('uses the kill fallback before releasing a slot when child close never arrives', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let intercept = false;
+  let interceptedSpawns = 0;
+  let killed = false;
+  function controlledSpawn(file, args, options) {
+    if (!intercept) return spawn(file, args, options);
+    interceptedSpawns += 1;
+    if (interceptedSpawns > 1) return spawn(file, args, options);
+    const child = new EventEmitter();
+    child.stdin = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin.end = () => process.nextTick(() => {
+      child.stdout.emit('data', Buffer.from('x'.repeat(1025)));
+    });
+    child.kill = () => {
+      killed = true;
+      throw Object.assign(new Error('already gone'), { code: 'ESRCH' });
+    };
+    return child;
+  }
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitMaxOutputBytes: 1024,
+    gitKillFallbackMs: 30,
+    gitTimeoutMs: 1_000,
+    gitMaxActive: 1,
+    gitMaxQueued: 1,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  intercept = true;
+  const noisyRequest = files.list({ ...ids, directory: '' });
+  const queuedRequest = files.list({ ...ids, directory: '' });
+  await waitForCondition(() => killed);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(interceptedSpawns, 1);
+
+  assert.deepEqual(await withDeadline(noisyRequest), { ok: false, error: 'git-unavailable' });
+  await waitForCondition(() => interceptedSpawns === 2);
+  assert.equal(interceptedSpawns, 2);
+  assert.equal((await withDeadline(queuedRequest)).ok, true);
+  assert.equal(interceptedSpawns, 3);
+});
+
+test('service close during Git termination rejects all work without draining the queue', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let intercept = false;
+  let interceptedSpawns = 0;
+  let killed = false;
+  function controlledSpawn(file, args, options) {
+    if (!intercept) return spawn(file, args, options);
+    interceptedSpawns += 1;
+    const child = new EventEmitter();
+    child.stdin = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin.end = () => process.nextTick(() => {
+      child.stderr.emit('data', Buffer.from('x'.repeat(1025)));
+    });
+    child.kill = () => { killed = true; return true; };
+    return child;
+  }
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitMaxOutputBytes: 1024,
+    gitKillFallbackMs: 30,
+    gitTimeoutMs: 1_000,
+    gitMaxActive: 1,
+    gitMaxQueued: 1,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  intercept = true;
+  const terminating = files.list({ ...ids, directory: '' });
+  const queued = files.list({ ...ids, directory: '' });
+  await waitForCondition(() => killed);
+  files.close();
+  files.close();
+
+  assert.deepEqual(await withDeadline(terminating), { ok: false, error: 'git-unavailable' });
+  assert.deepEqual(await withDeadline(queued), { ok: false, error: 'git-unavailable' });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(interceptedSpawns, 1);
+  assert.deepEqual(await files.list({ ...ids, directory: '' }), {
+    ok: false,
+    error: 'git-unavailable',
+  });
+  assert.equal(interceptedSpawns, 1);
+});
+
 test('releases a Git execution slot after a synchronous launcher error', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
