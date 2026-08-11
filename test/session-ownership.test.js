@@ -191,6 +191,28 @@ test('current ownership persists only the main-derived admitted parent', async (
   assert.deepEqual(state.records().map(({ marker }) => marker), ['first', 'second']);
 });
 
+test('current ownership does not persist after its caller is invalidated during verification', async () => {
+  let resolveOwner;
+  const owner = new Promise((resolve) => { resolveOwner = resolve; });
+  const projectFiles = {
+    resolveOwner: () => owner,
+    verifySelectionOwner: async () => ({ ok: false, error: 'project-unavailable' }),
+    restoreSelection: async () => ({ ok: false, error: 'project-unavailable' }),
+    replaceAdmissions() {},
+  };
+  const state = registry([], projectFiles);
+  let current = true;
+  const pending = state.ownership.rememberCurrent({
+    session: 'td-codex-cancelled', cwd: '/project', agent: 'codex', name: 'Cancelled',
+  }, () => current);
+
+  current = false;
+  resolveOwner({ ok: true, projectPath: '/project', selectedPath: '/project' });
+
+  assert.equal(await pending, null);
+  assert.deepEqual(state.records(), []);
+});
+
 test('transient attach verification failure preserves an existing stored claim for restart quarantine', async () => {
   const record = {
     session: 'td-codex-topic', cwd: '/external/.worktrees/topic', projectPath: '/external',

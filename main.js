@@ -222,6 +222,54 @@ function cpuPercent() {
 // Track one pty per terminal id.
 const terminals = new Map();
 
+// A create crosses trust and ownership awaits before its terminal exists. The
+// renderer may close that tab, navigate, or reuse its id in the meantime, so
+// each backend/sender owns only its newest generation for an id.
+const pendingStarts = { term: new WeakMap(), embed: new WeakMap() };
+let pendingStartGeneration = 0;
+
+function beginPendingStart(backend, sender, id) {
+  let byId = pendingStarts[backend].get(sender);
+  if (!byId) {
+    byId = new Map();
+    pendingStarts[backend].set(sender, byId);
+  }
+  const token = { backend, sender, id, generation: ++pendingStartGeneration };
+  byId.set(id, token);
+  return token;
+}
+
+function pendingStartCurrent(token) {
+  try {
+    if (token.sender.isDestroyed()) return false;
+  } catch (_) {
+    return false;
+  }
+  return pendingStarts[token.backend].get(token.sender)?.get(token.id) === token;
+}
+
+function finishPendingStart(token) {
+  const starts = pendingStarts[token.backend];
+  const byId = starts.get(token.sender);
+  if (byId?.get(token.id) !== token) return false;
+  byId.delete(token.id);
+  if (!byId.size) starts.delete(token.sender);
+  return true;
+}
+
+function cancelPendingStart(backend, sender, id) {
+  const starts = pendingStarts[backend];
+  const byId = starts.get(sender);
+  if (!byId) return;
+  byId.delete(id);
+  if (!byId.size) starts.delete(sender);
+}
+
+function cancelPendingStarts(sender) {
+  pendingStarts.term.delete(sender);
+  pendingStarts.embed.delete(sender);
+}
+
 // Currently resolved theme + language, shared with the renderer over IPC.
 let activeTheme = null;
 let activeI18n = null;
@@ -324,6 +372,7 @@ function createWindow() {
   // records survive the reload the same way they survive a quit.
   win.webContents.on('did-start-navigation', (details) => {
     if (!details.isMainFrame || details.isSameDocument) return;
+    cancelPendingStarts(win.webContents);
     projectFiles.unwatch(win.webContents.id);
     termEmbed.killAll();
     tmuxSessions.clear();
@@ -333,8 +382,12 @@ function createWindow() {
     }
     terminals.clear();
   });
-  const contentsId = win.webContents.id;
-  win.webContents.once('destroyed', () => projectFiles.unwatch(contentsId));
+  const contents = win.webContents;
+  const contentsId = contents.id;
+  contents.once('destroyed', () => {
+    cancelPendingStarts(contents);
+    projectFiles.unwatch(contentsId);
+  });
 
   return win;
 }
@@ -916,21 +969,30 @@ app.whenReady().then(async () => {
   // rest of the tree is still material the agent will read and act on, so the
   // same question is asked here as before Run and Preview.
   ipcMain.on('embed:create', async (event, { id, cwd, startCmd, agent, session, name }) => {
-    if (cwd && !(await allowRun(BrowserWindow.fromWebContents(event.sender), cwd, 'terminal'))) {
-      if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
-      return;
+    const pending = beginPendingStart('embed', event.sender, id);
+    if (cwd) {
+      const allowed = await allowRun(BrowserWindow.fromWebContents(event.sender), cwd, 'terminal');
+      if (!pendingStartCurrent(pending)) return;
+      if (!allowed) {
+        finishPendingStart(pending);
+        if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+        return;
+      }
     }
     const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
     if (wrapped.session) {
       const owned = await sessionOwnership.rememberCurrent({
         session: wrapped.session, cwd, agent, name,
-      });
+      }, () => pendingStartCurrent(pending));
+      if (!pendingStartCurrent(pending)) return;
       if (!owned) {
+        finishPendingStart(pending);
         if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
         return;
       }
-      tmuxSessions.set(id, wrapped.session);
     }
+    if (!finishPendingStart(pending)) return;
+    if (wrapped.session) tmuxSessions.set(id, wrapped.session);
     termEmbed.create(id, { cwd, startCmd: wrapped.cmd });
   });
   ipcMain.on('embed:place', (event, { id, rect }) => termEmbed.place(id, rect));
@@ -941,7 +1003,11 @@ app.whenReady().then(async () => {
   // window still starting), and the renderer says so rather than looking broken.
   ipcMain.handle('embed:insert', (event, { id, text }) =>
     termEmbed.insert(id, String(text || '')));
-  ipcMain.on('embed:kill', (event, { id }) => { termEmbed.kill(id); killTmuxSession(id); });
+  ipcMain.on('embed:kill', (event, { id }) => {
+    cancelPendingStart('embed', event.sender, id);
+    termEmbed.kill(id);
+    killTmuxSession(id);
+  });
 
   // ---- Tab sessions ----
   // Reserve a session name for a second (third, …) tab on a project. Writing
@@ -1191,6 +1257,27 @@ app.whenReady().then(async () => {
   // The projects folder itself leads the list: work that spans projects — an
   // agent asked about the whole tree — runs in the root, and those sessions
   // and conversations need a row to live under just like any project's do.
+  const projectDescriptionQueue = [];
+  let activeProjectDescriptions = 0;
+  function drainProjectDescriptions() {
+    while (activeProjectDescriptions < 4 && projectDescriptionQueue.length) {
+      const job = projectDescriptionQueue.shift();
+      activeProjectDescriptions += 1;
+      Promise.resolve()
+        .then(() => projectFiles.describeWorktrees(job.projectPath))
+        .then(job.resolve, job.reject)
+        .finally(() => {
+          activeProjectDescriptions -= 1;
+          drainProjectDescriptions();
+        });
+    }
+  }
+  function describeProject(projectPath) {
+    return new Promise((resolve, reject) => {
+      projectDescriptionQueue.push({ projectPath, resolve, reject });
+      drainProjectDescriptions();
+    });
+  }
   ipcMain.handle('projects:list', async () => {
     const base = rootDir();
     if (!base) {
@@ -1225,7 +1312,7 @@ app.whenReady().then(async () => {
       const rows = [root, ...dirs];
       projectFiles.replaceAdmissions('configured', rows.map((row) => row.path));
       await Promise.all(rows.map(async (row) => {
-        const worktrees = await projectFiles.describeWorktrees(row.path);
+        const worktrees = await describeProject(row.path);
         row.worktrees = worktrees.map((worktree) => ({
           ...worktree,
           model: model.getFor(worktree.path, agents.getFor(worktree.path)),
@@ -1892,11 +1979,17 @@ app.whenReady().then(async () => {
 
   ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd, agent, session, name }) => {
     if (terminals.has(id)) return;
+    const pending = beginPendingStart('term', event.sender, id);
     // Same gate as the embedded backend — this path is only taken when native
     // embedding is off, and it starts the same agent in the same directory.
-    if (cwd && !(await allowRun(BrowserWindow.fromWebContents(event.sender), cwd, 'terminal'))) {
-      if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
-      return;
+    if (cwd) {
+      const allowed = await allowRun(BrowserWindow.fromWebContents(event.sender), cwd, 'terminal');
+      if (!pendingStartCurrent(pending)) return;
+      if (!allowed) {
+        finishPendingStart(pending);
+        if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+        return;
+      }
     }
     const shell = os.platform() === 'win32'
       ? 'powershell.exe'
@@ -1907,12 +2000,15 @@ app.whenReady().then(async () => {
     if (wrapped.session) {
       const owned = await sessionOwnership.rememberCurrent({
         session: wrapped.session, cwd, agent, name,
-      });
+      }, () => pendingStartCurrent(pending));
+      if (!pendingStartCurrent(pending)) return;
       if (!owned) {
+        finishPendingStart(pending);
         if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
         return;
       }
     }
+    if (!finishPendingStart(pending)) return;
     const term = pty.spawn(shell, [], {
       name: 'xterm-256color',
       cols: cols || 80,
@@ -1958,6 +2054,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.on('term:kill', (event, { id }) => {
+    cancelPendingStart('term', event.sender, id);
     const term = terminals.get(id);
     if (term) {
       term.kill();

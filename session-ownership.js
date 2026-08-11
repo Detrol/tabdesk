@@ -75,7 +75,7 @@ function createSessionOwnership({ projectFiles, remember, forget }) {
     throw new TypeError('session ownership dependencies are required');
   }
 
-  async function rememberCurrent(record) {
+  async function rememberCurrent(record, isCurrent) {
     let owner;
     try {
       owner = await projectFiles.resolveOwner(record?.cwd);
@@ -83,6 +83,13 @@ function createSessionOwnership({ projectFiles, remember, forget }) {
       owner = null;
     }
     if (!owner?.ok) return null;
+    if (typeof isCurrent === 'function') {
+      try {
+        if (!isCurrent()) return null;
+      } catch (_) {
+        return null;
+      }
+    }
     const verified = { ...record, projectPath: owner.projectPath };
     if (remember(verified) !== true) return null;
     return verified;
