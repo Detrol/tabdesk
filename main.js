@@ -40,6 +40,7 @@ const syncKeys = require('./sync/keys');
 const syncInvite = require('./sync/invite');
 const tabOrder = require('./renderer/tab-order');
 const { createProjectFiles } = require('./project-files');
+const { createSessionOwnership } = require('./session-ownership');
 const {
   commitRootTransition,
   createRendererLeaveGate,
@@ -49,6 +50,11 @@ const {
 } = require('./main-lifecycle');
 
 const projectFiles = createProjectFiles();
+const sessionOwnership = createSessionOwnership({
+  projectFiles,
+  remember: rememberTab,
+  forget: forgetTab,
+});
 const shutdownLifecycle = createShutdownLifecycle();
 const rendererLeaveGate = createRendererLeaveGate({ ipcMain });
 
@@ -911,8 +917,14 @@ app.whenReady().then(async () => {
     }
     const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
     if (wrapped.session) {
+      const owned = await sessionOwnership.rememberCurrent({
+        session: wrapped.session, cwd, agent, name,
+      });
+      if (!owned) {
+        if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+        return;
+      }
       tmuxSessions.set(id, wrapped.session);
-      rememberTab({ session: wrapped.session, cwd, agent, name });
     }
     termEmbed.create(id, { cwd, startCmd: wrapped.cmd });
   });
@@ -942,13 +954,17 @@ app.whenReady().then(async () => {
     const base = `td-${agent}-${slugFor(cwd)}`;
     const label = name || path.basename(cwd);
     if (!basePromised && !taken.has(base)) {
-      rememberTab({ session: base, cwd, agent, name: label });
+      const owned = await sessionOwnership.rememberCurrent({ session: base, cwd, agent, name: label });
+      if (!owned) return null;
       return { session: base, suffix: 0 };
     }
     let suffix = 2;
     while (taken.has(`${base}-${suffix}`)) suffix++;
     const session = `${base}-${suffix}`;
-    rememberTab({ session, cwd, agent, name: `${label} ·${suffix}` });
+    const owned = await sessionOwnership.rememberCurrent({
+      session, cwd, agent, name: `${label} ·${suffix}`,
+    });
+    if (!owned) return null;
     return { session, suffix };
   }
 
@@ -993,8 +1009,9 @@ app.whenReady().then(async () => {
   };
 
   ipcMain.handle('tabs:restore', () => new Promise((resolve) => {
-    const records = openTabs().filter((r) => r.cwd && fs.existsSync(r.cwd));
-    const claimed = new Set(records.map((r) => r.session));
+    const prepared = sessionOwnership.prepareRestore(openTabs(), fs.existsSync);
+    const records = prepared.records;
+    const claimed = prepared.claimed;
     // A session is the project's own only if its name is the one that project
     // computes for itself; anything numbered belongs to an extra tab and must
     // not take the project's place in the rail (it would lose its number and
@@ -1002,23 +1019,13 @@ app.whenReady().then(async () => {
     const primary = (rec) => agents.list().some(
       (a) => rec.session === `td-${a.id}-${slugFor(rec.cwd)}`);
     const done = async (keep, orphans) => {
-      const restored = [];
       try {
         const surviving = [
           ...keep,
           ...orphans.sort((a, b) => a.session.localeCompare(b.session)),
         ];
-        for (const record of surviving) {
-          const admitted = await projectFiles.admitSelection(record.cwd, 'restored');
-          if (!admitted.ok) continue;
-          restored.push({
-            ...record,
-            primary: primary(record),
-            projectPath: admitted.projectPath,
-          });
-        }
-        projectFiles.replaceAdmissions('restored', restored.map((record) => record.projectPath));
-        resolve(restored);
+        const restored = await sessionOwnership.restore(surviving, { persistedSessions: claimed });
+        resolve(restored.map((record) => ({ ...record, primary: primary(record) })));
       } catch (_) {
         projectFiles.replaceAdmissions('restored', []);
         resolve([]);
@@ -1893,6 +1900,16 @@ app.whenReady().then(async () => {
       : (process.env.SHELL || '/bin/bash');
 
     const startDir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
+    const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
+    if (wrapped.session) {
+      const owned = await sessionOwnership.rememberCurrent({
+        session: wrapped.session, cwd, agent, name,
+      });
+      if (!owned) {
+        if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+        return;
+      }
+    }
     const term = pty.spawn(shell, [], {
       name: 'xterm-256color',
       cols: cols || 80,
@@ -1903,10 +1920,8 @@ app.whenReady().then(async () => {
 
     // Auto-run the tab's command — the tmux attach for session tabs, a plain
     // command for the update installer, nothing at all for ad-hoc shells.
-    const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
     if (wrapped.session) {
       tmuxSessions.set(id, wrapped.session);
-      rememberTab({ session: wrapped.session, cwd, agent, name });
     }
     if (wrapped.cmd) {
       setTimeout(() => { try { term.write(wrapped.cmd + '\r'); } catch (_) {} }, 350);

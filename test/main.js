@@ -73,7 +73,7 @@ app.on('ready', async () => {
   }
 
   const records = [
-    { session: 'a1', cwd: '/a', name: 'A1', agentSession: 'conv-a1' },
+    { session: 'a1', cwd: '/a', name: 'A1', agentSession: 'conv-a1', projectPath: '/project-a' },
     { session: 'b1', cwd: '/b', name: 'B1' },
     { session: 'a2', cwd: '/a', name: 'A2' },
   ];
@@ -93,6 +93,7 @@ app.on('ready', async () => {
   const updated = TabOrder.upsertRecord(records, { session: 'a1', name: 'Nytt namn' });
   ok('uppdatering behaller plats', updated[0].session === 'a1' && updated[1].session === 'b1');
   ok('uppdatering behaller metadata', updated[0].agentSession === 'conv-a1');
+  ok('deluppdatering behaller verifierad projektagare', updated[0].projectPath === '/project-a');
   ok('ny post laggs sist', TabOrder.upsertRecord(records, { session: 'c1' })[3].session === 'c1');
 
   const C = require(path.join(ROOT, 'sync/crypto'));

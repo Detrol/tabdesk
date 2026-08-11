@@ -248,6 +248,10 @@ test('rejects project roots whose logical or real path enters Git metadata', asy
       ok: false,
       error: 'project-unavailable',
     });
+    assert.deepEqual(await files.restoreSelection(selected, selected), {
+      ok: false,
+      error: 'project-unavailable',
+    });
     assert.deepEqual(await files.openProject(selected), {
       ok: false,
       error: 'project-unavailable',
@@ -323,6 +327,168 @@ test('admitSelection does not broaden a fake convention-folder selection', async
     projectPath: fake,
     selectedPath: fake,
   });
+});
+
+test('resolveOwner maps only current admitted roots and their verified linked worktrees', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  const fake = path.join(fx.project, '.worktrees', 'fake');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  fs.mkdirSync(fake);
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+
+  assert.deepEqual(await files.resolveOwner(fx.project), {
+    ok: true,
+    projectPath: fx.project,
+    selectedPath: fx.project,
+  });
+  assert.deepEqual(await files.resolveOwner(worktree), {
+    ok: true,
+    projectPath: fx.project,
+    selectedPath: worktree,
+  });
+  assert.deepEqual(await files.resolveOwner(fake), {
+    ok: false,
+    error: 'project-unavailable',
+  });
+  assert.equal((await files.openProject(fake)).error, 'project-unavailable');
+});
+
+test('resolveOwner prefers an exact current admission over another project worktree relation', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  files.admitProject(worktree, 'picker');
+
+  assert.deepEqual(await files.resolveOwner(worktree), {
+    ok: true,
+    projectPath: worktree,
+    selectedPath: worktree,
+  });
+});
+
+test('resolveOwner rejects a worktree when its parent admission is revoked during Git verification', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  let files;
+  let revoked = false;
+  files = createProjectFiles({
+    spawn(file, args, options) {
+      const child = spawn(file, args, options);
+      child.once('close', () => {
+        if (!revoked && args.includes('--git-common-dir')) {
+          revoked = true;
+          files.replaceAdmissions('configured', []);
+        }
+      });
+      return child;
+    },
+  });
+  files.admitProject(fx.project, 'configured');
+
+  assert.deepEqual(await files.resolveOwner(worktree), {
+    ok: false,
+    error: 'project-unavailable',
+  });
+  assert.equal(revoked, true);
+  assert.equal((await files.openProject(fx.project)).error, 'project-unavailable');
+});
+
+test('restoreSelection re-admits an exact stored parent for its verified linked worktree', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  const files = createProjectFiles();
+
+  assert.deepEqual(await files.restoreSelection(fx.project, worktree), {
+    ok: true,
+    projectPath: fx.project,
+    selectedPath: worktree,
+  });
+  const opened = await files.openProject(fx.project);
+  assert.deepEqual(opened.roots.map(({ kind, label }) => ({ kind, label })), [
+    { kind: 'project', label: 'project' },
+    { kind: 'worktree', label: 'topic' },
+  ]);
+  assert.equal((await files.openProject(worktree)).error, 'project-unavailable');
+});
+
+test('restoreSelection rejects a forged owner without leaving an admission', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const other = path.join(fx.base, 'other');
+  fs.mkdirSync(other);
+  gitProject(other);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  const files = createProjectFiles();
+
+  assert.deepEqual(await files.restoreSelection(other, worktree), {
+    ok: false,
+    error: 'project-unavailable',
+  });
+  assert.equal((await files.openProject(other)).error, 'project-unavailable');
+  assert.equal((await files.openProject(worktree)).error, 'project-unavailable');
+});
+
+test('restoreSelection rejects fake convention directories and Git failures without admission', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const fake = path.join(fx.project, '.worktrees', 'fake');
+  fs.mkdirSync(fake, { recursive: true });
+  const files = createProjectFiles();
+
+  assert.deepEqual(await files.restoreSelection(fx.project, fake), {
+    ok: false,
+    error: 'project-unavailable',
+  });
+  assert.equal((await files.openProject(fx.project)).error, 'project-unavailable');
+
+  const failedGit = createProjectFiles({
+    spawn: () => fakeGitProcess({ code: 1, stderr: 'fatal: expected test failure\n' }),
+  });
+  assert.deepEqual(await failedGit.restoreSelection(fx.project, fake), {
+    ok: false,
+    error: 'project-unavailable',
+  });
+  assert.equal((await failedGit.openProject(fx.project)).error, 'project-unavailable');
+});
+
+test('admitSelection does not broaden a convention candidate after Git verification fails', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const candidate = path.join(fx.project, '.worktrees', 'candidate');
+  fs.mkdirSync(candidate, { recursive: true });
+  const files = createProjectFiles({
+    spawn: () => fakeGitProcess({ code: 1, stderr: 'fatal: expected test failure\n' }),
+  });
+  files.admitProject(fx.project, 'configured');
+
+  assert.deepEqual(await files.admitSelection(candidate, 'picker'), {
+    ok: false,
+    error: 'project-unavailable',
+  });
+  assert.equal((await files.openProject(candidate)).error, 'project-unavailable');
 });
 
 test('preserves root IDs across unchanged refreshes', async (t) => {

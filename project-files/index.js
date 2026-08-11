@@ -480,21 +480,93 @@ function createProjectFiles(options = {}) {
       .map((root) => ({ name: root.label, path: root.logical }));
   }
 
+  function currentAdmission(project) {
+    return project?.sources?.size > 0
+      && byPath.get(project.logical) === project
+      && byId.get(project.id) === project;
+  }
+
+  async function verifiedOwnerForSelection(project, selected, { admitted = false } = {}) {
+    if (admitted && !currentAdmission(project)) {
+      return { ok: false, error: 'project-unavailable' };
+    }
+    if (!refreshProject(project)) return { ok: false, error: 'project-unavailable' };
+    if (project.logical === selected.logical && sameDirectory(project, selected)) {
+      return { ok: true, project };
+    }
+
+    const candidate = conventionCandidates(project).find(({ logical }) => logical === selected.logical);
+    if (!candidate || !sameDirectory(candidate, selected)) {
+      return { ok: false, error: 'project-unavailable' };
+    }
+    const projectCommonDir = await gitCommonDir(project.logical);
+    if (projectCommonDir.error) {
+      return { ok: false, error: 'project-unavailable', verificationFailed: true };
+    }
+    if (!projectCommonDir.git) {
+      return { ok: false, error: 'project-unavailable' };
+    }
+    const verified = await isGitWorktree(selected, projectCommonDir.commonDir);
+    if (verified.error) {
+      return { ok: false, error: 'project-unavailable', verificationFailed: true };
+    }
+    if (!verified.worktree) {
+      return { ok: false, error: 'project-unavailable' };
+    }
+
+    const currentSelected = safeDirectory(io, selected.logical);
+    const currentCandidate = conventionCandidates(project)
+      .find(({ logical }) => logical === selected.logical);
+    if ((admitted && !currentAdmission(project)) || !refreshProject(project)
+      || !sameDirectory(selected, currentSelected)
+      || !sameDirectory(selected, currentCandidate)) {
+      return { ok: false, error: 'project-unavailable', verificationFailed: true };
+    }
+    return { ok: true, project };
+  }
+
+  async function resolveOwner(selectedPath) {
+    const selected = safeDirectory(io, selectedPath);
+    if (!selected) return { ok: false, error: 'project-unavailable' };
+
+    const exact = byPath.get(selected.logical);
+    if (exact) {
+      const resolved = await verifiedOwnerForSelection(exact, selected, { admitted: true });
+      if (resolved.ok) {
+        return { ok: true, projectPath: exact.logical, selectedPath: selected.logical };
+      }
+    }
+
+    for (const project of [...byPath.values()]) {
+      if (project === exact) continue;
+      const resolved = await verifiedOwnerForSelection(project, selected, { admitted: true });
+      if (!resolved.ok) continue;
+      return { ok: true, projectPath: project.logical, selectedPath: selected.logical };
+    }
+    return { ok: false, error: 'project-unavailable' };
+  }
+
+  async function restoreSelection(storedProjectPath, selectedPath) {
+    const project = safeDirectory(io, storedProjectPath);
+    const selected = safeDirectory(io, selectedPath);
+    if (!project || !selected) return { ok: false, error: 'project-unavailable' };
+
+    const resolved = await verifiedOwnerForSelection(project, selected);
+    if (!resolved.ok) return { ok: false, error: 'project-unavailable' };
+    const admitted = admitProject(project.logical, 'restored');
+    if (!admitted.ok) return admitted;
+    return { ok: true, projectPath: project.logical, selectedPath: selected.logical };
+  }
+
   async function admitSelection(selectedPath, source) {
     if (!SOURCES.has(source)) return { ok: false, error: 'project-unavailable' };
     const selected = safeDirectory(io, selectedPath);
     if (!selected) return { ok: false, error: 'project-unavailable' };
 
     for (const project of [...byPath.values()]) {
-      if (!refreshProject(project)) continue;
-      const candidate = conventionCandidates(project).find(({ logical }) => logical === selected.logical);
-      if (!candidate) continue;
-      const projectCommonDir = await gitCommonDir(project.logical);
-      if (projectCommonDir.error) return { ok: false, error: 'project-unavailable' };
-      if (!projectCommonDir.git) continue;
-      const verified = await isGitWorktree(selected, projectCommonDir.commonDir);
-      if (verified.error) return { ok: false, error: 'project-unavailable' };
-      if (!verified.worktree) continue;
+      const resolved = await verifiedOwnerForSelection(project, selected, { admitted: true });
+      if (resolved.verificationFailed) return { ok: false, error: 'project-unavailable' };
+      if (!resolved.ok || project.logical === selected.logical) continue;
       const admitted = admitProject(project.logical, source);
       if (!admitted.ok) return admitted;
       return { ok: true, projectPath: project.logical, selectedPath: selected.logical };
@@ -854,6 +926,8 @@ function createProjectFiles(options = {}) {
     admitProject,
     replaceAdmissions,
     admitSelection,
+    resolveOwner,
+    restoreSelection,
     openProject,
     describeWorktrees,
     list,
