@@ -40,8 +40,11 @@ const syncKeys = require('./sync/keys');
 const syncInvite = require('./sync/invite');
 const tabOrder = require('./renderer/tab-order');
 const { createProjectFiles } = require('./project-files');
+const { createRendererLeaveGate, createShutdownLifecycle } = require('./main-lifecycle');
 
 const projectFiles = createProjectFiles();
+const shutdownLifecycle = createShutdownLifecycle();
+const rendererLeaveGate = createRendererLeaveGate({ ipcMain });
 
 // Where the rail's projects live — the user's stored choice, resolved (and
 // changeable) through projects-root.js. Null until first run has picked one.
@@ -135,10 +138,6 @@ function forgetTab(session) {
   if (rest.length !== openTabs().length) settings.set('openTabs', rest);
 }
 
-// Set while the app is on its way down, so terminals dying *because* we are
-// quitting don't strip the registry we are quitting in order to keep.
-let quitting = false;
-
 function killTmuxSession(id) {
   const session = tmuxSessions.get(id);
   tmuxSessions.delete(id);
@@ -226,6 +225,10 @@ function createWindow() {
       webviewTag: true, // for the interactive project preview
     },
   });
+  // `before-quit` can still be cancelled by the renderer's dirty-file
+  // beforeunload guard. `closed` cannot, so only that phase may switch terminal
+  // exits from natural cleanup to shutdown preservation.
+  shutdownLifecycle.observeMainWindow(win);
 
   // webviewTag is on for the preview dock, and a <webview> brings its own
   // webPreferences with it. That makes "can attach a webview" the same thing as
@@ -755,10 +758,8 @@ app.whenReady().then(async () => {
 
   // ---- The projects folder itself ----
   //
-  // set-root does the work (validate, persist, rebuild); choose-root is the
-  // native dialog in front of it. Split so the harness can drive set-root
-  // directly — nothing can click a native dialog. Rebuilding is a full page
-  // reload: every piece of rail state derives from projects:list +
+  // The native dialog is the only source of a new root. Rebuilding is a full
+  // page reload: every piece of rail state derives from projects:list +
   // tabs:restore, the running tmux sessions survive their ptys (see
   // did-start-navigation), and restore re-adopts them on the way back up.
   const applyRoot = (dir) => {
@@ -777,8 +778,6 @@ app.whenReady().then(async () => {
     return { ok: true, path: rootDir() };
   };
 
-  ipcMain.handle('projects:set-root', (event, dir) => applyRoot(dir));
-
   ipcMain.handle('projects:choose-root', async (event) => {
     const owner = BrowserWindow.fromWebContents(event.sender);
     const base = rootDir();
@@ -787,7 +786,7 @@ app.whenReady().then(async () => {
       defaultPath: base && fs.existsSync(base) ? base : os.homedir(),
     });
     if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
-    return applyRoot(res.filePaths[0]);
+    return rendererLeaveGate.run(win.webContents, () => applyRoot(res.filePaths[0]));
   });
 
   // ---- Claude model, per project ----
@@ -1902,9 +1901,9 @@ app.whenReady().then(async () => {
     });
     term.onExit(() => {
       terminals.delete(id);
-      // The session ended with the agent (or the tab was closed) — unless we
-      // are quitting, in which case the session is still out there waiting.
-      if (!quitting) forgetTab(tmuxSessions.get(id));
+      // The session ended with the agent (or the tab was closed) — unless the
+      // main window has committed its close, in which case it is still waiting.
+      if (shutdownLifecycle.shouldForgetSession()) forgetTab(tmuxSessions.get(id));
       tmuxSessions.delete(id);
       if (!win.isDestroyed()) win.webContents.send(`term:exit:${id}`);
     });
@@ -1942,11 +1941,12 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('before-quit', () => { quitting = true; });
-app.on('will-quit', () => projectFiles.close());
+app.on('will-quit', () => {
+  rendererLeaveGate.close();
+  projectFiles.close();
+});
 
 app.on('window-all-closed', () => {
-  quitting = true;
   for (const term of terminals.values()) term.kill();
   terminals.clear();
   termEmbed.killAll();

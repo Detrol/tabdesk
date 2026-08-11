@@ -43,6 +43,9 @@ function setup(stage) {
       backendKills: 0,
       dataListeners: 0,
       dataListenerCleanups: 0,
+      rootLeaveSubscriptions: 0,
+      rootLeaveChecks: 0,
+      rootLeaveDecision: null,
       tray: null,
     };
     const stage = ${JSON.stringify(stage)};
@@ -57,6 +60,7 @@ function setup(stage) {
           element,
           hasUnsavedChanges: () => false,
           canLeave: () => true,
+          confirmLeave: () => false,
           deactivate: async () => {},
           activate: async () => {},
           onLanguage() {},
@@ -129,6 +133,12 @@ function setup(stage) {
         return () => {};
       },
       syncTray: (snapshot) => { state.tray = snapshot; },
+      onProjectsRootLeaveRequested: (callback) => {
+        state.rootLeaveSubscriptions += 1;
+        state.rootLeaveDecision = callback();
+        state.rootLeaveChecks += 1;
+        return () => {};
+      },
       getUsageLimits: async () => ({ ok: false, reason: 'network' }),
       getUsageStats: async () => null,
       getSystemStats: async () => null,
@@ -208,6 +218,11 @@ app.whenReady().then(async () => {
       JSON.stringify(early));
     ok('failed start preserves the prior overview layout',
       early.beforeClose.overviewShown, JSON.stringify(early));
+    ok('renderer answers the main-owned root leave request through the file guard',
+      early.rootLeaveSubscriptions === 1
+        && early.rootLeaveChecks === 1
+        && early.rootLeaveDecision === false,
+      JSON.stringify(early));
 
     const late = await runScenario('after-listener');
     ok('failure after backend setup removes tab and panel',

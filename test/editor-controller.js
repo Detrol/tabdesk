@@ -280,9 +280,11 @@ app.on('ready', async () => {
         concurrentWrites += 1;
         return { ok: true, revision: 'w'.repeat(64) };
       };
+      let rootLeaveApproval = false;
       const concurrentView = TabDeskFiles.createFileView({
         api: concurrentApi,
         t: (key) => key,
+        confirmDiscard: () => rootLeaveApproval,
         confirmReload: () => true,
       });
       document.querySelector('#test-root').append(concurrentView.element);
@@ -291,6 +293,13 @@ app.on('ready', async () => {
       await wait(10);
       await replaceFileText(concurrentView, 'local');
       const becameDirty = !concurrentView.element.querySelector('.files-save').disabled;
+      const rootLeaveCanceled = concurrentView.confirmLeave() === false
+        && concurrentView.hasUnsavedChanges();
+      rootLeaveApproval = true;
+      const rootLeaveApproved = typeof concurrentView.confirmLeave === 'function'
+        && concurrentView.confirmLeave();
+      const rootLeavePreservesDirty = concurrentView.hasUnsavedChanges()
+        && concurrentView.element.querySelector('.cm-content').textContent === 'local';
       conflictRead = 'external';
       concurrentApi.emit({
         projectId: 'project-a', rootId: 'root-a', path: 'conflict.txt', kind: 'changed',
@@ -971,6 +980,9 @@ app.on('ready', async () => {
         failedOpenSafe,
         rootRaceSafe,
         becameDirty,
+        rootLeaveCanceled,
+        rootLeaveApproved,
+        rootLeavePreservesDirty,
         pendingButtonsDisabled,
         concurrentActionIgnored,
         pendingHintAbsorbed,
@@ -1030,6 +1042,8 @@ app.on('ready', async () => {
     ok('failed file open shows only the requested relative path and typed message', result.failedOpenSafe);
     ok('stale root-switch continuation cannot open the prior root lastFile', result.rootRaceSafe);
     ok('real editor input drives the file view dirty state', result.becameDirty);
+    ok('root leave cancel and approval are non-mutating for the dirty buffer',
+      result.rootLeaveCanceled && result.rootLeaveApproved && result.rootLeavePreservesDirty);
     ok('pending reload disables every competing document action', result.pendingButtonsDisabled);
     ok('overwrite is ignored while reload is pending', result.concurrentActionIgnored);
     ok('matching watcher hint is absorbed while its save is pending', result.pendingHintAbsorbed);

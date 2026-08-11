@@ -104,7 +104,15 @@ contextBridge.exposeInMainWorld('api', {
 
   listProjects: () => ipcRenderer.invoke('projects:list'),
   chooseProjectsRoot: () => ipcRenderer.invoke('projects:choose-root'),
-  setProjectsRoot: (dir) => ipcRenderer.invoke('projects:set-root', dir),
+  onProjectsRootLeaveRequested: (cb) => {
+    const listener = async (_event, { token } = {}) => {
+      let approved = false;
+      try { approved = await cb() === true; } catch (_) { /* cancellation is the safe default */ }
+      ipcRenderer.send('projects:root-leave-response', { token, approved });
+    };
+    ipcRenderer.on('projects:root-leave-request', listener);
+    return () => ipcRenderer.removeListener('projects:root-leave-request', listener);
+  },
   openProjectFiles: (projectPath) => ipcRenderer.invoke('project-files:open', projectPath),
   listProjectFiles: (args) => ipcRenderer.invoke('project-files:list', args),
   readProjectFile: (args) => ipcRenderer.invoke('project-files:read', args),

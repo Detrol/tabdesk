@@ -169,9 +169,15 @@ export function createFileView({
     repaintDocument();
   }
 
-  function canLeave() {
+  function confirmLeave() {
     if (!FileState.needsDiscard(documentState)) return true;
-    if (!confirmDiscard(documentState.path)) return false;
+    return confirmDiscard(documentState.path);
+  }
+
+  function canLeave() {
+    const needsDiscard = FileState.needsDiscard(documentState);
+    if (!confirmLeave()) return false;
+    if (!needsDiscard) return true;
     invalidateDocumentOperation();
     dispatch({ type: 'discard' });
     editor.setDocument('', { anchor: 0, head: 0 });
@@ -848,6 +854,7 @@ export function createFileView({
     activate,
     deactivate,
     canLeave,
+    confirmLeave,
     hasUnsavedChanges: () => FileState.needsDiscard(documentState),
     onTheme,
     onLanguage,

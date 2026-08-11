@@ -81,6 +81,10 @@ let filesCwd = null;
 let stripFiles = null;
 const navigation = window.TabDeskNavigation.createNavigation();
 
+if (window.api && typeof window.api.onProjectsRootLeaveRequested === 'function') {
+  window.api.onProjectsRootLeaveRequested(() => fileView.confirmLeave());
+}
+
 window.addEventListener('beforeunload', (event) => {
   if (!fileView.hasUnsavedChanges()) return;
   event.preventDefault();
