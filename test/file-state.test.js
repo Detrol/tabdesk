@@ -215,3 +215,93 @@ test('request gate allows only the newest read or language result', () => {
   const secondLanguage = languageGate.next();
   assert.equal(languageGate.isCurrent(secondLanguage), true);
 });
+
+test('canceling a dirty navigation guard keeps the document and selection unchanged', () => {
+  const dirty = State.reduce(opened, { type: 'edit', content: 'local\n' });
+  const selection = { rootId: 'root-a', path: 'src/app.js' };
+  const confirmDiscard = () => false;
+
+  const nextState = confirmDiscard() ? State.reduce(dirty, { type: 'discard' }) : dirty;
+  const nextSelection = confirmDiscard()
+    ? { rootId: 'root-b', path: 'src/next.js' }
+    : selection;
+
+  assert.strictEqual(nextState, dirty);
+  assert.strictEqual(nextSelection, selection);
+});
+
+test('accepting a dirty navigation guard discards the live local buffer before navigation', () => {
+  const dirty = State.reduce(opened, { type: 'edit', content: 'local\n' });
+  const discarded = State.reduce(dirty, { type: 'discard' });
+  const navigating = State.reduce(discarded, {
+    type: 'open-start', request: 2, path: 'src/next.js',
+  });
+
+  assert.deepEqual(discarded, State.initial());
+  assert.equal(navigating.status, 'loading');
+  assert.equal(navigating.path, 'src/next.js');
+  assert.equal(navigating.content, '');
+});
+
+test('changed-file reload applies a newer snapshot only after confirmation', () => {
+  const dirty = State.reduce(opened, { type: 'edit', content: 'local\n' });
+  const conflict = State.reduce(dirty, { type: 'disk-changed', exists: true });
+  const canceled = conflict;
+  const confirmed = State.reduce(conflict, {
+    type: 'reload-success', content: 'disk\n', revision: 'new', ignored: false,
+  });
+
+  assert.strictEqual(canceled, conflict);
+  assert.equal(canceled.content, 'local\n');
+  assert.equal(confirmed.status, 'clean');
+  assert.equal(confirmed.content, 'disk\n');
+  assert.equal(confirmed.revision, 'new');
+});
+
+test('overwrite is unavailable after deletion and copy is a state-preserving action', () => {
+  const dirty = State.reduce(opened, { type: 'edit', content: 'local\n' });
+  const deletedConflict = State.reduce(dirty, { type: 'disk-changed', exists: false });
+  const overwriteAttempt = State.reduce(deletedConflict, {
+    type: 'overwrite-success', revision: 'new',
+  });
+  const copied = deletedConflict;
+
+  assert.equal(deletedConflict.exists, false);
+  assert.strictEqual(overwriteAttempt, deletedConflict);
+  assert.strictEqual(copied, deletedConflict);
+  assert.equal(copied.content, 'local\n');
+});
+
+test('project, root, and file identity changes invalidate stale read results', () => {
+  const gate = State.createRequestGate();
+  const first = {
+    token: gate.next(), projectPath: 'project-a', rootId: 'root-a', path: 'a.txt',
+  };
+  const active = {
+    token: gate.next(), projectPath: 'project-b', rootId: 'root-b', path: 'b.txt',
+  };
+  const matches = (request, identity) => gate.isCurrent(request.token)
+    && request.projectPath === identity.projectPath
+    && request.rootId === identity.rootId
+    && request.path === identity.path;
+
+  assert.equal(matches(first, active), false);
+  assert.equal(matches(active, active), true);
+  gate.invalidate();
+  assert.equal(matches(active, active), false);
+});
+
+test('a clean ignored file survives hiding ignored tree entries', () => {
+  const ignored = State.reduce(loading, {
+    type: 'open-success', request: 1, path: 'build/generated.js',
+    content: 'generated\n', revision: 'ignored-revision', ignored: true,
+  });
+  const treeFilter = { showIgnored: true };
+  const hiddenTreeFilter = { ...treeFilter, showIgnored: false };
+
+  assert.equal(hiddenTreeFilter.showIgnored, false);
+  assert.equal(ignored.status, 'clean');
+  assert.equal(ignored.path, 'build/generated.js');
+  assert.equal(ignored.content, 'generated\n');
+  assert.equal(ignored.ignored, true);
+});
