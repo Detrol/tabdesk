@@ -106,10 +106,10 @@ function withDeadline(promise, milliseconds = 300) {
   ]).finally(() => clearTimeout(timer));
 }
 
-async function waitForCondition(predicate, attempts = 1000) {
+async function waitForCondition(predicate, attempts = 1000, delayMs = 0) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => (delayMs ? setTimeout(resolve, delayMs) : setImmediate(resolve)));
   }
   assert.fail('condition was not reached');
 }
@@ -153,15 +153,15 @@ function forceKillTestProcess(child, descendantPid) {
   try { if (processExists(descendantPid)) process.kill(descendantPid, 'SIGKILL'); } catch (_) {}
 }
 
-function fakeGitProcess({ code = 0, stdout = '', stderr = '' } = {}) {
+function fakeGitProcess({ code = 0, stdout = '', stderr = '', stdoutChunks, stderrChunks } = {}) {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.stdin = { end() {} };
   child.kill = () => true;
   process.nextTick(() => {
-    if (stdout) child.stdout.emit('data', Buffer.from(stdout));
-    if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+    for (const chunk of stdoutChunks || (stdout ? [stdout] : [])) child.stdout.emit('data', Buffer.from(chunk));
+    for (const chunk of stderrChunks || (stderr ? [stderr] : [])) child.stderr.emit('data', Buffer.from(chunk));
     child.emit('close', code, null);
   });
   return child;
@@ -896,6 +896,173 @@ test('caps active and queued Git jobs, rejects saturation, and drains the queue 
   assert.equal(children.every((child) => !processExists(child.pid)), true);
 });
 
+test('close kills active Git groups, rejects queued work, and prevents later spawns', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  const pidFile = path.join(fx.base, 'close-descendant.pid');
+  const children = [];
+  let hang = false;
+  function controlledSpawn(file, args, options) {
+    if (!hang) return spawn(file, args, options);
+    const script = [
+      "const fs = require('fs');",
+      "const { spawn } = require('child_process');",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      "fs.writeFileSync(process.argv[1], String(child.pid));",
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const child = spawn(process.execPath, ['-e', script, pidFile], options);
+    children.push(child);
+    return child;
+  }
+  t.after(() => {
+    const descendantPid = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : undefined;
+    for (const child of children) forceKillTestProcess(child, descendantPid);
+  });
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitTimeoutMs: 1_000,
+    gitMaxActive: 1,
+    gitMaxQueued: 1,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  hang = true;
+  const active = files.list({ ...ids, directory: '' });
+  await waitForCondition(() => children.length === 1 && fs.existsSync(pidFile), 100, 5);
+  const queued = files.list({ ...ids, directory: '' });
+  files.close();
+  files.close();
+
+  assert.deepEqual(await withDeadline(active), { ok: false, error: 'git-unavailable' });
+  assert.deepEqual(await withDeadline(queued), { ok: false, error: 'git-unavailable' });
+  assert.deepEqual(await withDeadline(files.list({ ...ids, directory: '' })), {
+    ok: false,
+    error: 'git-unavailable',
+  });
+  assert.equal(children.length, 1);
+  const descendantPid = Number(fs.readFileSync(pidFile, 'utf8'));
+  await waitForProcessExit(children[0].pid);
+  await waitForProcessExit(descendantPid);
+});
+
+test('accepts the exact Git input limit and rejects one additional byte before spawning', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  git(fx.project, ['init', '--initial-branch=main']);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  const inputBytes = Buffer.byteLength('normal.txt\0');
+
+  function service(limit) {
+    let ignoreSpawns = 0;
+    const files = createProjectFiles({
+      gitMaxInputBytes: limit,
+      spawn(file, args, options) {
+        if (!args.includes('check-ignore')) return spawn(file, args, options);
+        ignoreSpawns += 1;
+        return fakeGitProcess({ code: 1 });
+      },
+    });
+    files.admitProject(fx.project, 'configured');
+    return { files, ignoreSpawns: () => ignoreSpawns };
+  }
+
+  const exact = service(inputBytes);
+  const exactIds = await openedRoot(exact.files, fx.project);
+  assert.equal((await exact.files.list({ ...exactIds, directory: '' })).ok, true);
+  assert.equal(exact.ignoreSpawns(), 1);
+
+  const over = service(inputBytes - 1);
+  const overIds = await openedRoot(over.files, fx.project);
+  assert.deepEqual(await over.files.list({ ...overIds, directory: '' }), {
+    ok: false,
+    error: 'git-unavailable',
+  });
+  assert.equal(over.ignoreSpawns(), 0);
+});
+
+test('bounds cumulative Git stdout and stderr at the exact configured byte limit', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+
+  async function openWithOutput({ code, stdout = '', stderr = '', stdoutChunks, stderrChunks, limit }) {
+    const files = createProjectFiles({
+      gitMaxOutputBytes: limit,
+      spawn: () => fakeGitProcess({ code, stdout, stderr, stdoutChunks, stderrChunks }),
+    });
+    files.admitProject(fx.project, 'configured');
+    return files.openProject(fx.project);
+  }
+
+  const commonDirOutput = `${fx.project}\n`;
+  const stdoutLimit = Buffer.byteLength(commonDirOutput);
+  const stdoutSplit = Math.floor(commonDirOutput.length / 2);
+  assert.equal((await openWithOutput({
+    code: 0,
+    stdoutChunks: [commonDirOutput.slice(0, stdoutSplit), commonDirOutput.slice(stdoutSplit)],
+    limit: stdoutLimit,
+  })).ok, true);
+  assert.deepEqual(await openWithOutput({
+    code: 0,
+    stdoutChunks: [commonDirOutput, '\n'],
+    limit: stdoutLimit,
+  }), { ok: false, error: 'project-unavailable' });
+
+  const notRepository = 'fatal: not a git repository\n';
+  const stderrLimit = Buffer.byteLength(notRepository);
+  const stderrSplit = Math.floor(notRepository.length / 2);
+  assert.equal((await openWithOutput({
+    code: 128,
+    stderrChunks: [notRepository.slice(0, stderrSplit), notRepository.slice(stderrSplit)],
+    limit: stderrLimit,
+  })).ok, true);
+  assert.deepEqual(await openWithOutput({
+    code: 128,
+    stderrChunks: [notRepository, '\n'],
+    limit: stderrLimit,
+  }), { ok: false, error: 'project-unavailable' });
+});
+
+test('kills a real Git child whose output exceeds the limit and then releases its slot', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let noisy = false;
+  let noisyChild;
+  let killed = false;
+  function controlledSpawn(file, args, options) {
+    if (!noisy) return spawn(file, args, options);
+    noisy = false;
+    noisyChild = spawn(process.execPath, ['-e', "process.stdout.write('x'.repeat(1025)); setInterval(() => {}, 1000)"], options);
+    const kill = noisyChild.kill.bind(noisyChild);
+    noisyChild.kill = (signal) => { killed = true; return kill(signal); };
+    return noisyChild;
+  }
+  t.after(() => forceKillTestProcess(noisyChild));
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitMaxOutputBytes: 1024,
+    gitTimeoutMs: 1_000,
+    gitMaxActive: 1,
+    gitMaxQueued: 0,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  noisy = true;
+  assert.deepEqual(await withDeadline(files.list({ ...ids, directory: '' })), {
+    ok: false,
+    error: 'git-unavailable',
+  });
+  assert.equal(killed, true);
+  await waitForProcessExit(noisyChild.pid);
+  assert.equal((await files.list({ ...ids, directory: '' })).ok, true);
+});
+
 test('releases a Git execution slot after a synchronous launcher error', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -960,6 +1127,57 @@ test('kills an errored Git child and releases its execution slot', async (t) => 
   });
   assert.equal(killed, true);
   assert.equal((await files.list({ ...ids, directory: '' })).ok, true);
+});
+
+test('handles stdin errors before and after Git close without leaking its execution slot', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let mode = 'real';
+  const killed = [];
+  function controlledSpawn(file, args, options) {
+    if (mode === 'real') return spawn(file, args, options);
+    const failureMode = mode;
+    mode = 'real';
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter();
+    child.stdin.end = () => {
+      if (failureMode === 'before-close') {
+        process.nextTick(() => child.stdin.emit('error', new Error('controlled EPIPE')));
+        return;
+      }
+      process.nextTick(() => {
+        child.stdout.emit('data', Buffer.from('true\n'));
+        child.emit('close', 0, null);
+        child.stdin.emit('error', new Error('late controlled EPIPE'));
+      });
+    };
+    child.kill = () => { killed.push(failureMode); return true; };
+    return child;
+  }
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitTimeoutMs: 100,
+    gitMaxActive: 1,
+    gitMaxQueued: 1,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  mode = 'before-close';
+  const failed = files.list({ ...ids, directory: '' });
+  const queued = files.list({ ...ids, directory: '' });
+  assert.deepEqual(await failed, { ok: false, error: 'git-unavailable' });
+  assert.equal((await queued).ok, true);
+  assert.equal(killed.includes('before-close'), true);
+
+  mode = 'after-close';
+  assert.equal((await files.list({ ...ids, directory: '' })).ok, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(killed.includes('after-close'), true);
 });
 
 test('fails closed when a directory is retargeted between containment and enumeration', async (t) => {

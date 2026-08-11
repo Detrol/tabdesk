@@ -9,6 +9,8 @@ const SOURCES = new Set(['configured', 'picker', 'restored']);
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_ACTIVE = 4;
 const GIT_MAX_QUEUED = 16;
+const GIT_MAX_INPUT_BYTES = 4 * 1024 * 1024;
+const GIT_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 function relativeParts(value, { root = false } = {}) {
   if (typeof value !== 'string' || value.includes('\0') || value.includes('\\')) return null;
@@ -78,11 +80,17 @@ function createProjectFiles(options = {}) {
     ? options.gitMaxActive : GIT_MAX_ACTIVE;
   const gitMaxQueued = Number.isInteger(options.gitMaxQueued) && options.gitMaxQueued >= 0
     ? options.gitMaxQueued : GIT_MAX_QUEUED;
+  const gitMaxInputBytes = Number.isInteger(options.gitMaxInputBytes) && options.gitMaxInputBytes >= 0
+    ? options.gitMaxInputBytes : GIT_MAX_INPUT_BYTES;
+  const gitMaxOutputBytes = Number.isInteger(options.gitMaxOutputBytes) && options.gitMaxOutputBytes >= 0
+    ? options.gitMaxOutputBytes : GIT_MAX_OUTPUT_BYTES;
   const byPath = new Map();
   const byId = new Map();
   const watcherOwners = new Map();
   const gitQueue = [];
+  const activeGitJobs = new Set();
   let activeGit = 0;
+  let gitClosed = false;
   let watchersClosed = false;
 
   function closeOwnedWatchers(projectId, rootId) {
@@ -149,12 +157,25 @@ function createProjectFiles(options = {}) {
   }
 
   function startQueuedGit(job) {
+    if (gitClosed || job.closed) {
+      job.reject(gitFailure('runner closed'));
+      return;
+    }
     activeGit += 1;
+    activeGitJobs.add(job);
     Promise.resolve()
-      .then(job.start)
+      .then(() => {
+        if (gitClosed || job.closed) throw gitFailure('runner closed');
+        return job.start((cancel) => {
+          job.cancel = cancel;
+          if (gitClosed || job.closed) cancel();
+        });
+      })
       .then(job.resolve, job.reject)
       .finally(() => {
         activeGit -= 1;
+        activeGitJobs.delete(job);
+        if (gitClosed) return;
         const next = gitQueue.shift();
         if (next) startQueuedGit(next);
       });
@@ -162,7 +183,11 @@ function createProjectFiles(options = {}) {
 
   function scheduleGit(start) {
     return new Promise((resolve, reject) => {
-      const job = { start, resolve, reject };
+      if (gitClosed) {
+        reject(gitFailure('runner closed'));
+        return;
+      }
+      const job = { start, resolve, reject, cancel: null, closed: false };
       if (activeGit < gitMaxActive) {
         startQueuedGit(job);
       } else if (gitQueue.length < gitMaxQueued) {
@@ -171,6 +196,20 @@ function createProjectFiles(options = {}) {
         reject(gitFailure('queue saturated'));
       }
     });
+  }
+
+  function closeGitRunner() {
+    if (gitClosed) return;
+    gitClosed = true;
+    for (const job of gitQueue.splice(0)) {
+      job.closed = true;
+      job.reject(gitFailure('runner closed'));
+    }
+    for (const job of activeGitJobs) {
+      job.closed = true;
+      job.cancel?.();
+      job.reject(gitFailure('runner closed'));
+    }
   }
 
   function killGit(child) {
@@ -182,19 +221,36 @@ function createProjectFiles(options = {}) {
   }
 
   function executeGit(args, { input } = {}) {
-    return scheduleGit(() => new Promise((resolve, reject) => {
+    const inputBytes = input === undefined ? 0 : Buffer.byteLength(input);
+    if (inputBytes > gitMaxInputBytes) return Promise.reject(gitFailure('input too large'));
+    return scheduleGit((setCancel) => new Promise((resolve, reject) => {
       let child;
       let killTimer;
       let settled = false;
       let timedOut = false;
       const stdout = [];
       const stderr = [];
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
       const finish = (callback, value) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         clearTimeout(killTimer);
         callback(value);
+      };
+      const collect = (chunks, chunk, stream) => {
+        if (settled) return;
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        const nextSize = (stream === 'stdout' ? stdoutBytes : stderrBytes) + bytes.length;
+        if (nextSize > gitMaxOutputBytes) {
+          killGit(child);
+          finish(reject, gitFailure(`${stream} too large`));
+          return;
+        }
+        if (stream === 'stdout') stdoutBytes = nextSize;
+        else stderrBytes = nextSize;
+        chunks.push(bytes);
       };
       const timeout = setTimeout(() => {
         timedOut = true;
@@ -205,6 +261,10 @@ function createProjectFiles(options = {}) {
         }
         killTimer = setTimeout(() => finish(reject, gitFailure('timed out')), 250);
       }, gitTimeoutMs);
+      setCancel(() => {
+        killGit(child);
+        finish(reject, gitFailure('runner closed'));
+      });
 
       try {
         child = spawnGit('git', args, {
@@ -212,8 +272,15 @@ function createProjectFiles(options = {}) {
           env: { ...process.env, LC_ALL: 'C' },
           detached: process.platform !== 'win32',
         });
-        child.stdout?.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
-        child.stderr?.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+        const failStream = () => {
+          killGit(child);
+          finish(reject, gitFailure('stream failed'));
+        };
+        child.stdout?.on('data', (chunk) => collect(stdout, chunk, 'stdout'));
+        child.stdout?.on('error', failStream);
+        child.stderr?.on('data', (chunk) => collect(stderr, chunk, 'stderr'));
+        child.stderr?.on('error', failStream);
+        child.stdin?.on?.('error', failStream);
         child.on('error', () => {
           killGit(child);
           finish(reject, gitFailure('failed to start'));
@@ -771,6 +838,7 @@ function createProjectFiles(options = {}) {
   function close() {
     if (watchersClosed) return;
     watchersClosed = true;
+    closeGitRunner();
     for (const owner of watcherOwners.values()) {
       owner.token += 1;
       closeActive(owner);
