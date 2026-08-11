@@ -8,6 +8,7 @@ npm-debug.log*
 # Packaged output
 dist/
 out/
+renderer/files.bundle.js
 
 # OS / editor cruft
 .DS_Store
