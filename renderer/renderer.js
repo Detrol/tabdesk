@@ -428,6 +428,18 @@ function shownIds() {
   return ids;
 }
 
+// A pinned panel can belong to a project other than the strip currently in
+// front. Only reveal tabs that are actually in this strip; clicking such a
+// panel must not switch the selected project just to move its tab into view.
+function revealClippedStripTab(id) {
+  const t = tabs.get(id);
+  if (!t || t.projectCwd !== activeCwd || !strip.contains(t.tabEl)) return;
+  const tabRect = t.tabEl.getBoundingClientRect();
+  const stripRect = strip.getBoundingClientRect();
+  const tabVisible = tabRect.left >= stripRect.left && tabRect.right <= stripRect.right;
+  if (!tabVisible) t.tabEl.scrollIntoView({ block: 'nearest', inline: 'center' });
+}
+
 function setActive(id) {
   const t = tabs.get(id);
   if (!t) return;
@@ -445,12 +457,7 @@ function setActive(id) {
   const p = projects.get(t.projectCwd);
   if (p) p.lastId = id;                  // where this project reopens next time
   applyLayout();
-  // The strip is shared between projects. A shorter project can clamp its
-  // horizontal scroll, so bring a clipped restored tab toward the center.
-  const tabRect = t.tabEl.getBoundingClientRect();
-  const stripRect = strip.getBoundingClientRect();
-  const tabVisible = tabRect.left >= stripRect.left && tabRect.right <= stripRect.right;
-  if (!tabVisible) t.tabEl.scrollIntoView({ block: 'nearest', inline: 'center' });
+  revealClippedStripTab(id);
   for (const vid of shownIds()) fitSoon(vid);
   scheduleSync();
   // The dock is fixed and does not belong to any one tab, so switching projects
@@ -507,7 +514,7 @@ function wireDrop(panelEl, id, deliver) {
     if (!paths.length) return;
 
     // Drop on a pane you weren't in: that pane is what you meant.
-    if (activeId !== id) { activeId = id; applyLayout(); }
+    if (activeId !== id) { activeId = id; applyLayout(); revealClippedStripTab(id); }
 
     // Trailing space, so a second drop appends another argument rather than
     // gluing itself to the first.
@@ -1034,7 +1041,7 @@ function materialize(t) {
     const ro = new ResizeObserver(() => scheduleSync());
     ro.observe(panelEl);
     panelEl.addEventListener('mousedown', () => {
-      if (activeId !== id) { activeId = id; applyLayout(); }
+      if (activeId !== id) { activeId = id; applyLayout(); revealClippedStripTab(id); }
     });
     wireDrop(panelEl, id, (text) => window.api.insertIntoEmbed(id, text));
     window.api.createEmbedTerminal(id, t.cwd, startCmdFor(t), tmuxAgentFor(t), t.session || null, t.name);
@@ -1173,7 +1180,7 @@ function materialize(t) {
 
   // Clicking a panel makes it the focused one (screenshot / keyboard target).
   panelEl.addEventListener('mousedown', () => {
-    if (activeId !== id) { activeId = id; applyLayout(); }
+    if (activeId !== id) { activeId = id; applyLayout(); revealClippedStripTab(id); }
   });
 
   // In-app backend: the pty is ours, so the path goes straight down it.

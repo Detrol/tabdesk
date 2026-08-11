@@ -13,9 +13,9 @@ When activating a session tab that is outside the session strip's visible horizo
 
 ## Implementation
 
-After `setActive()` applies the layout, compare the active tab's bounding rectangle with the strip's bounding rectangle. If the tab is not fully contained, call the browser's native `scrollIntoView()` with nearest block alignment and centered inline alignment. No dependency, persisted scroll state, animation, or additional layout spacer is introduced.
+After an activation applies the layout, a small local helper compares the active tab's bounding rectangle with the strip's bounding rectangle. If the tab is not fully contained, it calls the browser's native `scrollIntoView()` with nearest block alignment and centered inline alignment. No dependency, persisted scroll state, animation, or additional layout spacer is introduced.
 
-The check remains in `setActive()` so every activation path receives the same visibility guarantee, including project selection, direct tab clicks, tray selection, restoration, and newly created sessions.
+`setActive()` and the direct panel activation handlers call the helper after layout. The helper only acts when the activated tab belongs to the currently rendered strip, so a cross-project pinned-panel click or drop keeps its selected project and strip unchanged.
 
 ## Verification
 
@@ -24,7 +24,8 @@ Use a separate TabDesk instance with an isolated projects directory, tmux socket
 1. Switching from a shorter project back to a project whose active tab is outside the viewport brings that tab toward the center.
 2. Activating a tab that is already fully visible leaves `scrollLeft` unchanged.
 3. The correct terminal remains active and receives focus.
-4. The project's existing test command still passes.
+4. Clicking a clipped pinned panel centers its tab, while clicking a pinned panel from another project does not switch the project or strip.
+5. The project's existing test command still passes.
 
 ## Out of scope
 

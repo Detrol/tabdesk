@@ -4,7 +4,7 @@
 
 **Goal:** Bring a clipped active session tab toward the horizontal center while leaving an already visible tab and the strip's scroll position unchanged.
 
-**Architecture:** Keep the behavior at the existing `setActive()` integration point. Compare the active tab and strip rectangles after layout, then use native `scrollIntoView()` only when the tab is clipped; no shared module or persisted state is warranted for this one-caller DOM policy.
+**Architecture:** Keep the behavior in one small local post-layout helper called by `setActive()` and the direct panel activation handlers. Compare the active tab and strip rectangles after layout, then use native `scrollIntoView()` only when the tab is clipped and belongs to the currently rendered strip; no shared module or persisted state is warranted.
 
 **Tech Stack:** Electron 31, classic browser JavaScript, native DOM geometry and scrolling APIs, existing Electron `npm test` harness, Chrome DevTools Protocol for isolated renderer verification.
 
@@ -14,6 +14,7 @@
 - An active session tab that is clipped on either side is brought as close to the horizontal center as the strip's scroll bounds allow.
 - Scrolling is immediate and unanimated.
 - Overview and `+` controls retain their current order and behavior.
+- A cross-project pinned-panel activation does not switch the selected project or strip.
 - Do not add a dependency, persisted scroll state, animation, or additional layout spacer.
 - Drive only a separate TabDesk instance with an isolated projects directory, tmux socket directory, browser profile, and debug port; never drive the guard-managed main window.
 
@@ -55,17 +56,22 @@ Also set a non-zero `strip.scrollLeft`, activate a fully visible session tab, an
 
 Expected before implementation: the project-switch assertion exits non-zero because `inline: 'nearest'` stops as soon as the active tab reaches the viewport edge. Record the active label, `scrollLeft`, `expectedScroll`, and both rectangles.
 
-- [ ] **Step 2: Replace edge reveal with guarded center reveal**
+- [ ] **Step 2: Centralize guarded center reveal after every activation layout**
 
-Replace the current unconditional reveal immediately after `applyLayout()` in `setActive()` with:
+Add one local helper that checks strip containment and tab/strip rectangles, then
+call it immediately after `applyLayout()` in `setActive()` and in each direct
+panel activation path. The helper must not switch projects for a pinned panel
+from another project:
 
 ```js
-  // The strip is shared between projects. A shorter project can clamp its
-  // horizontal scroll, so bring a clipped restored tab toward the center.
+function revealClippedStripTab(id) {
+  const t = tabs.get(id);
+  if (!t || t.projectCwd !== activeCwd || !strip.contains(t.tabEl)) return;
   const tabRect = t.tabEl.getBoundingClientRect();
   const stripRect = strip.getBoundingClientRect();
   const tabVisible = tabRect.left >= stripRect.left && tabRect.right <= stripRect.right;
   if (!tabVisible) t.tabEl.scrollIntoView({ block: 'nearest', inline: 'center' });
+}
 ```
 
 Do not add CSS, smooth scrolling, a helper module, or per-project scroll state.
@@ -80,6 +86,7 @@ Expected:
 clipped_active_centered_within_bounds=true
 visible_active_scroll_unchanged=true
 correct_terminal_focused=true
+cross_project_pinned_panel_keeps_strip=true
 ```
 
 Run the project-switch assertion at least twice to rule out a one-frame layout race. Remove the exact temporary test root and stop only its isolated Electron/tmux processes when finished.
