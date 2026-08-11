@@ -8,7 +8,7 @@
     "icons": "./build/render-icons.sh",
     "dist": "electron-builder --linux deb tar.gz",
     "postinstall": "electron-rebuild -f -w node-pty",
-    "test": "electron test/main.js"
+    "test": "node --test test/project-files.test.js && electron test/main.js"
   },
   "author": {
     "name": "Andreas Thun"

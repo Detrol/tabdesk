@@ -46,6 +46,56 @@ async function admittedFiles(project, options) {
   return { files, ids: await openedRoot(files, project) };
 }
 
+class FakeRootWatcher extends EventEmitter {
+  constructor() {
+    super();
+    this.closed = false;
+    this.closeCalls = 0;
+  }
+
+  close() {
+    this.closeCalls += 1;
+    if (!this.closed) {
+      this.closed = true;
+      this.removeAllListeners();
+    }
+    return Promise.resolve();
+  }
+}
+
+function manualScheduler() {
+  let nextId = 1;
+  const pending = new Map();
+  return {
+    setTimeout(callback) {
+      const id = nextId++;
+      pending.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) {
+      pending.delete(id);
+    },
+    flush() {
+      const callbacks = [...pending.values()];
+      pending.clear();
+      for (const callback of callbacks) callback();
+    },
+    get size() {
+      return pending.size;
+    },
+  };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 test('only an admitted project can be opened', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -1199,4 +1249,269 @@ test('maps resolver EACCES and EPERM to permission-denied for document operation
     denied = false;
   }
   assert.equal(fs.readFileSync(target, 'utf8'), 'original');
+});
+
+test('coalesces file watcher hints into opaque relative events', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const scheduler = manualScheduler();
+  const watcher = new FakeRootWatcher();
+  let watchedPath;
+  let watchOptions;
+  const files = createProjectFiles({
+    watchFactory(root, options) {
+      watchedPath = root;
+      watchOptions = options;
+      return watcher;
+    },
+    scheduler,
+    watchDebounceMs: 25,
+  });
+  t.after(() => files.close());
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+  const events = [];
+
+  assert.deepEqual(await files.watch('renderer-1', ids, (event) => events.push(event)), { ok: true });
+  assert.equal(watchedPath, fx.project);
+  assert.equal(watchOptions.ignoreInitial, true);
+  assert.equal(watchOptions.persistent, true);
+  assert.equal(watchOptions.followSymlinks, false);
+  assert.deepEqual(watchOptions.awaitWriteFinish, { stabilityThreshold: 100, pollInterval: 20 });
+
+  watcher.emit('add', path.join(fx.project, 'nested', 'added.txt'));
+  watcher.emit('add', path.join(fx.project, 'nested', 'added.txt'));
+  watcher.emit('change', path.join(fx.project, 'changed.txt'));
+  watcher.emit('change', path.join(fx.project, 'changed.txt'));
+  watcher.emit('unlink', path.join(fx.project, 'removed.txt'));
+  watcher.emit('unlink', path.join(fx.project, 'removed.txt'));
+  assert.deepEqual(events, []);
+
+  scheduler.flush();
+  assert.deepEqual(events, [
+    { ...ids, path: 'nested/added.txt', kind: 'added' },
+    { ...ids, path: 'changed.txt', kind: 'changed' },
+    { ...ids, path: 'removed.txt', kind: 'removed' },
+  ]);
+  assert.equal(events.every((event) => !path.isAbsolute(event.path)), true);
+});
+
+test('normalizes directory hints and suppresses unsafe watcher paths', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const scheduler = manualScheduler();
+  const watcher = new FakeRootWatcher();
+  let watchOptions;
+  const files = createProjectFiles({
+    watchFactory(_root, options) {
+      watchOptions = options;
+      return watcher;
+    },
+    scheduler,
+  });
+  t.after(() => files.close());
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+  const events = [];
+  await files.watch('renderer-1', ids, (event) => events.push(event));
+
+  fs.mkdirSync(path.join(fx.project, '.git'));
+  fs.writeFileSync(path.join(fx.project, '.git', 'config'), 'secret');
+  fs.mkdirSync(path.join(fx.project, '.git-archive'));
+  fs.writeFileSync(path.join(fx.project, '.git-archive', 'visible.txt'), 'visible');
+  const temp = path.join(fx.project, '.draft.txt.tabdesk-123.tmp');
+  fs.writeFileSync(temp, 'temporary');
+  const metadataAlias = path.join(fx.project, 'metadata-alias');
+  fs.symlinkSync('.git', metadataAlias, 'dir');
+  const outside = path.join(fx.base, 'outside.txt');
+  fs.writeFileSync(outside, 'outside');
+
+  assert.equal(watchOptions.ignored(path.join(fx.project, '.git', 'config')), true);
+  assert.equal(watchOptions.ignored(path.join(fx.project, '.git-archive', 'visible.txt')), false);
+  assert.equal(watchOptions.ignored(metadataAlias), true);
+  assert.equal(watchOptions.ignored(outside), true);
+  assert.equal(watchOptions.ignored(temp), true);
+
+  watcher.emit('addDir', path.join(fx.project, 'new directory'));
+  watcher.emit('unlinkDir', path.join(fx.project, 'old-directory'));
+  watcher.emit('change', path.join(fx.project, '.git-archive', 'visible.txt'));
+  watcher.emit('change', path.join(fx.project, 'space # å.txt'));
+  watcher.emit('change', path.join(fx.project, '.git', 'config'));
+  watcher.emit('add', metadataAlias);
+  watcher.emit('change', temp);
+  watcher.emit('change', outside);
+  scheduler.flush();
+
+  assert.deepEqual(events, [
+    { ...ids, path: 'new directory', kind: 'tree-invalidated' },
+    { ...ids, path: 'old-directory', kind: 'tree-invalidated' },
+    { ...ids, path: '.git-archive/visible.txt', kind: 'changed' },
+    { ...ids, path: 'space # å.txt', kind: 'changed' },
+  ]);
+});
+
+test('replaces the active watcher owned by one renderer', async (t) => {
+  const firstFx = fixture();
+  const secondFx = fixture();
+  t.after(firstFx.cleanup);
+  t.after(secondFx.cleanup);
+  const scheduler = manualScheduler();
+  const firstWatcher = new FakeRootWatcher();
+  const secondWatcher = new FakeRootWatcher();
+  const candidates = [firstWatcher, secondWatcher];
+  const files = createProjectFiles({ watchFactory: () => candidates.shift(), scheduler });
+  t.after(() => files.close());
+  files.admitProject(firstFx.project, 'configured');
+  files.admitProject(secondFx.project, 'configured');
+  const firstIds = await openedRoot(files, firstFx.project);
+  const secondIds = await openedRoot(files, secondFx.project);
+  const events = [];
+
+  await files.watch('renderer-1', firstIds, (event) => events.push(event));
+  await files.watch('renderer-1', secondIds, (event) => events.push(event));
+  assert.equal(firstWatcher.closed, true);
+  assert.equal(firstWatcher.closeCalls, 1);
+  assert.equal(secondWatcher.closed, false);
+
+  firstWatcher.emit('change', path.join(firstFx.project, 'stale.txt'));
+  secondWatcher.emit('change', path.join(secondFx.project, 'active.txt'));
+  scheduler.flush();
+  assert.deepEqual(events, [{ ...secondIds, path: 'active.txt', kind: 'changed' }]);
+});
+
+test('keeps only the newest watch request when candidates resolve out of order', async (t) => {
+  const firstFx = fixture();
+  const secondFx = fixture();
+  t.after(firstFx.cleanup);
+  t.after(secondFx.cleanup);
+  const scheduler = manualScheduler();
+  const firstGate = deferred();
+  const secondGate = deferred();
+  const firstWatcher = new FakeRootWatcher();
+  const secondWatcher = new FakeRootWatcher();
+  const files = createProjectFiles({
+    watchFactory(root) {
+      return root === firstFx.project ? firstGate.promise : secondGate.promise;
+    },
+    scheduler,
+  });
+  t.after(() => files.close());
+  files.admitProject(firstFx.project, 'configured');
+  files.admitProject(secondFx.project, 'configured');
+  const firstIds = await openedRoot(files, firstFx.project);
+  const secondIds = await openedRoot(files, secondFx.project);
+  const events = [];
+
+  const firstRequest = files.watch('renderer-1', firstIds, (event) => events.push(event));
+  await Promise.resolve();
+  const secondRequest = files.watch('renderer-1', secondIds, (event) => events.push(event));
+  await Promise.resolve();
+  secondGate.resolve(secondWatcher);
+  assert.deepEqual(await secondRequest, { ok: true });
+  firstGate.resolve(firstWatcher);
+  await Promise.resolve();
+  firstWatcher.emit('change', path.join(firstFx.project, 'stale-before-close.txt'));
+  scheduler.flush();
+  await firstRequest;
+
+  assert.equal(firstWatcher.closed, true);
+  assert.equal(secondWatcher.closed, false);
+  firstWatcher.emit('change', path.join(firstFx.project, 'stale.txt'));
+  secondWatcher.emit('change', path.join(secondFx.project, 'newest.txt'));
+  scheduler.flush();
+  assert.deepEqual(events, [{ ...secondIds, path: 'newest.txt', kind: 'changed' }]);
+});
+
+test('unwatch prevents an in-flight candidate from becoming active', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const gate = deferred();
+  const watcher = new FakeRootWatcher();
+  const scheduler = manualScheduler();
+  const files = createProjectFiles({ watchFactory: () => gate.promise, scheduler });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+  const events = [];
+
+  const request = files.watch('renderer-1', ids, (event) => events.push(event));
+  await Promise.resolve();
+  files.unwatch('renderer-1');
+  gate.resolve(watcher);
+  await request;
+  watcher.emit('change', path.join(fx.project, 'resurrected.txt'));
+  scheduler.flush();
+
+  assert.equal(watcher.closed, true);
+  assert.deepEqual(events, []);
+});
+
+test('unwatch and close cancel pending hints and clean watchers idempotently', async (t) => {
+  const firstFx = fixture();
+  const secondFx = fixture();
+  t.after(firstFx.cleanup);
+  t.after(secondFx.cleanup);
+  const scheduler = manualScheduler();
+  const firstWatcher = new FakeRootWatcher();
+  const secondWatcher = new FakeRootWatcher();
+  const candidates = [firstWatcher, secondWatcher];
+  const files = createProjectFiles({ watchFactory: () => candidates.shift(), scheduler });
+  files.admitProject(firstFx.project, 'configured');
+  files.admitProject(secondFx.project, 'configured');
+  const firstIds = await openedRoot(files, firstFx.project);
+  const secondIds = await openedRoot(files, secondFx.project);
+  const events = [];
+  await files.watch('renderer-1', firstIds, (event) => events.push(event));
+  await files.watch('renderer-2', secondIds, (event) => events.push(event));
+
+  firstWatcher.emit('change', path.join(firstFx.project, 'pending.txt'));
+  secondWatcher.emit('change', path.join(secondFx.project, 'pending.txt'));
+  assert.equal(scheduler.size, 2);
+  files.unwatch('renderer-1');
+  files.unwatch('renderer-1');
+  files.close();
+  files.close();
+  scheduler.flush();
+
+  assert.equal(firstWatcher.closeCalls, 1);
+  assert.equal(secondWatcher.closeCalls, 1);
+  assert.equal(scheduler.size, 0);
+  assert.deepEqual(events, []);
+});
+
+test('reports watcher startup, runtime, and root-deletion failures safely', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const startupFiles = createProjectFiles({
+    watchFactory() {
+      throw new Error(`/private/startup/${fx.project}`);
+    },
+  });
+  startupFiles.admitProject(fx.project, 'configured');
+  const startupIds = await openedRoot(startupFiles, fx.project);
+  assert.deepEqual(await startupFiles.watch('renderer-startup', startupIds, () => {}), {
+    ok: false, error: 'watch-failed',
+  });
+
+  const scheduler = manualScheduler();
+  const errorWatcher = new FakeRootWatcher();
+  const deletionWatcher = new FakeRootWatcher();
+  const candidates = [errorWatcher, deletionWatcher];
+  const files = createProjectFiles({ watchFactory: () => candidates.shift(), scheduler });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+  const events = [];
+  await files.watch('renderer-1', ids, (event) => events.push(event));
+  errorWatcher.emit('error', new Error(`/private/runtime/${fx.project}`));
+  assert.equal(errorWatcher.closed, true);
+
+  await files.watch('renderer-1', ids, (event) => events.push(event));
+  deletionWatcher.emit('unlinkDir', fx.project);
+  scheduler.flush();
+
+  assert.equal(deletionWatcher.closed, true);
+  assert.deepEqual(events, [
+    { ...ids, path: '', kind: 'watch-failed' },
+    { ...ids, path: '', kind: 'watch-failed' },
+  ]);
+  assert.equal(JSON.stringify(events).includes(fx.project), false);
 });

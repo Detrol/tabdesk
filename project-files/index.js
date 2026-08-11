@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const childProcess = require('child_process');
 const { readDocument, writeDocument } = require('./document');
+const { createRootWatcher } = require('./watch');
 
 const SOURCES = new Set(['configured', 'picker', 'restored']);
 
@@ -61,6 +62,8 @@ function createProjectFiles(options = {}) {
   const spawn = options.spawn || childProcess.spawn;
   const byPath = new Map();
   const byId = new Map();
+  const watcherOwners = new Map();
+  let watchersClosed = false;
 
   function revoke(project) {
     byPath.delete(project.logical);
@@ -544,6 +547,76 @@ function createProjectFiles(options = {}) {
     });
   }
 
+  function watcherOwner(ownerId) {
+    if ((typeof ownerId !== 'string' && typeof ownerId !== 'number') || ownerId === '') return null;
+    let owner = watcherOwners.get(ownerId);
+    if (!owner) {
+      owner = { token: 0, active: null };
+      watcherOwners.set(ownerId, owner);
+    }
+    return owner;
+  }
+
+  function closeActive(owner) {
+    const active = owner.active;
+    owner.active = null;
+    if (active) active.close();
+  }
+
+  async function watch(ownerId, request = {}, emit) {
+    const owner = watcherOwner(ownerId);
+    if (!owner || typeof emit !== 'function' || watchersClosed) {
+      return { ok: false, error: 'watch-failed' };
+    }
+    const token = ++owner.token;
+    closeActive(owner);
+
+    const selected = await selectedRoot(request.projectId, request.rootId);
+    if (owner.token !== token || watchersClosed) return { ok: false, error: 'watch-failed' };
+    if (selected.error) return { ok: false, error: selected.error };
+
+    const candidate = await createRootWatcher(selected.root, (hint) => {
+      if (owner.token !== token || watchersClosed) return;
+      emit({
+        projectId: request.projectId,
+        rootId: request.rootId,
+        ...hint,
+      });
+    }, {
+      fs: io,
+      watchFactory: options.watchFactory,
+      scheduler: options.scheduler,
+      debounceMs: options.watchDebounceMs,
+    });
+    if (!candidate.ok) return candidate;
+
+    const current = await selectedRoot(request.projectId, request.rootId);
+    if (owner.token !== token || watchersClosed || candidate.failed || current.error
+      || current.root !== selected.root || current.real !== selected.real) {
+      candidate.close();
+      return { ok: false, error: current.error || 'watch-failed' };
+    }
+
+    owner.active = candidate;
+    return { ok: true };
+  }
+
+  function unwatch(ownerId) {
+    const owner = watcherOwners.get(ownerId);
+    if (!owner) return;
+    owner.token += 1;
+    closeActive(owner);
+  }
+
+  function close() {
+    if (watchersClosed) return;
+    watchersClosed = true;
+    for (const owner of watcherOwners.values()) {
+      owner.token += 1;
+      closeActive(owner);
+    }
+  }
+
   return {
     admitProject,
     replaceAdmissions,
@@ -553,6 +626,9 @@ function createProjectFiles(options = {}) {
     list,
     read,
     write,
+    watch,
+    unwatch,
+    close,
   };
 }
 
