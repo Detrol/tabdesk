@@ -547,6 +547,38 @@ test('uses one NUL Git batch, distinguishes fatal errors, and skips verified non
   });
 });
 
+test('probes Git repositories in a C locale before classifying non-Git roots', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let probeOptions;
+  const nonGitFiles = createProjectFiles({
+    execFile(file, args, options, callback) {
+      probeOptions = options;
+      const error = Object.assign(new Error('not a repository'), { code: 128 });
+      callback(error, '', 'fatal: not a git repository (or any of the parent directories): .git\n');
+    },
+    spawn: () => { throw new Error('non-Git roots must not check ignore'); },
+  });
+  nonGitFiles.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(nonGitFiles, fx.project);
+  assert.equal((await nonGitFiles.list({ ...ids, directory: '' })).ok, true);
+  assert.equal(probeOptions.env.LC_ALL, 'C');
+  assert.equal(probeOptions.env.PATH, process.env.PATH);
+
+  const fatalFiles = createProjectFiles({
+    execFile(file, args, options, callback) {
+      const error = Object.assign(new Error('broken Git'), { code: 128 });
+      callback(error, '', 'fatal: malformed repository configuration\n');
+    },
+  });
+  fatalFiles.admitProject(fx.project, 'configured');
+  const fatalIds = await openedRoot(fatalFiles, fx.project);
+  assert.deepEqual(await fatalFiles.list({ ...fatalIds, directory: '' }), {
+    ok: false, error: 'git-unavailable',
+  });
+});
+
 test('fails closed when a directory is retargeted between containment and enumeration', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);

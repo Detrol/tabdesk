@@ -136,7 +136,10 @@ function createProjectFiles(options = {}) {
 
   function gitRepository(directory) {
     return new Promise((resolve) => {
-      run('git', ['-C', directory, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' }, (error, stdout, stderr) => {
+      run('git', ['-C', directory, 'rev-parse', '--is-inside-work-tree'], {
+        encoding: 'utf8',
+        env: { ...process.env, LC_ALL: 'C' },
+      }, (error, stdout, stderr) => {
         if (!error) return resolve(String(stdout).trim() === 'true' ? { git: true } : { error: 'git-unavailable' });
         if (error.code === 128 && /not a git repository/i.test(String(stderr))) return resolve({ git: false });
         return resolve({ error: 'git-unavailable' });
