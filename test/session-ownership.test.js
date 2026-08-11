@@ -5,7 +5,11 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { createProjectFiles } = require('../project-files');
-const { createSessionOwnership, createSessionRegistry } = require('../session-ownership');
+const {
+  classifyTmuxSessionList,
+  createSessionOwnership,
+  createSessionRegistry,
+} = require('../session-ownership');
 const TabOrder = require('../renderer/tab-order');
 
 function fixture() {
@@ -55,6 +59,40 @@ function registry(initial, projectFiles, options = {}) {
   };
 }
 
+test('tmux listing classifier trusts only complete success or stable C-locale absence', () => {
+  assert.deepEqual(classifyTmuxSessionList(null, 'td-one /one\nother /two\n', ''), {
+    known: true,
+    rows: [
+      { session: 'td-one', cwd: '/one' },
+      { session: 'other', cwd: '/two' },
+    ],
+  });
+  assert.deepEqual(classifyTmuxSessionList(null, '', ''), { known: true, rows: [] });
+  assert.deepEqual(classifyTmuxSessionList(
+    Object.assign(new Error('no server'), { code: 1 }),
+    '',
+    'no server running on /tmp/tmux-test/default\n',
+  ), { known: true, rows: [] });
+
+  const unknown = [
+    [Object.assign(new Error('missing'), { code: 'ENOENT' }), '', ''],
+    [Object.assign(new Error('denied'), { code: 'EACCES' }), '', ''],
+    [Object.assign(new Error('signal'), { code: null, signal: 'SIGTERM' }), '', ''],
+    [Object.assign(new Error('partial'), { code: 1 }), 'td-one /one\n', 'transient socket error\n'],
+    [Object.assign(new Error('other'), { code: 1 }), '', 'failed to connect to server\n'],
+    [Object.assign(new Error('partial absence'), { code: 1 }), 'td-one /one\n',
+      'no server running on /tmp/tmux-test/default\n'],
+    [null, 'missing-path\n', ''],
+    [null, ' /missing-session\n', ''],
+  ];
+  for (const [error, stdout, stderr] of unknown) {
+    assert.deepEqual(classifyTmuxSessionList(error, stdout, stderr), {
+      known: false,
+      rows: [],
+    });
+  }
+});
+
 test('session registry rolls back cache mutations when durable remember or forget fails', () => {
   const initial = [
     { session: 'td-codex-one', cwd: '/one', name: 'One', marker: 'first' },
@@ -83,13 +121,19 @@ test('session registry rolls back cache mutations when durable remember or forge
   assert.deepEqual(cache, initial);
   assert.equal(writes, 4);
 
+  assert.equal(sessions.replace([initial[1], initial[0]]), false);
+  assert.deepEqual(cache, initial);
+  assert.equal(writes, 6);
+
   fail = false;
+  assert.equal(sessions.replace([initial[1], initial[0]]), true);
+  assert.deepEqual(cache, [initial[1], initial[0]]);
   assert.equal(sessions.remember({
     session: 'td-codex-one', name: 'Changed', projectPath: '/verified',
   }), true);
   assert.deepEqual(cache, [
-    { ...initial[0], name: 'Changed', projectPath: '/verified' },
     initial[1],
+    { ...initial[0], name: 'Changed', projectPath: '/verified' },
   ]);
   assert.equal(sessions.forget('td-claude-two'), true);
   assert.deepEqual(cache, [
@@ -132,16 +176,47 @@ test('current ownership persists only the main-derived admitted parent', async (
   assert.deepEqual(state.records().map(({ marker }) => marker), ['first', 'second']);
 });
 
-test('current ownership removes a stale reservation when cwd has no admitted owner', async (t) => {
-  const fx = fixture();
-  t.after(fx.cleanup);
-  const projectFiles = createProjectFiles();
-  const state = registry([{
-    session: 'td-codex-topic', cwd: fx.worktree, agent: 'codex', name: 'Topic',
-  }], projectFiles);
+test('transient attach verification failure preserves an existing stored claim for restart quarantine', async () => {
+  const record = {
+    session: 'td-codex-topic', cwd: '/external/.worktrees/topic', projectPath: '/external',
+    agent: 'codex', name: 'Topic', marker: 'existing',
+  };
+  let legacyFallbacks = 0;
+  const projectFiles = {
+    resolveOwner: async () => ({ ok: false, error: 'project-unavailable' }),
+    restoreSelection: async () => ({ ok: false, error: 'project-unavailable' }),
+    admitSelection: async () => {
+      legacyFallbacks += 1;
+      return { ok: true, projectPath: record.cwd, selectedPath: record.cwd };
+    },
+    replaceAdmissions() {},
+  };
+  const state = registry([record], projectFiles);
+
+  assert.equal(await state.ownership.rememberCurrent(record), null);
+  assert.deepEqual(state.records(), [record]);
+
+  const prepared = state.ownership.prepareRestore(state.records(), () => true);
+  assert.equal(prepared.claimed.has(record.session), true);
+  const keep = state.ownership.reconcileLive(prepared, new Set([record.session]));
+  assert.deepEqual(await state.ownership.restore(keep, {
+    persistedSessions: prepared.claimed,
+  }), []);
+  assert.equal(legacyFallbacks, 0);
+  assert.deepEqual(state.records(), [record]);
+});
+
+test('failed ownership verification for a new allocation leaves an empty registry unchanged', async () => {
+  const projectFiles = {
+    resolveOwner: async () => ({ ok: false, error: 'project-unavailable' }),
+    restoreSelection: async () => ({ ok: false, error: 'project-unavailable' }),
+    admitSelection: async () => ({ ok: false, error: 'project-unavailable' }),
+    replaceAdmissions() {},
+  };
+  const state = registry([], projectFiles);
 
   assert.equal(await state.ownership.rememberCurrent({
-    session: 'td-codex-topic', cwd: fx.worktree, agent: 'codex', name: 'Topic',
+    session: 'td-codex-new', cwd: '/new', agent: 'codex', name: 'New',
   }), null);
   assert.deepEqual(state.records(), []);
 });
@@ -171,23 +246,6 @@ test('current ownership fails closed and rolls back the registry when persistenc
   assert.deepEqual(state.records(), [{
     ...initial[0], name: 'Started', projectPath: fx.project,
   }]);
-});
-
-test('failed stale-reservation cleanup keeps the prior claim until retry', async (t) => {
-  const fx = fixture();
-  t.after(fx.cleanup);
-  const record = {
-    session: 'td-codex-stale', cwd: fx.worktree, projectPath: fx.project,
-    agent: 'codex', name: 'Stale',
-  };
-  const state = registry([record], createProjectFiles(), { durable: false });
-
-  assert.equal(await state.ownership.rememberCurrent(record), null);
-  assert.deepEqual(state.records(), [record]);
-
-  state.setDurable(true);
-  assert.equal(await state.ownership.rememberCurrent(record), null);
-  assert.deepEqual(state.records(), []);
 });
 
 test('restore verifies stored owners, migrates legacy records, and preserves record order and metadata', async (t) => {
@@ -322,6 +380,67 @@ test('restore verifies stored parents before legacy records without changing out
     ]);
     assert.equal((await projectFiles.openProject(fx.worktree)).error, 'project-unavailable');
   }
+});
+
+test('all-legacy parent and worktree records restore under the parent in either order', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const worktree = {
+    session: 'td-codex-worktree', cwd: fx.worktree,
+    agent: 'codex', name: 'Worktree', agentSession: 'conversation-worktree', marker: 'worktree',
+  };
+  const parent = {
+    session: 'td-claude-parent', cwd: fx.project,
+    agent: 'claude', name: 'Parent', agentSession: 'conversation-parent', marker: 'parent',
+  };
+
+  for (const initial of [[worktree, parent], [parent, worktree]]) {
+    const projectFiles = createProjectFiles();
+    const state = registry(initial, projectFiles);
+    const restored = await state.ownership.restore(initial, {
+      persistedSessions: new Set(initial.map(({ session }) => session)),
+    });
+
+    assert.deepEqual(restored.map(({ session }) => session), initial.map(({ session }) => session));
+    assert.deepEqual(restored.map(({ projectPath }) => projectPath), [fx.project, fx.project]);
+    assert.deepEqual(restored.map(({ marker }) => marker), initial.map(({ marker }) => marker));
+    assert.deepEqual(state.records(), initial.map((record) => ({
+      ...record,
+      projectPath: fx.project,
+    })));
+    assert.deepEqual((await projectFiles.openProject(fx.project)).roots.map(({ kind }) => kind), [
+      'project', 'worktree',
+    ]);
+    assert.equal((await projectFiles.openProject(fx.worktree)).error, 'project-unavailable');
+  }
+});
+
+test('legacy relationship discovery rejects fake convention paths and different repositories', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const fake = path.join(fx.project, '.worktrees', 'fake');
+  fs.mkdirSync(fake);
+  const foreign = path.join(fx.base, 'foreign');
+  fs.mkdirSync(foreign);
+  execFileSync('git', ['-C', foreign, 'init', '--initial-branch=main']);
+  const initial = [
+    { session: 'td-codex-fake', cwd: fake, name: 'Fake', marker: 'fake' },
+    { session: 'td-claude-foreign', cwd: foreign, name: 'Foreign', marker: 'foreign' },
+    { session: 'td-codex-parent', cwd: fx.project, name: 'Parent', marker: 'parent' },
+  ];
+  const projectFiles = createProjectFiles();
+  const state = registry(initial, projectFiles);
+
+  const restored = await state.ownership.restore(initial, {
+    persistedSessions: new Set(initial.map(({ session }) => session)),
+  });
+
+  assert.deepEqual(restored.map(({ projectPath }) => projectPath), [fake, foreign, fx.project]);
+  assert.deepEqual(restored.map(({ marker }) => marker), initial.map(({ marker }) => marker));
+  assert.deepEqual(state.records(), initial.map((record) => ({
+    ...record,
+    projectPath: record.cwd,
+  })));
 });
 
 test('a forged stored owner is excluded and cannot seed legacy ownership', async (t) => {

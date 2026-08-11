@@ -109,13 +109,13 @@ app.on('ready', async () => {
   try {
     fsx.writeFileSync = () => { throw new Error('expected settings write failure'); };
     console.warn = (...args) => warnings.push(args.map(String).join(' '));
-    failedWrite = settings.set('openTabs', [{ session: 'kept-in-memory' }]);
+    failedWrite = settings.set('writeFailureProbe', { session: 'kept-in-memory' });
   } finally {
     fsx.writeFileSync = originalWriteFileSync;
     console.warn = originalWarn;
   }
   ok('skrivfel rapporteras till anroparen', failedWrite === false);
-  ok('skrivfel behaller vardet i minnet', settings.get('openTabs')[0].session === 'kept-in-memory');
+  ok('skrivfel behaller vardet i minnet', settings.get('writeFailureProbe').session === 'kept-in-memory');
   ok('skrivfel varnas exakt en gang', warnings.length === 1
     && warnings[0].includes('[settings] could not persist')
     && warnings[0].includes('expected settings write failure'), warnings.join(' | '));

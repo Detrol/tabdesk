@@ -40,7 +40,11 @@ const syncKeys = require('./sync/keys');
 const syncInvite = require('./sync/invite');
 const tabOrder = require('./renderer/tab-order');
 const { createProjectFiles } = require('./project-files');
-const { createSessionOwnership, createSessionRegistry } = require('./session-ownership');
+const {
+  classifyTmuxSessionList,
+  createSessionOwnership,
+  createSessionRegistry,
+} = require('./session-ownership');
 const {
   commitRootTransition,
   createRendererLeaveGate,
@@ -984,7 +988,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('tabs:reorder', (event, sessions) => {
     const next = tabOrder.reorderRecords(openTabs(), sessions);
     if (!next) return false;
-    return settings.set('openTabs', next);
+    return sessionRegistry.replace(next);
   });
 
   // What the rail should carry beyond the plain project list: the tabs that
@@ -1033,20 +1037,19 @@ app.whenReady().then(async () => {
       }
     };
     try {
-      execFile('tmux', ['ls', '-F', '#S #{session_path}'], (err, stdout) => {
-        // "No server running" is how tmux reports that every session is gone —
-        // which is exactly the state after a reboot, when the records are at
-        // their most misleading. Only tmux itself being unrunnable means we
-        // cannot tell, and then the records stand.
-        if (err && err.code === 'ENOENT') return done(records, []);
+      execFile('tmux', ['ls', '-F', '#S #{session_path}'], {
+        env: { ...process.env, LC_ALL: 'C' },
+        maxBuffer: 1024 * 1024,
+      }, (err, stdout, stderr) => {
+        // Only a complete parseable listing or tmux's stable C-locale
+        // "no server running" response can prove what is absent. Every other
+        // failure leaves persisted claims untouched for a later retry.
+        const listing = classifyTmuxSessionList(err, stdout, stderr);
+        if (!listing.known) return done(records, []);
         const orphans = [];
         const live = new Set();
         const spellings = projectSpellings();
-        for (const line of String(stdout).split('\n')) {
-          const gap = line.indexOf(' ');
-          if (gap < 1) continue;
-          const session = line.slice(0, gap);
-          const raw = line.slice(gap + 1).trim();
+        for (const { session, cwd: raw } of listing.rows) {
           if (!session.startsWith('td-')) continue;
           live.add(session);
           if (claimed.has(session)) continue;

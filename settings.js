@@ -7,6 +7,7 @@
 // the ×, so the rail doesn't rebuild them from the directories on disk.
 
 const { app } = require('electron');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
@@ -27,12 +28,38 @@ function all() {
 
 function get(key) { return all()[key]; }
 
+function persist(next) {
+  const target = file();
+  const directory = path.dirname(target);
+  const temporary = path.join(directory,
+    `.${path.basename(target)}.tabdesk-${process.pid}-${crypto.randomUUID()}.tmp`);
+  let descriptor = null;
+  let ownsTemporary = false;
+  try {
+    fs.mkdirSync(directory, { recursive: true });
+    descriptor = fs.openSync(temporary, 'wx', 0o600);
+    ownsTemporary = true;
+    fs.writeFileSync(descriptor, JSON.stringify(next, null, 2));
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    fs.renameSync(temporary, target);
+  } catch (error) {
+    if (descriptor !== null) {
+      try { fs.closeSync(descriptor); } catch (_) { /* already closed or unusable */ }
+    }
+    if (ownsTemporary) {
+      try { fs.unlinkSync(temporary); } catch (_) { /* absent or already renamed */ }
+    }
+    throw error;
+  }
+}
+
 function set(key, value) {
   const next = { ...all(), [key]: value };
   cache = next;
   try {
-    fs.mkdirSync(path.dirname(file()), { recursive: true });
-    fs.writeFileSync(file(), JSON.stringify(next, null, 2));
+    persist(next);
     return true;
   } catch (err) {
     console.warn('[settings] could not persist', String(err));

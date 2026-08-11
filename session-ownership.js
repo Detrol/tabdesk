@@ -1,3 +1,27 @@
+function classifyTmuxSessionList(error, stdout, stderr) {
+  const output = typeof stdout === 'string' ? stdout : String(stdout || '');
+  const diagnostic = typeof stderr === 'string' ? stderr : String(stderr || '');
+  if (error) {
+    const stableAbsence = !output.trim()
+      && Number(error.code) === 1
+      && !error.signal
+      && /^no server running on [^\r\n]+\r?\n?$/.test(diagnostic);
+    return stableAbsence ? { known: true, rows: [] } : { known: false, rows: [] };
+  }
+
+  const rows = [];
+  for (const line of output.split('\n')) {
+    if (!line) continue;
+    const gap = line.indexOf(' ');
+    if (gap < 1) return { known: false, rows: [] };
+    const session = line.slice(0, gap);
+    const cwd = line.slice(gap + 1).trim();
+    if (!cwd || /\s/.test(session)) return { known: false, rows: [] };
+    rows.push({ session, cwd });
+  }
+  return { known: true, rows };
+}
+
 function createSessionRegistry({ read, write, upsert }) {
   if (typeof read !== 'function' || typeof write !== 'function' || typeof upsert !== 'function') {
     throw new TypeError('session registry dependencies are required');
@@ -26,6 +50,11 @@ function createSessionRegistry({ read, write, upsert }) {
     return Boolean(next) && commit(previous, next);
   }
 
+  function replace(next) {
+    if (!Array.isArray(next)) return false;
+    return commit(read(), next);
+  }
+
   function forget(session) {
     if (typeof session !== 'string' || !session) return false;
     const previous = read();
@@ -35,7 +64,7 @@ function createSessionRegistry({ read, write, upsert }) {
     return commit(previous, next);
   }
 
-  return { records, remember, forget };
+  return { records, remember, replace, forget };
 }
 
 function createSessionOwnership({ projectFiles, remember, forget }) {
@@ -52,10 +81,7 @@ function createSessionOwnership({ projectFiles, remember, forget }) {
     } catch (_) {
       owner = null;
     }
-    if (!owner?.ok) {
-      if (typeof record?.session === 'string' && record.session) forget(record.session);
-      return null;
-    }
+    if (!owner?.ok) return null;
     const verified = { ...record, projectPath: owner.projectPath };
     if (remember(verified) !== true) return null;
     return verified;
@@ -71,16 +97,58 @@ function createSessionOwnership({ projectFiles, remember, forget }) {
     const restoredByIndex = new Map();
     const verifiedOwners = () => [...restoredByIndex.values()]
       .map(({ projectPath }) => projectPath);
-    const processingOrder = [
-      ...candidates.filter(({ storedOwner }) => storedOwner),
-      ...candidates.filter(({ storedOwner }) => !storedOwner),
-    ];
+    const storedCandidates = candidates.filter(({ storedOwner }) => storedOwner);
+    const legacyCandidates = candidates.filter(({ storedOwner }) => !storedOwner);
 
-    for (const { record, index, storedOwner } of processingOrder) {
+    for (const { record, index } of storedCandidates) {
       let admitted;
       try {
-        admitted = storedOwner
-          ? await projectFiles.restoreSelection(record.projectPath, record.cwd)
+        admitted = await projectFiles.restoreSelection(record.projectPath, record.cwd);
+      } catch (_) {
+        admitted = null;
+      }
+      if (!admitted?.ok) {
+        projectFiles.replaceAdmissions('restored', verifiedOwners());
+        continue;
+      }
+      const verified = { ...record, projectPath: admitted.projectPath };
+      restoredByIndex.set(index, verified);
+    }
+
+    const legacyPaths = [...new Set(legacyCandidates
+      .map(({ record }) => record.cwd)
+      .filter((cwd) => typeof cwd === 'string' && cwd))]
+      .sort((left, right) => left.localeCompare(right));
+    const discoveredOwners = new Map();
+    for (const parentPath of legacyPaths) {
+      for (const childPath of legacyPaths) {
+        if (parentPath === childPath) continue;
+        let relationship;
+        try {
+          relationship = await projectFiles.restoreSelection(parentPath, childPath);
+        } catch (_) {
+          relationship = null;
+        }
+        if (!relationship?.ok) continue;
+        if (!discoveredOwners.has(parentPath)) {
+          discoveredOwners.set(parentPath, relationship.projectPath);
+        }
+        if (!discoveredOwners.has(childPath)) {
+          discoveredOwners.set(childPath, relationship.projectPath);
+        }
+      }
+    }
+    projectFiles.replaceAdmissions('restored', [
+      ...verifiedOwners(),
+      ...discoveredOwners.values(),
+    ]);
+
+    for (const { record, index } of legacyCandidates) {
+      let admitted;
+      try {
+        const discoveredOwner = discoveredOwners.get(record.cwd);
+        admitted = discoveredOwner
+          ? await projectFiles.restoreSelection(discoveredOwner, record.cwd)
           : await projectFiles.admitSelection(record.cwd, 'restored');
       } catch (_) {
         admitted = null;
@@ -90,8 +158,7 @@ function createSessionOwnership({ projectFiles, remember, forget }) {
         continue;
       }
       const verified = { ...record, projectPath: admitted.projectPath };
-      if (!storedOwner && persistedSessions.has(record.session)
-        && remember(verified) !== true) {
+      if (persistedSessions.has(record.session) && remember(verified) !== true) {
         projectFiles.replaceAdmissions('restored', verifiedOwners());
         continue;
       }
@@ -129,4 +196,4 @@ function createSessionOwnership({ projectFiles, remember, forget }) {
   return { rememberCurrent, prepareRestore, reconcileLive, restore };
 }
 
-module.exports = { createSessionOwnership, createSessionRegistry };
+module.exports = { classifyTmuxSessionList, createSessionOwnership, createSessionRegistry };
