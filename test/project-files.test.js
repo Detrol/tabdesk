@@ -4,7 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
-const { execFile, execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const { createProjectFiles } = require('../project-files');
 
@@ -96,6 +96,77 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function withDeadline(promise, milliseconds = 300) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ deadline: true }), milliseconds);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+async function waitForCondition(predicate, attempts = 1000) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail('condition was not reached');
+}
+
+async function waitForProcessExit(pid, attempts = 50) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (!processRunning(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`process ${pid} did not exit`);
+}
+
+function processExists(pid) {
+  if (!Number.isInteger(pid)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+function processRunning(pid) {
+  if (!processExists(pid)) return false;
+  if (process.platform !== 'linux') return true;
+  try {
+    const state = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').match(/\) ([A-Z]) /)?.[1];
+    return state !== 'Z';
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function forceKillTestProcess(child, descendantPid) {
+  if (process.platform !== 'win32' && Number.isInteger(child?.pid)) {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {}
+  }
+  try { child?.kill('SIGKILL'); } catch (_) {}
+  try { if (processExists(descendantPid)) process.kill(descendantPid, 'SIGKILL'); } catch (_) {}
+}
+
+function fakeGitProcess({ code = 0, stdout = '', stderr = '' } = {}) {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = { end() {} };
+  child.kill = () => true;
+  process.nextTick(() => {
+    if (stdout) child.stdout.emit('data', Buffer.from(stdout));
+    if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+    child.emit('close', code, null);
+  });
+  return child;
+}
+
 test('only an admitted project can be opened', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -157,6 +228,69 @@ test('accepts an admitted symlink spelling without admitting its real spelling',
   assert.equal(files.admitProject(link, 'picker').ok, true);
   assert.equal((await files.openProject(link)).ok, true);
   assert.equal((await files.openProject(fx.project)).error, 'project-unavailable');
+});
+
+test('rejects project roots whose logical or real path enters Git metadata', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const metadataChild = path.join(fx.project, '.git', 'objects');
+  const alias = path.join(fx.base, 'repository-data');
+  fs.symlinkSync(path.join(fx.project, '.git'), alias, 'dir');
+  const files = createProjectFiles();
+
+  for (const selected of [path.join(fx.project, '.git'), metadataChild, alias]) {
+    assert.deepEqual(files.admitProject(selected, 'picker'), {
+      ok: false,
+      error: 'project-unavailable',
+    });
+    assert.deepEqual(await files.admitSelection(selected, 'picker'), {
+      ok: false,
+      error: 'project-unavailable',
+    });
+    assert.deepEqual(await files.openProject(selected), {
+      ok: false,
+      error: 'project-unavailable',
+    });
+  }
+});
+
+test('allows ordinary dot-git-like names and real linked worktree roots', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const ordinary = path.join(fx.base, '.github-project');
+  fs.mkdirSync(ordinary);
+  const ordinaryFiles = createProjectFiles();
+  assert.equal(ordinaryFiles.admitProject(ordinary, 'picker').ok, true);
+  assert.equal((await ordinaryFiles.openProject(ordinary)).ok, true);
+
+  gitProject(fx.project);
+  const worktree = path.join(fx.project, '.worktrees', 'topic');
+  fs.mkdirSync(path.dirname(worktree));
+  git(fx.project, ['worktree', 'add', '-b', 'topic', worktree]);
+  assert.equal(fs.statSync(path.join(worktree, '.git')).isFile(), true);
+  const worktreeFiles = createProjectFiles();
+  assert.equal(worktreeFiles.admitProject(worktree, 'picker').ok, true);
+  assert.equal((await worktreeFiles.openProject(worktree)).ok, true);
+});
+
+test('revokes every root operation when an admitted alias is retargeted into Git metadata', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'safe.txt'), 'original');
+  const alias = path.join(fx.base, 'project-alias');
+  fs.symlinkSync(fx.project, alias, 'dir');
+  const files = createProjectFiles();
+  assert.equal(files.admitProject(alias, 'picker').ok, true);
+  const ids = await openedRoot(files, alias);
+  const opened = await files.read({ ...ids, path: 'safe.txt' });
+
+  fs.unlinkSync(alias);
+  fs.symlinkSync(path.join(fx.project, '.git'), alias, 'dir');
+
+  assert.deepEqual(await files.openProject(alias), { ok: false, error: 'project-unavailable' });
+  await assertRootOperationsUnavailable(files, ids, opened.revision);
 });
 
 test('admitSelection keeps a verified selected worktree under its admitted project', async (t) => {
@@ -278,15 +412,16 @@ test('rejects a project repointed during Git root discovery', async (t) => {
       realpathSync: fs.realpathSync,
       readdirSync: fs.readdirSync,
     },
-    execFile(file, args, options, callback) {
-      return execFile(file, args, options, (error, stdout, stderr) => {
+    spawn(file, args, options) {
+      const child = spawn(file, args, options);
+      child.once('close', () => {
         if (!repointed && args.includes('--git-common-dir')) {
           fs.unlinkSync(link);
           fs.symlinkSync(replacement, link, 'dir');
           repointed = true;
         }
-        callback(error, stdout, stderr);
       });
+      return child;
     },
   });
   files.admitProject(link, 'configured');
@@ -315,15 +450,16 @@ test('retries worktree discovery when a worktree symlink is repointed mid-refres
       realpathSync: fs.realpathSync,
       readdirSync: fs.readdirSync,
     },
-    execFile(file, args, options, callback) {
-      return execFile(file, args, options, (error, stdout, stderr) => {
+    spawn(file, args, options) {
+      const child = spawn(file, args, options);
+      child.once('close', () => {
         if (repointOnGit && !repointed && args.includes('--show-toplevel')) {
           fs.unlinkSync(link);
           fs.symlinkSync(secondWorktree, link, 'dir');
           repointed = true;
         }
-        callback(error, stdout, stderr);
       });
+      return child;
     },
   });
   files.admitProject(fx.project, 'configured');
@@ -355,13 +491,13 @@ test('retries when a worktree candidate is repointed before Git reads it', async
       realpathSync: fs.realpathSync,
       readdirSync: fs.readdirSync,
     },
-    execFile(file, args, options, callback) {
+    spawn(file, args, options) {
       if (repointBeforeGit && !repointed && args.includes('--show-toplevel')) {
         fs.unlinkSync(link);
         fs.symlinkSync(secondWorktree, link, 'dir');
         repointed = true;
       }
-      return execFile(file, args, options, callback);
+      return spawn(file, args, options);
     },
   });
   files.admitProject(fx.project, 'configured');
@@ -590,6 +726,7 @@ test('uses one NUL Git batch, distinguishes fatal errors, and skips verified non
   const spawns = [];
   let status = 1;
   function fakeSpawn(file, args, options) {
+    if (!args.includes('check-ignore')) return spawn(file, args, options);
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stdin = {
@@ -608,7 +745,10 @@ test('uses one NUL Git batch, distinguishes fatal errors, and skips verified non
   assert.equal(noMatches.ok, true);
   assert.equal(spawns.length, 1);
   assert.deepEqual(spawns[0].args, ['-C', fx.project, 'check-ignore', '--stdin', '-z']);
-  assert.deepEqual(spawns[0].options, { stdio: ['pipe', 'pipe', 'ignore'] });
+  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(spawns[0].options.env.LC_ALL, 'C');
+  assert.equal(spawns[0].options.env.PATH, process.env.PATH);
+  assert.equal(spawns[0].options.detached, process.platform !== 'win32');
   assert.equal(spawns[0].input.at(-1), 0);
   assert.match(spawns[0].input.toString('utf8'), /normal\.txt\0/);
 
@@ -618,7 +758,12 @@ test('uses one NUL Git batch, distinguishes fatal errors, and skips verified non
   const plain = path.join(fx.base, 'plain');
   fs.mkdirSync(plain);
   fs.writeFileSync(path.join(plain, 'normal.txt'), 'normal');
-  const plainFiles = createProjectFiles({ spawn: () => { throw new Error('must not spawn'); } });
+  const plainFiles = createProjectFiles({
+    spawn(file, args, options) {
+      if (args.includes('check-ignore')) throw new Error('non-Git roots must not check ignore');
+      return spawn(file, args, options);
+    },
+  });
   plainFiles.admitProject(plain, 'configured');
   const plainIds = await openedRoot(plainFiles, plain);
   assert.deepEqual(await plainFiles.list({ ...plainIds, directory: '' }), {
@@ -636,12 +781,13 @@ test('probes Git repositories in a C locale before classifying non-Git roots', a
   fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
   let probeOptions;
   const nonGitFiles = createProjectFiles({
-    execFile(file, args, options, callback) {
+    spawn(file, args, options) {
       probeOptions = options;
-      const error = Object.assign(new Error('not a repository'), { code: 128 });
-      callback(error, '', 'fatal: not a git repository (or any of the parent directories): .git\n');
+      return fakeGitProcess({
+        code: 128,
+        stderr: 'fatal: not a git repository (or any of the parent directories): .git\n',
+      });
     },
-    spawn: () => { throw new Error('non-Git roots must not check ignore'); },
   });
   nonGitFiles.admitProject(fx.project, 'configured');
   const ids = await openedRoot(nonGitFiles, fx.project);
@@ -649,17 +795,171 @@ test('probes Git repositories in a C locale before classifying non-Git roots', a
   assert.equal(probeOptions.env.LC_ALL, 'C');
   assert.equal(probeOptions.env.PATH, process.env.PATH);
 
+  let fatal = false;
   const fatalFiles = createProjectFiles({
-    execFile(file, args, options, callback) {
-      const error = Object.assign(new Error('broken Git'), { code: 128 });
-      callback(error, '', 'fatal: malformed repository configuration\n');
+    spawn(file, args, options) {
+      if (!fatal) return spawn(file, args, options);
+      return fakeGitProcess({ code: 128, stderr: 'fatal: malformed repository configuration\n' });
     },
   });
   fatalFiles.admitProject(fx.project, 'configured');
   const fatalIds = await openedRoot(fatalFiles, fx.project);
+  fatal = true;
   assert.deepEqual(await fatalFiles.list({ ...fatalIds, directory: '' }), {
     ok: false, error: 'git-unavailable',
   });
+  fatal = false;
+  assert.equal((await fatalFiles.list({ ...fatalIds, directory: '' })).ok, true);
+});
+
+test('times out Git, kills its process group, and releases the execution slot', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  const pidFile = path.join(fx.base, 'git-descendant.pid');
+  const children = [];
+  let hang = false;
+  let timedOut = false;
+  function controlledSpawn(file, args, options) {
+    if (!hang || timedOut) return spawn(file, args, options);
+    timedOut = true;
+    const script = [
+      "const fs = require('fs');",
+      "const { spawn } = require('child_process');",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      "fs.writeFileSync(process.argv[1], String(child.pid));",
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const child = spawn(process.execPath, ['-e', script, pidFile], options);
+    children.push(child);
+    return child;
+  }
+  t.after(() => {
+    const descendantPid = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : undefined;
+    for (const child of children) forceKillTestProcess(child, descendantPid);
+  });
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitTimeoutMs: 100,
+    gitMaxActive: 1,
+    gitMaxQueued: 1,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  hang = true;
+  const timedOutResult = await withDeadline(files.list({ ...ids, directory: '' }), 500);
+  assert.deepEqual(timedOutResult, { ok: false, error: 'git-unavailable' });
+  await waitForCondition(() => fs.existsSync(pidFile));
+  const descendantPid = Number(fs.readFileSync(pidFile, 'utf8'));
+  await waitForProcessExit(children[0].pid);
+  await waitForProcessExit(descendantPid);
+
+  assert.equal((await files.list({ ...ids, directory: '' })).ok, true);
+});
+
+test('caps active and queued Git jobs, rejects saturation, and drains the queue after timeouts', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  const children = [];
+  let hang = false;
+  function controlledSpawn(file, args, options) {
+    if (!hang) return spawn(file, args, options);
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+    children.push(child);
+    return child;
+  }
+  t.after(() => {
+    for (const child of children) forceKillTestProcess(child);
+  });
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitTimeoutMs: 30,
+    gitMaxActive: 1,
+    gitMaxQueued: 1,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  hang = true;
+  const active = files.list({ ...ids, directory: '' });
+  await waitForCondition(() => children.length === 1);
+  const queued = files.list({ ...ids, directory: '' });
+  const saturated = await withDeadline(files.list({ ...ids, directory: '' }));
+  assert.deepEqual(saturated, { ok: false, error: 'git-unavailable' });
+  assert.deepEqual(await withDeadline(active), { ok: false, error: 'git-unavailable' });
+  assert.deepEqual(await withDeadline(queued), { ok: false, error: 'git-unavailable' });
+  assert.equal(children.length, 2);
+  assert.equal(children.every((child) => !processExists(child.pid)), true);
+});
+
+test('releases a Git execution slot after a synchronous launcher error', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let throwNext = false;
+  function controlledSpawn(file, args, options) {
+    if (throwNext) {
+      throwNext = false;
+      throw new Error('controlled launcher failure');
+    }
+    return spawn(file, args, options);
+  }
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitTimeoutMs: 100,
+    gitMaxActive: 1,
+    gitMaxQueued: 0,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  throwNext = true;
+  assert.deepEqual(await files.list({ ...ids, directory: '' }), {
+    ok: false,
+    error: 'git-unavailable',
+  });
+  assert.equal((await files.list({ ...ids, directory: '' })).ok, true);
+});
+
+test('kills an errored Git child and releases its execution slot', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let emitError = false;
+  let killed = false;
+  function controlledSpawn(file, args, options) {
+    if (!emitError) return spawn(file, args, options);
+    emitError = false;
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => { killed = true; return true; };
+    process.nextTick(() => child.emit('error', new Error('controlled child error')));
+    return child;
+  }
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitTimeoutMs: 100,
+    gitMaxActive: 1,
+    gitMaxQueued: 0,
+  });
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  emitError = true;
+  assert.deepEqual(await files.list({ ...ids, directory: '' }), {
+    ok: false,
+    error: 'git-unavailable',
+  });
+  assert.equal(killed, true);
+  assert.equal((await files.list({ ...ids, directory: '' })).ok, true);
 });
 
 test('fails closed when a directory is retargeted between containment and enumeration', async (t) => {
@@ -831,16 +1131,17 @@ test('a stale project refresh cannot revoke its newly admitted replacement', asy
   let files;
   let replaced = false;
   files = createProjectFiles({
-    execFile(file, args, options, callback) {
-      return execFile(file, args, options, (error, stdout, stderr) => {
+    spawn(file, args, options) {
+      const child = spawn(file, args, options);
+      child.once('close', () => {
         if (!replaced && args.includes('--git-common-dir')) {
           fs.unlinkSync(link);
           fs.symlinkSync(replacement, link, 'dir');
           files.admitProject(link, 'picker');
           replaced = true;
         }
-        callback(error, stdout, stderr);
       });
+      return child;
     },
   });
   files.admitProject(link, 'configured');

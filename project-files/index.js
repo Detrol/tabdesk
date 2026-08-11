@@ -6,6 +6,9 @@ const { readDocument, writeDocument } = require('./document');
 const { createRootWatcher } = require('./watch');
 
 const SOURCES = new Set(['configured', 'picker', 'restored']);
+const GIT_TIMEOUT_MS = 5_000;
+const GIT_MAX_ACTIVE = 4;
+const GIT_MAX_QUEUED = 16;
 
 function relativeParts(value, { root = false } = {}) {
   if (typeof value !== 'string' || value.includes('\0') || value.includes('\\')) return null;
@@ -34,15 +37,25 @@ function sameDirectory(left, right) {
     && left.ino === right.ino && left.birthtimeMs === right.birthtimeMs);
 }
 
+function hasGitMetadataComponent(value) {
+  const absolute = path.resolve(value);
+  const parts = absolute.slice(path.parse(absolute).root.length).split(path.sep);
+  // Windows paths are case-insensitive by default; POSIX component names are not.
+  return parts.some((part) => (process.platform === 'win32' ? part.toLowerCase() : part) === '.git');
+}
+
 function safeDirectory(io, dir) {
   if (typeof dir !== 'string' || !dir) return null;
   const logical = path.resolve(dir);
+  if (hasGitMetadataComponent(logical)) return null;
   try {
     const stats = io.statSync(logical);
     if (!stats.isDirectory()) return null;
+    const real = io.realpathSync(logical);
+    if (hasGitMetadataComponent(real)) return null;
     return {
       logical,
-      real: io.realpathSync(logical),
+      real,
       dev: stats.dev,
       ino: stats.ino,
       birthtimeMs: stats.birthtimeMs,
@@ -58,11 +71,18 @@ function publicRoot(root) {
 
 function createProjectFiles(options = {}) {
   const io = options.fs || fs;
-  const run = options.execFile || childProcess.execFile;
-  const spawn = options.spawn || childProcess.spawn;
+  const spawnGit = options.spawn || childProcess.spawn;
+  const gitTimeoutMs = Number.isInteger(options.gitTimeoutMs) && options.gitTimeoutMs > 0
+    ? options.gitTimeoutMs : GIT_TIMEOUT_MS;
+  const gitMaxActive = Number.isInteger(options.gitMaxActive) && options.gitMaxActive > 0
+    ? options.gitMaxActive : GIT_MAX_ACTIVE;
+  const gitMaxQueued = Number.isInteger(options.gitMaxQueued) && options.gitMaxQueued >= 0
+    ? options.gitMaxQueued : GIT_MAX_QUEUED;
   const byPath = new Map();
   const byId = new Map();
   const watcherOwners = new Map();
+  const gitQueue = [];
+  let activeGit = 0;
   let watchersClosed = false;
 
   function closeOwnedWatchers(projectId, rootId) {
@@ -124,50 +144,152 @@ function createProjectFiles(options = {}) {
     }
   }
 
-  function exec(file, args) {
-    return new Promise((resolve, reject) => {
-      run(file, args, { encoding: 'utf8' }, (error, stdout) => {
-        if (error) return reject(error);
-        return resolve(String(stdout).trim());
+  function gitFailure(reason) {
+    return Object.assign(new Error(`Git execution ${reason}`), { code: 'TABDESK_GIT_UNAVAILABLE' });
+  }
+
+  function startQueuedGit(job) {
+    activeGit += 1;
+    Promise.resolve()
+      .then(job.start)
+      .then(job.resolve, job.reject)
+      .finally(() => {
+        activeGit -= 1;
+        const next = gitQueue.shift();
+        if (next) startQueuedGit(next);
       });
+  }
+
+  function scheduleGit(start) {
+    return new Promise((resolve, reject) => {
+      const job = { start, resolve, reject };
+      if (activeGit < gitMaxActive) {
+        startQueuedGit(job);
+      } else if (gitQueue.length < gitMaxQueued) {
+        gitQueue.push(job);
+      } else {
+        reject(gitFailure('queue saturated'));
+      }
     });
+  }
+
+  function killGit(child) {
+    if (!child) return;
+    if (process.platform !== 'win32' && Number.isInteger(child.pid)) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {}
+    }
+    try { child.kill('SIGKILL'); } catch (_) {}
+  }
+
+  function executeGit(args, { input } = {}) {
+    return scheduleGit(() => new Promise((resolve, reject) => {
+      let child;
+      let killTimer;
+      let settled = false;
+      let timedOut = false;
+      const stdout = [];
+      const stderr = [];
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        clearTimeout(killTimer);
+        callback(value);
+      };
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        killGit(child);
+        if (!child) {
+          finish(reject, gitFailure('timed out'));
+          return;
+        }
+        killTimer = setTimeout(() => finish(reject, gitFailure('timed out')), 250);
+      }, gitTimeoutMs);
+
+      try {
+        child = spawnGit('git', args, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, LC_ALL: 'C' },
+          detached: process.platform !== 'win32',
+        });
+        child.stdout?.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
+        child.stderr?.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+        child.on('error', () => {
+          killGit(child);
+          finish(reject, gitFailure('failed to start'));
+        });
+        child.on('close', (code, signal) => {
+          if (timedOut) {
+            finish(reject, gitFailure('timed out'));
+            return;
+          }
+          finish(resolve, {
+            error: code === 0 ? null : { code, signal },
+            stdout: Buffer.concat(stdout).toString('utf8'),
+            stderr: Buffer.concat(stderr).toString('utf8'),
+          });
+        });
+        if (!child?.stdin || typeof child.stdin.end !== 'function') {
+          killGit(child);
+          finish(reject, gitFailure('has no stdin'));
+          return;
+        }
+        child.stdin.end(input);
+      } catch (_) {
+        killGit(child);
+        finish(reject, gitFailure('failed to start'));
+      }
+    }));
+  }
+
+  function isNotGitRepository(result) {
+    return result.error && Number(result.error.code) === 128
+      && /not a git repository/i.test(result.stderr);
   }
 
   async function gitCommonDir(directory) {
     try {
-      const commonDir = await exec('git', [
+      const result = await executeGit([
         '-C', directory,
         'rev-parse',
         '--path-format=absolute',
         '--git-common-dir',
       ]);
-      return io.realpathSync(commonDir);
+      if (result.error) {
+        return isNotGitRepository(result) ? { git: false } : { error: 'git-unavailable' };
+      }
+      return { git: true, commonDir: io.realpathSync(result.stdout.trim()) };
     } catch (_) {
-      return null;
+      return { error: 'git-unavailable' };
     }
   }
 
   async function isGitWorktree(directory, commonDir) {
     try {
-      const topLevel = await exec('git', ['-C', directory.logical, 'rev-parse', '--show-toplevel']);
-      if (io.realpathSync(topLevel) !== directory.real) return false;
-      return (await gitCommonDir(directory.logical)) === commonDir;
+      const result = await executeGit(['-C', directory.logical, 'rev-parse', '--show-toplevel']);
+      if (result.error) {
+        return isNotGitRepository(result) ? { worktree: false } : { error: 'git-unavailable' };
+      }
+      if (io.realpathSync(result.stdout.trim()) !== directory.real) return { worktree: false };
+      const candidateCommonDir = await gitCommonDir(directory.logical);
+      if (candidateCommonDir.error) return candidateCommonDir;
+      return { worktree: candidateCommonDir.git && candidateCommonDir.commonDir === commonDir };
     } catch (_) {
-      return false;
+      return { error: 'git-unavailable' };
     }
   }
 
-  function gitRepository(directory) {
-    return new Promise((resolve) => {
-      run('git', ['-C', directory, 'rev-parse', '--is-inside-work-tree'], {
-        encoding: 'utf8',
-        env: { ...process.env, LC_ALL: 'C' },
-      }, (error, stdout, stderr) => {
-        if (!error) return resolve(String(stdout).trim() === 'true' ? { git: true } : { error: 'git-unavailable' });
-        if (error.code === 128 && /not a git repository/i.test(String(stderr))) return resolve({ git: false });
-        return resolve({ error: 'git-unavailable' });
-      });
-    });
+  async function gitRepository(directory) {
+    let result;
+    try {
+      result = await executeGit(['-C', directory, 'rev-parse', '--is-inside-work-tree']);
+    } catch (_) {
+      return { error: 'git-unavailable' };
+    }
+    if (!result.error) {
+      return result.stdout.trim() === 'true' ? { git: true } : { error: 'git-unavailable' };
+    }
+    return isNotGitRepository(result) ? { git: false } : { error: 'git-unavailable' };
   }
 
   function conventionCandidates(project) {
@@ -190,16 +312,19 @@ function createProjectFiles(options = {}) {
 
   async function verifiedWorktrees(project, candidates) {
     const projectCommonDir = await gitCommonDir(project.logical);
-    if (!projectCommonDir) return [];
+    if (projectCommonDir.error) return projectCommonDir;
+    if (!projectCommonDir.git) return { worktrees: [] };
     const seen = new Set();
     const worktrees = [];
     for (const candidate of candidates) {
       if (seen.has(candidate.real)) continue;
-      if (!await isGitWorktree(candidate, projectCommonDir)) continue;
+      const verified = await isGitWorktree(candidate, projectCommonDir.commonDir);
+      if (verified.error) return verified;
+      if (!verified.worktree) continue;
       seen.add(candidate.real);
       worktrees.push(candidate);
     }
-    return worktrees.sort((left, right) => left.label.localeCompare(right.label));
+    return { worktrees: worktrees.sort((left, right) => left.label.localeCompare(right.label)) };
   }
 
   function refreshProject(project) {
@@ -260,12 +385,13 @@ function createProjectFiles(options = {}) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!refreshProject(project)) return { ok: false, error: 'project-unavailable' };
       const candidates = conventionCandidates(project);
-      const worktrees = await verifiedWorktrees(project, candidates);
+      const verified = await verifiedWorktrees(project, candidates);
+      if (verified.error) return { ok: false, error: 'project-unavailable' };
       if (!rootsStillValid(project, candidates)) {
         if (!byPath.has(project.logical)) return { ok: false, error: 'project-unavailable' };
         continue;
       }
-      const roots = refreshRoots(project, worktrees);
+      const roots = refreshRoots(project, verified.worktrees);
       return { ok: true, projectId: project.id, roots: roots.map(publicRoot) };
     }
 
@@ -292,7 +418,11 @@ function createProjectFiles(options = {}) {
       const candidate = conventionCandidates(project).find(({ logical }) => logical === selected.logical);
       if (!candidate) continue;
       const projectCommonDir = await gitCommonDir(project.logical);
-      if (!projectCommonDir || !await isGitWorktree(selected, projectCommonDir)) continue;
+      if (projectCommonDir.error) return { ok: false, error: 'project-unavailable' };
+      if (!projectCommonDir.git) continue;
+      const verified = await isGitWorktree(selected, projectCommonDir.commonDir);
+      if (verified.error) return { ok: false, error: 'project-unavailable' };
+      if (!verified.worktree) continue;
       const admitted = admitProject(project.logical, source);
       if (!admitted.ok) return admitted;
       return { ok: true, projectPath: project.logical, selectedPath: selected.logical };
@@ -316,7 +446,10 @@ function createProjectFiles(options = {}) {
 
     if (root.kind === 'worktree') {
       const projectCommonDir = await gitCommonDir(project.logical);
-      if (!projectCommonDir || !await isGitWorktree(current, projectCommonDir)) {
+      const verified = !projectCommonDir.error && projectCommonDir.git
+        ? await isGitWorktree(current, projectCommonDir.commonDir)
+        : { error: 'project-unavailable' };
+      if (verified.error || !verified.worktree) {
         invalidateRoot(project, root);
         return { error: 'project-unavailable' };
       }
@@ -442,26 +575,17 @@ function createProjectFiles(options = {}) {
     const repository = await gitRepository(root.real);
     if (repository.error) return repository;
     if (!repository.git) return { ignored: new Set() };
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = spawn('git', ['-C', root.real, 'check-ignore', '--stdin', '-z'], {
-          stdio: ['pipe', 'pipe', 'ignore'],
-        });
-      } catch (_) {
-        resolve({ error: 'git-unavailable' });
-        return;
-      }
-      const output = [];
-      child.stdout.on('data', (chunk) => output.push(chunk));
-      child.on('error', () => resolve({ error: 'git-unavailable' }));
-      child.on('close', (code) => {
-        if (code !== 0 && code !== 1) return resolve({ error: 'git-unavailable' });
-        const ignored = Buffer.concat(output).toString('utf8').split('\0').filter(Boolean);
-        return resolve({ ignored: new Set(ignored) });
+    let result;
+    try {
+      result = await executeGit(['-C', root.real, 'check-ignore', '--stdin', '-z'], {
+        input: Buffer.from(`${paths.join('\0')}\0`, 'utf8'),
       });
-      child.stdin.end(Buffer.from(`${paths.join('\0')}\0`, 'utf8'));
-    });
+    } catch (_) {
+      return { error: 'git-unavailable' };
+    }
+    if (result.error && Number(result.error.code) !== 1) return { error: 'git-unavailable' };
+    const ignored = result.stdout.split('\0').filter(Boolean);
+    return { ignored: new Set(ignored) };
   }
 
   async function list({ projectId, rootId, directory, showIgnored } = {}) {
