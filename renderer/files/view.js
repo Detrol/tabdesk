@@ -77,6 +77,9 @@ export function createFileView({
   let treeRequest = 0;
   let destroyed = false;
   let watchQueue = Promise.resolve();
+  let watchRequest = 0;
+  let watchFailed = false;
+  let watchFailureRevision = 0;
   let viewMessageKey = null;
   let loadedDirectories = new Map();
   let unsubscribe = NOOP;
@@ -150,6 +153,12 @@ export function createFileView({
 
   function setViewMessage(code) {
     viewMessageKey = errorKey(code);
+    repaintDocument();
+  }
+
+  function setWatchFailed(failed) {
+    if (failed) watchFailureRevision += 1;
+    watchFailed = failed;
     repaintDocument();
   }
 
@@ -358,7 +367,12 @@ export function createFileView({
     const statusKey = documentState.ignored && !activeMemory?.showIgnored
       ? 'files.ignored'
       : statusKeys[documentState.status];
-    statusLabel.textContent = translated(t, viewMessageKey || statusKey);
+    const primaryStatusKey = viewMessageKey || statusKey;
+    const primaryStatus = translated(t, primaryStatusKey);
+    const watchStatusKey = 'files.error.watch-failed';
+    statusLabel.textContent = watchFailed && primaryStatusKey !== watchStatusKey
+      ? `${primaryStatus} · ${translated(t, watchStatusKey)}`
+      : translated(t, watchFailed ? watchStatusKey : primaryStatusKey);
     saveButton.textContent = translated(t, 'files.save');
     const operationPending = Boolean(pendingDocumentOperation);
     saveButton.disabled = documentState.status !== 'dirty' || operationPending;
@@ -615,23 +629,26 @@ export function createFileView({
   }
 
   function enqueueWatch(projectPath, projectId, rootId) {
-    watchQueue = watchQueue.then(async () => {
+    const request = ++watchRequest;
+    const failureRevision = watchFailureRevision;
+    const isCurrent = () => !destroyed && request === watchRequest
+      && activeProjectPath === projectPath && activeMemory
+      && activeMemory.projectId === projectId && selectedRootId() === rootId;
+    watchQueue = watchQueue.catch(NOOP).then(async () => {
       try { await api.unwatchProjectFiles(); } catch { /* best effort */ }
-      if (destroyed || activeProjectPath !== projectPath || !activeMemory
-        || activeMemory.projectId !== projectId || selectedRootId() !== rootId) return;
+      if (!isCurrent()) return;
       let result;
       try { result = await api.watchProjectFiles({ projectId, rootId }); } catch { result = null; }
-      if (destroyed || activeProjectPath !== projectPath || !activeMemory
-        || activeMemory.projectId !== projectId || selectedRootId() !== rootId) return;
-      if (!result || !result.ok) setViewMessage('watch-failed');
-    }).catch(() => {
-      if (!destroyed) setViewMessage('watch-failed');
+      if (!isCurrent()) return;
+      if (!result || !result.ok) setWatchFailed(true);
+      else if (watchFailureRevision === failureRevision) setWatchFailed(false);
     });
     return watchQueue;
   }
 
   function enqueueUnwatch() {
-    watchQueue = watchQueue.then(async () => {
+    watchRequest += 1;
+    watchQueue = watchQueue.catch(NOOP).then(async () => {
       try { await api.unwatchProjectFiles(); } catch { /* best effort */ }
     });
     return watchQueue;
@@ -754,6 +771,7 @@ export function createFileView({
     invalidateDocumentOperation();
     activeProjectPath = null;
     activeMemory = null;
+    setWatchFailed(false);
     editor.setLanguage('');
     await enqueueUnwatch();
   }
@@ -799,7 +817,7 @@ export function createFileView({
       || change.projectId !== activeMemory.projectId
       || change.rootId !== selectedRootId()) return;
     if (change.kind === 'watch-failed') {
-      setViewMessage('watch-failed');
+      setWatchFailed(true);
       return;
     }
     const directory = parentPath(change.path || '');
@@ -841,6 +859,7 @@ export function createFileView({
     treeRequest += 1;
     readGate.invalidate();
     invalidateDocumentOperation();
+    setWatchFailed(false);
     unsubscribe();
     editor.destroy();
     await enqueueUnwatch();

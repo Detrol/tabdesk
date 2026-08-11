@@ -223,6 +223,203 @@ app.on('ready', async () => {
         && staleView.element.querySelector('.files-status').textContent === 'files.error.not-text';
       await staleView.destroy();
 
+      let watchContent = 'disk';
+      let watchRevision = 'a'.repeat(64);
+      const initialWatchSuccess = deferred();
+      const persistentWatchApi = makeFilesApi({
+        entries: [fileEntry('watched.txt'), fileEntry('binary.dat')],
+        read: async ({ path }) => path === 'binary.dat'
+          ? { ok: false, error: 'not-text' }
+          : {
+            ok: true, path, content: watchContent, revision: watchRevision, ignored: false,
+          },
+      });
+      persistentWatchApi.writeProjectFile = async ({ content }) => {
+        watchContent = content;
+        watchRevision = 'b'.repeat(64);
+        return { ok: true, revision: watchRevision };
+      };
+      persistentWatchApi.watchProjectFiles = () => initialWatchSuccess.promise;
+      const persistentWatchView = TabDeskFiles.createFileView({
+        api: persistentWatchApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(persistentWatchView.element);
+      await persistentWatchView.activate('/persistent-watch');
+      await wait(20);
+      persistentWatchApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: '', kind: 'watch-failed',
+      });
+      initialWatchSuccess.resolve({ ok: true });
+      await wait(20);
+      treeItem(persistentWatchView, 'watched.txt').click();
+      await wait(10);
+      await replaceFileText(persistentWatchView, 'local');
+      persistentWatchView.element.querySelector('.files-save').click();
+      await wait(20);
+      persistentWatchApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: 'watched.txt', kind: 'changed',
+      });
+      await wait(20);
+      persistentWatchView.element.querySelector('.files-ignored').click();
+      await wait(20);
+      const persistentWatchStatus = persistentWatchView.element
+        .querySelector('.files-status').textContent;
+      const watchWarningSurvivesFileActions = persistentWatchStatus
+        === 'files.saved · files.error.watch-failed';
+      treeItem(persistentWatchView, 'binary.dat').click();
+      await wait(10);
+      const persistentWatchErrorStatus = persistentWatchView.element
+        .querySelector('.files-status').textContent;
+      const watchWarningCombinesWithDocumentError = persistentWatchErrorStatus
+        === 'files.error.not-text · files.error.watch-failed';
+      await persistentWatchView.destroy();
+
+      const startupList = deferred();
+      let startupActivation = 0;
+      let startupWatch = 0;
+      const startupWatchApi = makeFilesApi({
+        entries: [fileEntry('remembered.txt')],
+        read: async ({ path }) => ({
+          ok: true, path, content: 'remembered', revision: 'c'.repeat(64), ignored: false,
+        }),
+      });
+      startupWatchApi.openProjectFiles = async () => {
+        startupActivation += 1;
+        return {
+          ok: true, projectId: 'project-a',
+          roots: [{ id: 'root-a', kind: 'project', label: 'Project' }],
+        };
+      };
+      startupWatchApi.listProjectFiles = async () => (
+        startupActivation === 2 ? startupList.promise : { ok: true, entries: [fileEntry('remembered.txt')] }
+      );
+      startupWatchApi.watchProjectFiles = async () => {
+        startupWatch += 1;
+        if (startupWatch === 2) throw new Error('expected startup watch failure');
+        return { ok: true };
+      };
+      const startupWatchView = TabDeskFiles.createFileView({
+        api: startupWatchApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(startupWatchView.element);
+      await startupWatchView.activate('/startup-watch');
+      await wait(20);
+      treeItem(startupWatchView, 'remembered.txt').click();
+      await wait(10);
+      await startupWatchView.deactivate();
+      const startupActivationPromise = startupWatchView.activate('/startup-watch');
+      await wait(20);
+      startupList.resolve({ ok: true, entries: [fileEntry('remembered.txt')] });
+      await startupActivationPromise;
+      await wait(20);
+      const startupWatchWarningSurvivesAutoOpen = startupWatchView.element
+        .querySelector('.files-status').textContent
+        === 'files.saved · files.error.watch-failed';
+      await startupWatchView.destroy();
+
+      const lateWatchA = deferred();
+      const watchB = deferred();
+      const watchCallsByRoot = new Map();
+      const watchGenerationApi = makeFilesApi({
+        roots: [
+          { id: 'root-a', kind: 'project', label: 'A' },
+          { id: 'root-b', kind: 'worktree', label: 'B' },
+        ],
+        entries: [],
+        read: async () => ({ ok: false, error: 'unreadable' }),
+      });
+      watchGenerationApi.watchProjectFiles = ({ rootId }) => {
+        const call = (watchCallsByRoot.get(rootId) || 0) + 1;
+        watchCallsByRoot.set(rootId, call);
+        if (rootId === 'root-a' && call === 1) return lateWatchA.promise;
+        if (rootId === 'root-b' && call === 1) return watchB.promise;
+        if (rootId === 'root-a') return Promise.resolve({ ok: false, error: 'watch-failed' });
+        return Promise.resolve({ ok: true });
+      };
+      const watchGenerationView = TabDeskFiles.createFileView({
+        api: watchGenerationApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(watchGenerationView.element);
+      await watchGenerationView.activate('/watch-generation');
+      await wait(20);
+      watchGenerationApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: '', kind: 'watch-failed',
+      });
+      selectRoot(watchGenerationView, 'root-b');
+      await wait(20);
+      const warningHeldWhileNewWatchPending = watchGenerationView.element
+        .querySelector('.files-status').textContent.includes('files.error.watch-failed');
+      lateWatchA.resolve({ ok: true });
+      await wait(20);
+      const staleWatchSuccessInert = watchGenerationView.element
+        .querySelector('.files-status').textContent.includes('files.error.watch-failed');
+      watchB.resolve({ ok: true });
+      await wait(20);
+      const currentWatchSuccessClearsWarning = !watchGenerationView.element
+        .querySelector('.files-status').textContent.includes('files.error.watch-failed');
+      watchGenerationApi.emit({
+        projectId: 'project-a', rootId: 'root-b', path: '', kind: 'watch-failed',
+      });
+      watchGenerationApi.emit({
+        projectId: 'project-a', rootId: 'root-b', path: 'ordinary.txt', kind: 'changed',
+      });
+      await wait(20);
+      watchGenerationView.element.querySelector('.files-ignored').click();
+      await wait(20);
+      const ordinaryHintsDoNotClearWatchWarning = watchGenerationView.element
+        .querySelector('.files-status').textContent.includes('files.error.watch-failed');
+      selectRoot(watchGenerationView, 'root-a');
+      await wait(20);
+      const failedOtherRootStatus = watchGenerationView.element
+        .querySelector('.files-status').textContent;
+      const failedOtherRootKeepsWatchWarning = failedOtherRootStatus
+        .includes('files.error.watch-failed');
+      const watchGenerationCalls = JSON.stringify([...watchCallsByRoot]);
+      selectRoot(watchGenerationView, 'root-b');
+      await wait(20);
+      const explicitCurrentRewatchClearsWarning = !watchGenerationView.element
+        .querySelector('.files-status').textContent.includes('files.error.watch-failed');
+      await watchGenerationView.destroy();
+
+      const deactivateWatch = deferred();
+      const destroyWatch = deferred();
+      let lifecycleWatchCall = 0;
+      const watchLifecycleApi = makeFilesApi({
+        entries: [], read: async () => ({ ok: false, error: 'unreadable' }),
+      });
+      watchLifecycleApi.watchProjectFiles = () => {
+        lifecycleWatchCall += 1;
+        return lifecycleWatchCall === 1 ? deactivateWatch.promise : destroyWatch.promise;
+      };
+      const watchLifecycleView = TabDeskFiles.createFileView({
+        api: watchLifecycleApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(watchLifecycleView.element);
+      await watchLifecycleView.activate('/watch-lifecycle');
+      await wait(20);
+      watchLifecycleApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: '', kind: 'watch-failed',
+      });
+      const deactivatePromise = watchLifecycleView.deactivate();
+      const deactivateClearsWarningImmediately = !watchLifecycleView.element
+        .querySelector('.files-status').textContent.includes('files.error.watch-failed');
+      deactivateWatch.resolve({ ok: false, error: 'watch-failed' });
+      await deactivatePromise;
+      const pendingWatchAfterDeactivateInert = !watchLifecycleView.element
+        .querySelector('.files-status').textContent.includes('files.error.watch-failed');
+      await watchLifecycleView.activate('/watch-lifecycle');
+      await wait(20);
+      watchLifecycleApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: '', kind: 'watch-failed',
+      });
+      const destroyPromise = watchLifecycleView.destroy();
+      const destroyClearsWarningImmediately = !watchLifecycleView.element
+        .querySelector('.files-status').textContent.includes('files.error.watch-failed');
+      destroyWatch.resolve({ ok: false, error: 'watch-failed' });
+      await destroyPromise;
+      const pendingWatchAfterDestroyInert = !watchLifecycleView.element
+        .querySelector('.files-status').textContent.includes('files.error.watch-failed');
+
       const delayedB = deferred();
       const rootReads = [];
       let bLists = 0;
@@ -422,6 +619,9 @@ app.on('ready', async () => {
       treeItem(localeLabelView, 'label.txt').click();
       await wait(10);
       await replaceFileText(localeLabelView, 'local-label');
+      localeLabelApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: '', kind: 'watch-failed',
+      });
       const localeEditorBefore = localeLabelView.element.querySelector('.cm-editor');
       const labelBeforeLanguage = localeLabelView.element.querySelector('.cm-content')
         .getAttribute('aria-label');
@@ -435,6 +635,9 @@ app.on('ready', async () => {
           === localeEditorBefore
         && localeContent.textContent === 'local-label'
         && localeLabelView.hasUnsavedChanges();
+      const watchWarningRetranslated = localeLabelView.element
+        .querySelector('.files-status').textContent
+        === 'sv:files.dirty · sv:files.error.watch-failed';
       press(localeLabelView.element, 'z');
       await wait(10);
       const localeHistoryPreserved = localeContent.textContent === 'disk-label';
@@ -978,6 +1181,23 @@ app.on('ready', async () => {
         failedOpenBlank,
         failedOpenReadOnly,
         failedOpenSafe,
+        watchWarningSurvivesFileActions,
+        watchWarningCombinesWithDocumentError,
+        persistentWatchStatus,
+        persistentWatchErrorStatus,
+        startupWatchWarningSurvivesAutoOpen,
+        warningHeldWhileNewWatchPending,
+        staleWatchSuccessInert,
+        currentWatchSuccessClearsWarning,
+        ordinaryHintsDoNotClearWatchWarning,
+        failedOtherRootKeepsWatchWarning,
+        failedOtherRootStatus,
+        watchGenerationCalls,
+        explicitCurrentRewatchClearsWarning,
+        deactivateClearsWarningImmediately,
+        pendingWatchAfterDeactivateInert,
+        destroyClearsWarningImmediately,
+        pendingWatchAfterDestroyInert,
         rootRaceSafe,
         becameDirty,
         rootLeaveCanceled,
@@ -992,6 +1212,7 @@ app.on('ready', async () => {
         editorLabelRetranslated,
         localeStatePreserved,
         localeHistoryPreserved,
+        watchWarningRetranslated,
         typedErrorRetranslated,
         rootGoneRetranslated,
         navigationInvalidatesPending,
@@ -1040,6 +1261,31 @@ app.on('ready', async () => {
     ok('failed file open clears the stale editor buffer', result.failedOpenBlank);
     ok('failed file open leaves the editor read-only', result.failedOpenReadOnly);
     ok('failed file open shows only the requested relative path and typed message', result.failedOpenSafe);
+    ok('watch failure survives open save watcher hints and tree rebuild',
+      result.watchWarningSurvivesFileActions, result.persistentWatchStatus);
+    ok('actionable document error and watch failure share the accessible status',
+      result.watchWarningCombinesWithDocumentError, result.persistentWatchErrorStatus);
+    ok('startup watch rejection survives remembered-file auto-open',
+      result.startupWatchWarningSurvivesAutoOpen);
+    ok('old warning remains while the replacement root watch is pending',
+      result.warningHeldWhileNewWatchPending);
+    ok('late success for the previous root cannot clear the active warning',
+      result.staleWatchSuccessInert);
+    ok('successful watch for the exact active root clears the warning',
+      result.currentWatchSuccessClearsWarning);
+    ok('ordinary watcher hints and tree rebuilds do not imply watcher recovery',
+      result.ordinaryHintsDoNotClearWatchWarning);
+    ok('failed replacement watch keeps the watcher warning active',
+      result.failedOtherRootKeepsWatchWarning,
+      `${result.failedOtherRootStatus}; calls=${result.watchGenerationCalls}`);
+    ok('explicit successful rewatch of the active root clears the warning',
+      result.explicitCurrentRewatchClearsWarning);
+    ok('deactivate clears watcher warning before pending watcher work settles',
+      result.deactivateClearsWarningImmediately);
+    ok('watch completion after deactivate is inert', result.pendingWatchAfterDeactivateInert);
+    ok('destroy clears watcher warning before pending watcher work settles',
+      result.destroyClearsWarningImmediately);
+    ok('watch completion after destroy is inert', result.pendingWatchAfterDestroyInert);
     ok('stale root-switch continuation cannot open the prior root lastFile', result.rootRaceSafe);
     ok('real editor input drives the file view dirty state', result.becameDirty);
     ok('root leave cancel and approval are non-mutating for the dirty buffer',
@@ -1053,6 +1299,8 @@ app.on('ready', async () => {
     ok('language change updates the live editor aria-label', result.editorLabelRetranslated);
     ok('language change keeps the same dirty editor state', result.localeStatePreserved);
     ok('language change preserves editor undo history', result.localeHistoryPreserved);
+    ok('language change retranslates the persistent watcher warning',
+      result.watchWarningRetranslated);
     ok('active typed error retranslates on language change', result.typedErrorRetranslated);
     ok('active root-gone notice retranslates on language change', result.rootGoneRetranslated);
     ok('file navigation invalidates a pending save and its post-read', result.navigationInvalidatesPending);
