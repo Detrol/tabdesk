@@ -808,7 +808,7 @@ test('maps file access denial to permission-denied without exposing system error
     get(target, property) {
       if (property === 'openSync') {
         return (value, flags, mode) => {
-          if (value === denied && flags === 'r') {
+          if (value === denied && (flags === 'r' || Number.isInteger(flags))) {
             throw Object.assign(new Error('fixture access denied'), { code: 'EACCES' });
           }
           return target.openSync(value, flags, mode);
@@ -1060,4 +1060,143 @@ test('validates document request paths and write payloads before filesystem muta
   }
   assert.equal(fs.readFileSync(path.join(fx.project, 'safe.txt'), 'utf8'), 'safe');
   assert.deepEqual(documentTemps(fx.project), []);
+});
+
+function swappingReadFs(target, external, { armed = true } = {}) {
+  let shouldSwap = armed;
+  return {
+    io: new Proxy(fs, {
+      get(source, property) {
+        if (property === 'openSync') {
+          return (value, flags, mode) => {
+            const readable = flags === 'r' || (Number.isInteger(flags)
+              && (flags & source.constants.O_ACCMODE) === source.constants.O_RDONLY);
+            if (shouldSwap && value === target && readable) {
+              shouldSwap = false;
+              const original = `${target}.original`;
+              source.renameSync(target, original);
+              source.symlinkSync(external, target);
+              try {
+                return source.openSync(target, 'r', mode);
+              } finally {
+                source.unlinkSync(target);
+                source.renameSync(original, target);
+              }
+            }
+            return source.openSync(value, flags, mode);
+          };
+        }
+        return source[property];
+      },
+    }),
+    arm() { shouldSwap = true; },
+  };
+}
+
+test('binds public reads to the verified file descriptor identity', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'inside.txt');
+  const external = path.join(fx.base, 'external.txt');
+  fs.writeFileSync(target, 'inside bytes');
+  fs.writeFileSync(external, 'external secret');
+  const swapping = swappingReadFs(target, external);
+  const { files, ids } = await admittedFiles(fx.project, { fs: swapping.io });
+
+  const result = await files.read({ ...ids, path: 'inside.txt' });
+  assert.deepEqual(result, { ok: false, error: 'unreadable' });
+  assert.equal(result.content, undefined);
+  assert.equal(result.revision, undefined);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'inside bytes');
+  assert.equal(fs.readFileSync(external, 'utf8'), 'external secret');
+});
+
+test('uses descriptor identity binding for the initial write snapshot', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'inside.txt');
+  const external = path.join(fx.base, 'external.txt');
+  fs.writeFileSync(target, 'inside bytes');
+  fs.writeFileSync(external, 'external secret');
+  const swapping = swappingReadFs(target, external, { armed: false });
+  const { files, ids } = await admittedFiles(fx.project, { fs: swapping.io });
+  const opened = await files.read({ ...ids, path: 'inside.txt' });
+  swapping.arm();
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'inside.txt', content: 'local edit',
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'unreadable' });
+  assert.equal(fs.readFileSync(target, 'utf8'), 'inside bytes');
+  assert.equal(fs.readFileSync(external, 'utf8'), 'external secret');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('never cleans a wx collision path that the write does not own', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'collision.txt');
+  fs.writeFileSync(target, 'original');
+  let sentinel;
+  const io = new Proxy(fs, {
+    get(source, property) {
+      if (property === 'openSync') {
+        return (value, flags, mode) => {
+          if (flags === 'wx') {
+            sentinel = value;
+            source.writeFileSync(sentinel, 'sentinel bytes');
+          }
+          return source.openSync(value, flags, mode);
+        };
+      }
+      return source[property];
+    },
+  });
+  const { files, ids } = await admittedFiles(fx.project, { fs: io });
+  const opened = await files.read({ ...ids, path: 'collision.txt' });
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'collision.txt', content: 'local',
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'write-failed' });
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original');
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'sentinel bytes');
+  fs.unlinkSync(sentinel);
+});
+
+test('maps resolver EACCES and EPERM to permission-denied for document operations', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'permission.txt');
+  fs.writeFileSync(target, 'original');
+
+  for (const code of ['EACCES', 'EPERM']) {
+    let denied = false;
+    const io = new Proxy(fs, {
+      get(source, property) {
+        if (property === 'realpathSync') {
+          return (value, options) => {
+            if (denied && value === target) {
+              throw Object.assign(new Error(`fixture ${code}`), { code });
+            }
+            return source.realpathSync(value, options);
+          };
+        }
+        return source[property];
+      },
+    });
+    const { files, ids } = await admittedFiles(fx.project, { fs: io });
+    const opened = await files.read({ ...ids, path: 'permission.txt' });
+
+    denied = true;
+    assert.deepEqual(await files.read({ ...ids, path: 'permission.txt' }), {
+      ok: false, error: 'permission-denied',
+    });
+    assert.deepEqual(await files.write({
+      ...ids, path: 'permission.txt', content: 'blocked',
+      expectedRevision: opened.revision, overwrite: false,
+    }), { ok: false, error: 'permission-denied' });
+    denied = false;
+  }
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original');
 });

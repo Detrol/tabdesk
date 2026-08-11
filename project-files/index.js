@@ -303,13 +303,15 @@ function createProjectFiles(options = {}) {
     return { project, root, real: current.real };
   }
 
-  function resolveContained(root, parts, { missing = 'unreadable' } = {}) {
+  function resolveContained(root, parts, { missing = 'unreadable', denied = 'unreadable' } = {}) {
     const logical = path.join(root.real, ...parts);
     let real;
     try {
       real = io.realpathSync(logical);
     } catch (error) {
-      return { error: error && error.code === 'ENOENT' ? missing : 'unreadable' };
+      if (error && error.code === 'ENOENT') return { error: missing };
+      if (error && (error.code === 'EACCES' || error.code === 'EPERM')) return { error: denied };
+      return { error: 'unreadable' };
     }
     if (!contained(root.real, real)) return { error: 'outside-root' };
     if (hasGitComponent(root.real, real)) return { error: 'git-metadata-denied' };
@@ -472,13 +474,16 @@ function createProjectFiles(options = {}) {
   async function resolveDocumentRequest(projectId, rootId, parts) {
     const selected = await selectedRoot(projectId, rootId);
     if (selected.error) return { error: selected.error };
-    const target = resolveContained(selected, parts, { missing: 'deleted' });
+    const target = resolveContained(selected, parts, {
+      missing: 'deleted',
+      denied: 'permission-denied',
+    });
     if (target.error) return target;
     return { selected, target };
   }
 
   function documentGitPath(selected, parts) {
-    const parent = resolveContained(selected, parts.slice(0, -1));
+    const parent = resolveContained(selected, parts.slice(0, -1), { denied: 'permission-denied' });
     if (parent.error) return parent;
     const directory = relativeGitPath(selected.real, parent.real);
     return { path: directory ? `${directory}/${parts.at(-1)}` : parts.at(-1) };
@@ -490,7 +495,13 @@ function createProjectFiles(options = {}) {
     if (parts.includes('.git')) return { ok: false, error: 'git-metadata-denied' };
     const resolved = await resolveDocumentRequest(request.projectId, request.rootId, parts);
     if (resolved.error) return { ok: false, error: resolved.error };
-    const snapshot = readDocument(resolved.target, { fs: io });
+    const snapshot = await readDocument(resolved.target, {
+      fs: io,
+      revalidate: async () => {
+        const current = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+        return current.error ? { error: current.error } : current.target;
+      },
+    });
     if (!snapshot.ok) return snapshot;
 
     const candidateGitPath = documentGitPath(resolved.selected, parts);

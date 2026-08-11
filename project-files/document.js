@@ -46,16 +46,32 @@ function decode(bytes) {
   };
 }
 
-function readBytes(target, io) {
+function sameFileIdentity(left, right) {
+  return Boolean(left && right && left.dev === right.dev && left.ino === right.ino
+    && left.birthtimeMs === right.birthtimeMs);
+}
+
+async function readBytes(target, io, revalidate) {
   let fd;
   try {
     const before = io.statSync(target.real);
     if (!before.isFile()) return failure('not-file');
     if (before.size > MAX_BYTES) return failure('too-large');
-    fd = io.openSync(target.real, 'r');
+    const readFlags = io.constants && Number.isInteger(io.constants.O_NOFOLLOW)
+      ? io.constants.O_RDONLY | io.constants.O_NOFOLLOW
+      : 'r';
+    fd = io.openSync(target.real, readFlags);
     const opened = io.fstatSync(fd);
     if (!opened.isFile()) return failure('not-file');
     if (opened.size > MAX_BYTES) return failure('too-large');
+    if (!sameFileIdentity(before, opened)) return failure('unreadable');
+    if (revalidate) {
+      const current = await revalidate();
+      if (!current || current.error) return failure(current?.error || 'unreadable');
+      if (!sameResolvedTarget(target, current)) return failure('unreadable');
+    }
+    const after = io.statSync(target.real);
+    if (!after.isFile() || !sameFileIdentity(opened, after)) return failure('unreadable');
 
     const chunks = [];
     let total = 0;
@@ -77,9 +93,9 @@ function readBytes(target, io) {
   }
 }
 
-function readDocument(target, options = {}) {
+async function readDocument(target, options = {}) {
   const io = options.fs || fs;
-  const snapshot = readBytes(target, io);
+  const snapshot = await readBytes(target, io, options.revalidate);
   if (!snapshot.ok) return snapshot;
   const decoded = decode(snapshot.bytes);
   if (!decoded.ok) return decoded;
@@ -130,7 +146,7 @@ async function writeDocument(target, request, options = {}) {
   try {
     const firstTarget = await revalidate();
     if (!firstTarget || firstTarget.error) return failure(firstTarget?.error || 'unreadable');
-    const current = readBytes(firstTarget, io);
+    const current = await readBytes(firstTarget, io, revalidate);
     if (!current.ok) return current;
     const currentDecoded = decode(current.bytes);
     if (!currentDecoded.ok) return currentDecoded;
@@ -140,8 +156,9 @@ async function writeDocument(target, request, options = {}) {
     const encoded = encode(request.content, currentDecoded.format);
     if (!encoded.ok) return encoded;
 
-    temp = tempPath(firstTarget);
-    fd = io.openSync(temp, 'wx', current.mode & 0o7777);
+    const candidate = tempPath(firstTarget);
+    fd = io.openSync(candidate, 'wx', current.mode & 0o7777);
+    temp = candidate;
     io.fchmodSync(fd, current.mode & 0o7777);
     writeAll(io, fd, encoded.bytes);
     io.fsyncSync(fd);
@@ -153,7 +170,7 @@ async function writeDocument(target, request, options = {}) {
     const finalTarget = await revalidate();
     if (!finalTarget || finalTarget.error) return failure(finalTarget?.error || 'unreadable');
     if (!sameResolvedTarget(firstTarget, finalTarget)) return failure('conflict');
-    const finalSnapshot = readBytes(finalTarget, io);
+    const finalSnapshot = await readBytes(finalTarget, io, revalidate);
     if (!finalSnapshot.ok) return finalSnapshot;
     const finalDecoded = decode(finalSnapshot.bytes);
     if (!finalDecoded.ok) return finalDecoded;
