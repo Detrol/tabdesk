@@ -855,6 +855,12 @@ function createProjectFiles(options = {}) {
     if (resolved.error) return { ok: false, error: resolved.error };
     return writeDocument(resolved.target, request, {
       fs: io,
+      root: {
+        real: resolved.selected.real,
+        dev: resolved.selected.root.dev,
+        ino: resolved.selected.root.ino,
+        birthtimeMs: resolved.selected.root.birthtimeMs,
+      },
       beforeReplace: options.beforeReplace,
       revalidate: async () => {
         const current = await resolveDocumentRequest(request.projectId, request.rootId, parts);

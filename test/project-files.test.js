@@ -40,6 +40,11 @@ function documentTemps(directory) {
   return fs.readdirSync(directory).filter((name) => name.includes('.tabdesk-'));
 }
 
+function isExclusiveCreate(flags) {
+  return flags === 'wx' || (Number.isInteger(flags)
+    && Boolean(flags & fs.constants.O_CREAT) && Boolean(flags & fs.constants.O_EXCL));
+}
+
 async function admittedFiles(project, options) {
   const files = createProjectFiles(options);
   files.admitProject(project, 'configured');
@@ -151,6 +156,28 @@ function forceKillTestProcess(child, descendantPid) {
   }
   try { child?.kill('SIGKILL'); } catch (_) {}
   try { if (processExists(descendantPid)) process.kill(descendantPid, 'SIGKILL'); } catch (_) {}
+}
+
+function collectBoundedChild(child, milliseconds = 500) {
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      forceKillTestProcess(child);
+    }, milliseconds);
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('close', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr, timedOut });
+    });
+  });
 }
 
 function fakeGitProcess({ code = 0, stdout = '', stderr = '', stdoutChunks, stderrChunks } = {}) {
@@ -1953,6 +1980,55 @@ test('rejects invalid UTF-8, NUL data, non-files, oversized files, and deleted f
   assert.deepEqual(await files.read({ ...ids, path: 'deleted.txt' }), { ok: false, error: 'deleted' });
 });
 
+test('a regular-file-to-FIFO read race returns without blocking the main process', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'racing.txt');
+  fs.writeFileSync(target, 'regular bytes');
+  const childScript = `
+    const fs = require('fs');
+    const { execFileSync } = require('child_process');
+    const { readDocument } = require(process.argv[1]);
+    const target = process.argv[2];
+    let swap = true;
+    const io = new Proxy(fs, {
+      get(source, property) {
+        if (property === 'statSync') {
+          return (value, options) => {
+            const stats = source.statSync(value, options);
+            if (swap && value === target) {
+              swap = false;
+              source.unlinkSync(target);
+              execFileSync('mkfifo', [target]);
+            }
+            return stats;
+          };
+        }
+        return source[property];
+      },
+    });
+    readDocument({ real: target }, { fs: io })
+      .then((result) => process.stdout.write(JSON.stringify(result)))
+      .catch((error) => { process.stderr.write(error.stack); process.exitCode = 1; });
+  `;
+  const child = spawn(process.execPath, [
+    '-e', childScript, path.join(__dirname, '..', 'project-files', 'document.js'), target,
+  ], {
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let childClosed = false;
+  child.once('close', () => { childClosed = true; });
+  t.after(() => { if (!childClosed) forceKillTestProcess(child); });
+
+  const outcome = await collectBoundedChild(child);
+  assert.equal(outcome.timedOut, false, `read blocked on the raced FIFO: ${outcome.stderr}`);
+  assert.equal(outcome.code, 0, outcome.stderr);
+  assert.deepEqual(JSON.parse(outcome.stdout), { ok: false, error: 'not-file' });
+});
+
 test('maps file access denial to permission-denied without exposing system errors', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -2096,7 +2172,7 @@ test('cleans the exact temporary file when fsync fails', async (t) => {
       if (property === 'openSync') {
         return (value, flags, mode) => {
           const fd = source.openSync(value, flags, mode);
-          if (flags === 'wx') tempFd = fd;
+          if (isExclusiveCreate(flags)) tempFd = fd;
           return fd;
         };
       }
@@ -2286,6 +2362,217 @@ test('uses descriptor identity binding for the initial write snapshot', async (t
   assert.deepEqual(documentTemps(fx.project), []);
 });
 
+test('never writes editor bytes through an ancestor retargeted just before temp creation', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const ancestor = path.join(fx.project, 'ancestor');
+  const displaced = path.join(fx.project, 'displaced-ancestor');
+  const parent = path.join(ancestor, 'parent');
+  const target = path.join(parent, 'inside.txt');
+  const outsideAncestor = path.join(fx.base, 'outside-ancestor');
+  const outsideParent = path.join(outsideAncestor, 'parent');
+  fs.mkdirSync(parent, { recursive: true });
+  fs.mkdirSync(outsideParent, { recursive: true });
+  fs.writeFileSync(target, 'inside bytes');
+  fs.writeFileSync(path.join(outsideParent, 'inside.txt'), 'outside bytes');
+  let swapped = false;
+  let outsideFd;
+  const outsideWrites = [];
+  const io = new Proxy(fs, {
+    get(source, property) {
+      if (property === 'openSync') {
+        return (value, flags, mode) => {
+          if (!swapped && isExclusiveCreate(flags)) {
+            source.renameSync(ancestor, displaced);
+            source.symlinkSync(outsideAncestor, ancestor, 'dir');
+            swapped = true;
+          }
+          const fd = source.openSync(value, flags, mode);
+          if (isExclusiveCreate(flags)) {
+            const opened = source.realpathSync(`/proc/self/fd/${fd}`);
+            if (opened === outsideAncestor || opened.startsWith(`${outsideAncestor}${path.sep}`)) {
+              outsideFd = fd;
+            }
+          }
+          return fd;
+        };
+      }
+      if (property === 'writeSync') {
+        return (fd, buffer, offset, length, position) => {
+          if (fd === outsideFd) outsideWrites.push(Buffer.from(buffer.subarray(offset, offset + length)));
+          return source.writeSync(fd, buffer, offset, length, position);
+        };
+      }
+      return source[property];
+    },
+  });
+  const { files, ids } = await admittedFiles(fx.project, { fs: io });
+  const opened = await files.read({ ...ids, path: 'ancestor/parent/inside.txt' });
+
+  const result = await files.write({
+    ...ids, path: 'ancestor/parent/inside.txt', content: 'editor bytes',
+    expectedRevision: opened.revision, overwrite: false,
+  });
+  assert.equal(swapped, true);
+  assert.equal(result.ok, false);
+  assert.equal(Buffer.concat(outsideWrites).length, 0);
+  assert.equal(fs.readFileSync(path.join(displaced, 'parent', 'inside.txt'), 'utf8'), 'inside bytes');
+  assert.equal(fs.readFileSync(path.join(outsideParent, 'inside.txt'), 'utf8'), 'outside bytes');
+  assert.deepEqual(documentTemps(outsideParent), []);
+});
+
+test('fails before temp creation when procfs descriptor paths are unavailable', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'procfs.txt');
+  fs.writeFileSync(target, 'original');
+  let blocked = false;
+  let tempCreates = 0;
+  const io = new Proxy(fs, {
+    get(source, property) {
+      const original = source[property];
+      if (!['lstatSync', 'openSync', 'readlinkSync', 'realpathSync', 'statSync'].includes(property)) {
+        return original;
+      }
+      return (value, ...args) => {
+        if (blocked && typeof value === 'string' && value.startsWith('/proc/self/fd/')) {
+          throw Object.assign(new Error('fixture procfs unavailable'), { code: 'EACCES' });
+        }
+        if (property === 'openSync' && isExclusiveCreate(args[0])) tempCreates += 1;
+        return original(value, ...args);
+      };
+    },
+  });
+  const { files, ids } = await admittedFiles(fx.project, { fs: io });
+  const opened = await files.read({ ...ids, path: 'procfs.txt' });
+  blocked = true;
+
+  const result = await files.write({
+    ...ids, path: 'procfs.txt', content: 'editor bytes',
+    expectedRevision: opened.revision, overwrite: false,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(tempCreates, 0);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('fails before temp creation when the target reports a different device', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'mounted.txt');
+  fs.writeFileSync(target, 'original');
+  let tempCreates = 0;
+  const otherDevice = (stats) => new Proxy(stats, {
+    get(value, property) {
+      if (property === 'dev') return value.dev + 1;
+      const member = value[property];
+      return typeof member === 'function' ? member.bind(value) : member;
+    },
+  });
+  const io = new Proxy(fs, {
+    get(source, property) {
+      if (property === 'statSync') {
+        return (value, options) => {
+          const stats = source.statSync(value, options);
+          return value === target ? otherDevice(stats) : stats;
+        };
+      }
+      if (property === 'fstatSync') {
+        return (fd, options) => {
+          const stats = source.fstatSync(fd, options);
+          return source.realpathSync(`/proc/self/fd/${fd}`) === target ? otherDevice(stats) : stats;
+        };
+      }
+      if (property === 'openSync') {
+        return (value, flags, mode) => {
+          if (isExclusiveCreate(flags)) tempCreates += 1;
+          return source.openSync(value, flags, mode);
+        };
+      }
+      return source[property];
+    },
+  });
+  const { files, ids } = await admittedFiles(fx.project, { fs: io });
+  const opened = await files.read({ ...ids, path: 'mounted.txt' });
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'mounted.txt', content: 'editor bytes',
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'write-failed' });
+  assert.equal(tempCreates, 0);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('cleans its exact temp when the descriptor-bound rename reports EXDEV', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'cross-device.txt');
+  fs.writeFileSync(target, 'original');
+  const io = new Proxy(fs, {
+    get(source, property) {
+      if (property === 'renameSync') {
+        return (from, to) => {
+          if (typeof from === 'string' && from.startsWith('/proc/self/fd/')) {
+            throw Object.assign(new Error('fixture cross-device rename'), { code: 'EXDEV' });
+          }
+          return source.renameSync(from, to);
+        };
+      }
+      return source[property];
+    },
+  });
+  const { files, ids } = await admittedFiles(fx.project, { fs: io });
+  const opened = await files.read({ ...ids, path: 'cross-device.txt' });
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'cross-device.txt', content: 'editor bytes',
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'write-failed' });
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('cleans its temp when the target parent is moved before replacement', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const parent = path.join(fx.project, 'parent');
+  const movedParent = path.join(fx.project, 'moved-parent');
+  const target = path.join(parent, 'inside.txt');
+  fs.mkdirSync(parent);
+  fs.writeFileSync(target, 'original');
+  const { files, ids } = await admittedFiles(fx.project, {
+    beforeReplace() {
+      fs.renameSync(parent, movedParent);
+      fs.mkdirSync(parent);
+      fs.writeFileSync(target, 'replacement');
+    },
+  });
+  const opened = await files.read({ ...ids, path: 'parent/inside.txt' });
+
+  const result = await files.write({
+    ...ids, path: 'parent/inside.txt', content: 'editor bytes',
+    expectedRevision: opened.revision, overwrite: false,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'replacement');
+  assert.equal(fs.readFileSync(path.join(movedParent, 'inside.txt'), 'utf8'), 'original');
+  assert.deepEqual(documentTemps(fx.project), []);
+  assert.deepEqual(documentTemps(parent), []);
+  assert.deepEqual(documentTemps(movedParent), []);
+});
+
 test('never cleans a wx collision path that the write does not own', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -2296,9 +2583,9 @@ test('never cleans a wx collision path that the write does not own', async (t) =
     get(source, property) {
       if (property === 'openSync') {
         return (value, flags, mode) => {
-          if (flags === 'wx') {
-            sentinel = value;
-            source.writeFileSync(sentinel, 'sentinel bytes');
+          if (isExclusiveCreate(flags)) {
+            sentinel = path.join(source.realpathSync(path.dirname(value)), path.basename(value));
+            source.writeFileSync(value, 'sentinel bytes');
           }
           return source.openSync(value, flags, mode);
         };
