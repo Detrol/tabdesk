@@ -155,13 +155,17 @@ function forgetTab(session) {
   return sessionRegistry.forget(session);
 }
 
-function killTmuxSession(id) {
-  const session = tmuxSessions.get(id);
-  tmuxSessions.delete(id);
+function killTmuxSessionByName(session) {
   if (!session) return;
   forgetTab(session);
   // `=` pins an exact-name match; already-gone sessions are fine.
   try { execFile('tmux', ['kill-session', '-t', '=' + session], () => {}); } catch (_) {}
+}
+
+function killTmuxSession(id) {
+  const session = tmuxSessions.get(id);
+  tmuxSessions.delete(id);
+  killTmuxSessionByName(session);
 }
 
 // Session names currently spoken for: the registry plus whatever tmux itself
@@ -228,14 +232,40 @@ const terminals = new Map();
 const pendingStarts = { term: new WeakMap(), embed: new WeakMap() };
 let pendingStartGeneration = 0;
 
-function beginPendingStart(backend, sender, id) {
+function releasePendingStartSession(token, { killTmux = false } = {}) {
+  if (!token?.session || token.sessionReleased) return;
+  token.sessionReleased = true;
+  if (killTmux) killTmuxSessionByName(token.session);
+  else forgetTab(token.session);
+}
+
+function beginPendingStart(backend, sender, id, session) {
   let byId = pendingStarts[backend].get(sender);
   if (!byId) {
     byId = new Map();
     pendingStarts[backend].set(sender, byId);
   }
-  const token = { backend, sender, id, generation: ++pendingStartGeneration };
+  const previous = byId.get(id);
+  const token = {
+    backend,
+    sender,
+    id,
+    session: session || null,
+    sessionReleased: false,
+    generation: ++pendingStartGeneration,
+    predecessorStart: null,
+    resourceStart: null,
+  };
   byId.set(id, token);
+  if (previous) {
+    if (previous.session !== token.session) {
+      releasePendingStartSession(previous, { killTmux: true });
+    }
+    if (backend === 'embed') {
+      token.predecessorStart = previous.resourceStart || previous.predecessorStart;
+      try { termEmbed.kill(id); } catch (_) { /* absent or already gone */ }
+    }
+  }
   return token;
 }
 
@@ -260,9 +290,11 @@ function finishPendingStart(token) {
 function cancelPendingStart(backend, sender, id) {
   const starts = pendingStarts[backend];
   const byId = starts.get(sender);
-  if (!byId) return;
+  if (!byId) return null;
+  const token = byId.get(id) || null;
   byId.delete(id);
   if (!byId.size) starts.delete(sender);
+  return token;
 }
 
 function cancelPendingStarts(sender) {
@@ -969,7 +1001,12 @@ app.whenReady().then(async () => {
   // rest of the tree is still material the agent will read and act on, so the
   // same question is asked here as before Run and Preview.
   ipcMain.on('embed:create', async (event, { id, cwd, startCmd, agent, session, name }) => {
-    const pending = beginPendingStart('embed', event.sender, id);
+    const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
+    const pending = beginPendingStart('embed', event.sender, id, wrapped.session);
+    if (pending.predecessorStart) {
+      try { await pending.predecessorStart; } catch (_) { /* replacement owns cleanup */ }
+      if (!pendingStartCurrent(pending)) return;
+    }
     if (cwd) {
       const allowed = await allowRun(BrowserWindow.fromWebContents(event.sender), cwd, 'terminal');
       if (!pendingStartCurrent(pending)) return;
@@ -979,7 +1016,6 @@ app.whenReady().then(async () => {
         return;
       }
     }
-    const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
     if (wrapped.session) {
       const owned = await sessionOwnership.rememberCurrent({
         session: wrapped.session, cwd, agent, name,
@@ -991,9 +1027,22 @@ app.whenReady().then(async () => {
         return;
       }
     }
+    try {
+      pending.resourceStart = Promise.resolve(termEmbed.create(id, {
+        cwd,
+        startCmd: wrapped.cmd,
+      }));
+      await pending.resourceStart;
+    } catch (_) {
+      if (!finishPendingStart(pending)) return;
+      try { termEmbed.kill(id); } catch (_) { /* partial resource is best effort */ }
+      releasePendingStartSession(pending);
+      if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+      return;
+    }
+    if (!pendingStartCurrent(pending)) return;
     if (!finishPendingStart(pending)) return;
     if (wrapped.session) tmuxSessions.set(id, wrapped.session);
-    termEmbed.create(id, { cwd, startCmd: wrapped.cmd });
   });
   ipcMain.on('embed:place', (event, { id, rect }) => termEmbed.place(id, rect));
   ipcMain.on('embed:hide', (event, { id }) => termEmbed.hide(id));
@@ -1004,7 +1053,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('embed:insert', (event, { id, text }) =>
     termEmbed.insert(id, String(text || '')));
   ipcMain.on('embed:kill', (event, { id }) => {
-    cancelPendingStart('embed', event.sender, id);
+    const pending = cancelPendingStart('embed', event.sender, id);
+    releasePendingStartSession(pending, { killTmux: true });
     termEmbed.kill(id);
     killTmuxSession(id);
   });
@@ -1979,7 +2029,8 @@ app.whenReady().then(async () => {
 
   ipcMain.on('term:create', async (event, { id, cols, rows, cwd, startCmd, agent, session, name }) => {
     if (terminals.has(id)) return;
-    const pending = beginPendingStart('term', event.sender, id);
+    const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
+    const pending = beginPendingStart('term', event.sender, id, wrapped.session);
     // Same gate as the embedded backend — this path is only taken when native
     // embedding is off, and it starts the same agent in the same directory.
     if (cwd) {
@@ -1996,7 +2047,6 @@ app.whenReady().then(async () => {
       : (process.env.SHELL || '/bin/bash');
 
     const startDir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
-    const wrapped = wrapStartCmd(startCmd, cwd, agent, session);
     if (wrapped.session) {
       const owned = await sessionOwnership.rememberCurrent({
         session: wrapped.session, cwd, agent, name,
@@ -2008,37 +2058,47 @@ app.whenReady().then(async () => {
         return;
       }
     }
-    if (!finishPendingStart(pending)) return;
-    const term = pty.spawn(shell, [], {
-      name: 'xterm-256color',
-      cols: cols || 80,
-      rows: rows || 24,
-      cwd: startDir,
-      env: process.env,
-    });
-
+    let term = null;
+    try {
+      term = pty.spawn(shell, [], {
+        name: 'xterm-256color',
+        cols: cols || 80,
+        rows: rows || 24,
+        cwd: startDir,
+        env: process.env,
+      });
+      term.onData((data) => {
+        if (!win.isDestroyed()) win.webContents.send(`term:data:${id}`, data);
+      });
+      term.onExit(() => {
+        terminals.delete(id);
+        // The session ended with the agent (or the tab was closed) — unless the
+        // main window has committed its close, in which case it is still waiting.
+        if (shutdownLifecycle.shouldForgetSession()) forgetTab(tmuxSessions.get(id));
+        tmuxSessions.delete(id);
+        if (!win.isDestroyed()) win.webContents.send(`term:exit:${id}`);
+      });
+    } catch (_) {
+      const owned = finishPendingStart(pending);
+      if (term) {
+        try { term.kill(); } catch (_) { /* partial resource is best effort */ }
+      }
+      if (!owned) return;
+      releasePendingStartSession(pending);
+      if (!win.isDestroyed()) win.webContents.send('term:declined', { id });
+      return;
+    }
+    if (!pendingStartCurrent(pending) || !finishPendingStart(pending)) {
+      try { term.kill(); } catch (_) { /* canceled before registration */ }
+      return;
+    }
     // Auto-run the tab's command — the tmux attach for session tabs, a plain
     // command for the update installer, nothing at all for ad-hoc shells.
-    if (wrapped.session) {
-      tmuxSessions.set(id, wrapped.session);
-    }
+    if (wrapped.session) tmuxSessions.set(id, wrapped.session);
+    terminals.set(id, term);
     if (wrapped.cmd) {
       setTimeout(() => { try { term.write(wrapped.cmd + '\r'); } catch (_) {} }, 350);
     }
-
-    term.onData((data) => {
-      if (!win.isDestroyed()) win.webContents.send(`term:data:${id}`, data);
-    });
-    term.onExit(() => {
-      terminals.delete(id);
-      // The session ended with the agent (or the tab was closed) — unless the
-      // main window has committed its close, in which case it is still waiting.
-      if (shutdownLifecycle.shouldForgetSession()) forgetTab(tmuxSessions.get(id));
-      tmuxSessions.delete(id);
-      if (!win.isDestroyed()) win.webContents.send(`term:exit:${id}`);
-    });
-
-    terminals.set(id, term);
   });
 
   ipcMain.on('term:input', (event, { id, data }) => {
@@ -2054,7 +2114,8 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.on('term:kill', (event, { id }) => {
-    cancelPendingStart('term', event.sender, id);
+    const pending = cancelPendingStart('term', event.sender, id);
+    releasePendingStartSession(pending, { killTmux: true });
     const term = terminals.get(id);
     if (term) {
       term.kill();
