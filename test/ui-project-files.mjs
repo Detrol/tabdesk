@@ -3,7 +3,6 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,6 +10,8 @@ const require = createRequire(import.meta.url);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const electron = require('electron');
 const STEP_TIMEOUT = 10_000;
+const WORKTREE_FILE = 'src/worktree-only.js';
+const WORKTREE_CONTENT = 'export const worktreeIdentity = "ui-worktree-only";\n';
 
 function ok(label) {
   console.log(`  ok   ${label}`);
@@ -19,6 +20,55 @@ function ok(label) {
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function assertDirectTmpFixture(fixture) {
+  assert.equal(path.dirname(fixture), '/tmp');
+  assert.match(path.basename(fixture), /^tabdesk-files-ui-[^/]+$/);
+}
+
+function assertDeletedConflict(snapshot, expectedContent) {
+  assert.equal(snapshot.content, expectedContent);
+  assert.deepEqual(snapshot.buttons, [{ label: snapshot.copyLabel, disabled: false }]);
+  assert(!snapshot.buttons.some(({ label }) => label === snapshot.overwriteLabel));
+}
+
+function assertWorktreeIdentity(snapshot) {
+  assert.equal(snapshot.rootDisabled, false);
+  assert.equal(snapshot.path, 'src/worktree-only.js');
+  assert.equal(snapshot.content, 'export const worktreeIdentity = "ui-worktree-only";');
+}
+
+function mutationRed(label, runMutation) {
+  assert.throws(runMutation, assert.AssertionError);
+  ok(`mutation RED: ${label}`);
+}
+
+mutationRed('a generic src snapshot cannot prove a worktree switch', () => {
+  assertWorktreeIdentity({
+    rootDisabled: false,
+    path: 'src/note.js',
+    content: 'export const shared = true;',
+  });
+});
+mutationRed('blank deleted-conflict content is rejected', () => {
+  assertDeletedConflict({
+    content: '',
+    buttons: [{ label: 'Copy', disabled: false }],
+    copyLabel: 'Copy',
+    overwriteLabel: 'Overwrite',
+  }, 'const localDeleted = true;');
+});
+mutationRed('an Overwrite-only deleted conflict is rejected', () => {
+  assertDeletedConflict({
+    content: 'const localDeleted = true;',
+    buttons: [{ label: 'Overwrite', disabled: false }],
+    copyLabel: 'Copy',
+    overwriteLabel: 'Overwrite',
+  }, 'const localDeleted = true;');
+});
+mutationRed('a fixture outside direct /tmp is rejected', () => {
+  assertDirectTmpFixture('/var/tmp/tabdesk-files-ui-mutant');
+});
 
 function run(file, args, cwd) {
   const result = spawnSync(file, args, { cwd, encoding: 'utf8' });
@@ -132,7 +182,8 @@ function childExit(child, timeout) {
 }
 
 async function main() {
-  const fixture = await mkdtemp(path.join(tmpdir(), 'tabdesk-files-ui-'));
+  const fixture = await mkdtemp('/tmp/tabdesk-files-ui-');
+  assertDirectTmpFixture(fixture);
   const profile = path.join(fixture, 'profile');
   const tmux = path.join(fixture, 'tmux');
   const projects = path.join(fixture, 'projects');
@@ -173,9 +224,16 @@ async function main() {
     run('git', ['add', 'src/note.js', '.gitignore', '.dotfile'], project);
     run('git', ['commit', '-m', 'fixture'], project);
     run('git', ['worktree', 'add', '-b', 'ui-worktree', worktree], project);
+    await writeFile(path.join(worktree, WORKTREE_FILE), WORKTREE_CONTENT);
+    run('git', ['add', WORKTREE_FILE], worktree);
+    run('git', ['commit', '-m', 'worktree identity'], worktree);
+    await assert.rejects(
+      readFile(path.join(project, WORKTREE_FILE), 'utf8'),
+      (error) => error?.code === 'ENOENT',
+    );
     await mkdir(path.join(project, '.worktrees', 'fake-directory'));
     await writeFile(path.join(project, 'ignored.log'), 'ignored fixture\n');
-    ok('created one isolated Git fixture with a real worktree');
+    ok('created one isolated Git fixture with a unique committed worktree file');
 
     const port = await freePort();
     child = spawn(electron, [
@@ -378,18 +436,23 @@ async function main() {
     await evaluate("document.querySelector('.cm-content').focus()");
     await cdp.send('Input.insertText', { text: '\nconst localDeleted = true;' });
     await waitFor("!document.querySelector('.files-save')?.disabled", 'dirty state before deletion');
+    const localDeleted = await evaluate("document.querySelector('.cm-content').textContent");
     await unlink(note);
-    await waitFor("!document.querySelector('.files-conflict')?.classList.contains('hidden') && document.querySelectorAll('.files-conflict button').length === 1", 'deleted conflict controls');
-    assert.equal(await evaluate("document.querySelector('.files-conflict button')?.textContent.length > 0"), true);
+    const deletedConflict = await waitFor("(() => { const panel = document.querySelector('.files-conflict'); if (!panel || panel.classList.contains('hidden')) return false; return { content: document.querySelector('.cm-content')?.textContent || '', buttons: [...panel.querySelectorAll('button')].map((button) => ({ label: button.textContent, disabled: button.disabled })), copyLabel: window.t('files.copy'), overwriteLabel: window.t('files.overwrite') }; })()", 'deleted conflict controls');
+    assertDeletedConflict(deletedConflict, localDeleted);
     ok('deleted dirty conflict preserves local text and offers no Overwrite');
 
-    await confirmAction(
-      () => evaluate("(() => { const select = document.querySelector('.files-root'); const option = [...select.options].find((item) => item.textContent === 'ui-worktree'); select.value = option.value; select.dispatchEvent(new Event('change', { bubbles: true })); return true; })()"),
-      true,
-      'root switch discard',
-    );
+    const rootControl = await evaluate("(() => { const select = document.querySelector('.files-root'); return select ? { exists: true, disabled: select.disabled, selected: select.selectedOptions[0]?.textContent } : { exists: false }; })()");
+    assert.deepEqual(rootControl, { exists: true, disabled: false, selected: 'project' });
+    assert.equal(await evaluate("(() => { const select = document.querySelector('.files-root'); select.focus(); return document.activeElement === select; })()"), true);
+    await confirmAction(() => key('ArrowDown', 'ArrowDown'), true, 'root switch discard');
     await waitFor("document.querySelector('.files-root')?.selectedOptions[0]?.textContent === 'ui-worktree' && [...document.querySelectorAll('.files-tree [role=treeitem]')].some((el) => el.dataset.path === 'src') && !document.querySelector('.files-path')?.textContent.includes('note.js')", 'worktree tree rebuild');
-    ok('verified worktree switch rebuilds the tree after the dirty guard');
+    await click(srcSelector, 'worktree src directory');
+    await waitFor(`[...document.querySelectorAll('.files-tree [role=treeitem]')].some((el) => el.dataset.path === ${JSON.stringify(WORKTREE_FILE)})`, 'worktree-only tree item');
+    await click(`[...document.querySelectorAll('.files-tree [role=treeitem]')].find((el) => el.dataset.path === ${JSON.stringify(WORKTREE_FILE)})`, 'worktree-only file');
+    const worktreeSnapshot = await waitFor(`(() => { const path = document.querySelector('.files-path')?.textContent; const content = document.querySelector('.cm-content')?.textContent; return path === ${JSON.stringify(WORKTREE_FILE)} && content === 'export const worktreeIdentity = "ui-worktree-only";' ? { rootDisabled: document.querySelector('.files-root').disabled, path, content } : false; })()`, 'worktree-only document');
+    assertWorktreeIdentity(worktreeSnapshot);
+    ok('verified worktree switch opens its unique committed file');
 
     const colors = await evaluate("(() => { const probe = document.createElement('span'); const faintProbe = document.createElement('span'); probe.style.cssText = 'position:fixed;visibility:hidden;color:var(--text);background:var(--surface);border-left:1px solid var(--line)'; faintProbe.style.cssText = 'position:fixed;visibility:hidden;color:var(--faint)'; document.body.append(probe, faintProbe); const expected = getComputedStyle(probe); const editor = getComputedStyle(document.querySelector('.cm-editor')); const gutters = getComputedStyle(document.querySelector('.cm-gutters')); const value = { editorColor: editor.color, text: expected.color, editorBackground: editor.backgroundColor, surface: expected.backgroundColor, gutterColor: gutters.color, faint: getComputedStyle(faintProbe).color, gutterBorder: gutters.borderRightColor, line: expected.borderLeftColor }; probe.remove(); faintProbe.remove(); return value; })()");
     assert.equal(colors.editorColor, colors.text);
