@@ -296,6 +296,8 @@ html, body {
   flex: 1 1 auto;
   min-width: 0;
   position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background:
     linear-gradient(180deg, var(--tint), transparent 30%),
@@ -383,8 +385,9 @@ html, body {
 
 /* Grid of visible panels (1–6). Hidden panels are display:none. */
 #panels {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  grid-row: 2;
+  min-height: 0;
   display: grid;
   gap: 8px;
   padding: 8px;
@@ -460,24 +463,20 @@ html, body {
 
 /* ---- Session strip: the selected project's sessions, above the panels ---- */
 #strip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 38px;
+  position: relative;
+  grid-row: 1;
+  min-height: 38px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 0 8px;
+  padding: 5px 8px 6px;
   border-bottom: 1px solid var(--line-soft);
   background: linear-gradient(180deg, var(--tint), transparent);
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   z-index: 30;
 }
 #strip.hidden { display: none; }
-/* The panels start below the strip whenever there is one. */
-#content:has(#strip:not(.hidden)) #panels { top: 38px; }
 
 .stab {
   position: relative;

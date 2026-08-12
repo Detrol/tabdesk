@@ -460,18 +460,6 @@ function shownIds() {
   return window.TabDeskNavigation.shownTerminalIds(terminalSelection());
 }
 
-// A pinned panel can belong to a project other than the strip currently in
-// front. Only reveal tabs that are actually in this strip; clicking such a
-// panel must not switch the selected project just to move its tab into view.
-function revealClippedStripTab(id) {
-  const t = tabs.get(id);
-  if (!t || t.projectCwd !== activeCwd || !strip.contains(t.tabEl)) return;
-  const tabRect = t.tabEl.getBoundingClientRect();
-  const stripRect = strip.getBoundingClientRect();
-  const tabVisible = tabRect.left >= stripRect.left && tabRect.right <= stripRect.right;
-  if (!tabVisible) t.tabEl.scrollIntoView({ block: 'nearest', inline: 'center' });
-}
-
 function leaveFiles() {
   if (!filesCwd) return true;
   if (!fileView.canLeave()) return false;
@@ -506,7 +494,6 @@ function setActive(id, { skipFileGuard = false, navigationToken = null } = {}) {
   const p = projects.get(t.projectCwd);
   if (p) p.lastId = id;                  // where this project reopens next time
   applyLayout();
-  revealClippedStripTab(id);
   for (const vid of shownIds()) fitSoon(vid);
   scheduleSync();
   // The dock is fixed and does not belong to any one tab, so switching projects
@@ -532,7 +519,6 @@ function focusVisibleTerminal(id) {
   navigation.next();
   activeId = id;
   applyLayout();
-  revealClippedStripTab(id);
   syncTray();
   return true;
 }
