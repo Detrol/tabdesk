@@ -121,6 +121,7 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('projects:root-leave-request', onDecision);
     ipcRenderer.on('projects:root-transition-abort', onAbort);
+    ipcRenderer.send('projects:root-leave-ready');
     return () => {
       ipcRenderer.removeListener('projects:root-leave-request', onDecision);
       ipcRenderer.removeListener('projects:root-transition-abort', onAbort);

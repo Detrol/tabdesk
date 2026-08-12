@@ -380,6 +380,16 @@ test('a clean ignored file survives hiding ignored tree entries', () => {
   assert.equal(ignored.ignored, true);
 });
 
+test('ignore metadata can change without changing document bytes or edit state', () => {
+  const dirty = State.reduce(opened, { type: 'edit', content: 'local\n' });
+  const updated = State.reduce(dirty, { type: 'metadata', ignored: true });
+
+  assert.equal(updated.status, 'dirty');
+  assert.equal(updated.content, 'local\n');
+  assert.equal(updated.revision, opened.revision);
+  assert.equal(updated.ignored, true);
+});
+
 test('verified write snapshot updates the disk base while preserving a later local edit', () => {
   const firstEdit = State.reduce(opened, { type: 'edit', content: 'saved\n' });
   const laterEdit = State.reduce(firstEdit, { type: 'edit', content: 'newer\n' });

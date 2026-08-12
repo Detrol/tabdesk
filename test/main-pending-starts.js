@@ -156,7 +156,7 @@ require.cache[projectFilesPath].exports = {
       describeWorktreeCalls += 1;
       return describeWorktrees(...args);
     };
-    for (const method of ['openProject', 'list', 'read', 'write']) {
+    for (const method of ['openProject', 'list', 'read', 'write', 'watch']) {
       const invoke = projectFiles[method];
       projectFiles[method] = async (...args) => {
         if (nextFileOperationFailure) {
@@ -979,6 +979,36 @@ async function run() {
   check('project-file IPC releases capacity after failure',
     failedFileOperation.includes('injected file operation failure') && afterFailure?.ok === true,
     JSON.stringify({ failedFileOperation, afterFailure }));
+
+  const watchRoot = afterFailure.roots[0];
+  delayFileOperations = true;
+  await sender.executeJavaScript(`
+    window.__tabdeskWatchOperations = Array.from({ length: 4 }, () =>
+      window.api.watchProjectFiles({
+        projectId: ${JSON.stringify(afterFailure.projectId)},
+        rootId: ${JSON.stringify(watchRoot.id)},
+      }));
+    true;
+  `);
+  await waitFor(() => fileOperationGates
+    .filter((gate) => gate.method === 'watch' && !gate.settled).length === 4,
+  'four active watcher operations');
+  const busyWatch = await sender.executeJavaScript(`
+    window.api.watchProjectFiles({
+      projectId: ${JSON.stringify(afterFailure.projectId)},
+      rootId: ${JSON.stringify(watchRoot.id)},
+    });
+  `);
+  check('watch IPC shares the four-operation sender limit',
+    busyWatch?.ok === false && busyWatch?.error === 'busy', JSON.stringify(busyWatch));
+  for (const gate of fileOperationGates
+    .filter((candidate) => candidate.method === 'watch' && !candidate.settled)) gate.release();
+  const completedWatches = await sender.executeJavaScript(
+    'Promise.all(window.__tabdeskWatchOperations)');
+  check('bounded watcher operations settle and can be released',
+    completedWatches.length === 4, JSON.stringify(completedWatches));
+  await sender.executeJavaScript('window.api.unwatchProjectFiles()');
+  delayFileOperations = false;
 
   console.log('== bounded session restore ==');
   const priorRecords = records().map((record) => ({ ...record }));

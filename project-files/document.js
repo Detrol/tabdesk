@@ -267,7 +267,7 @@ async function writeDocument(target, request, options = {}) {
       firstTarget, rootDirectory, parentDirectory, io, revalidate, 'unreadable',
     );
     if (!beforeTemp.ok) return beforeTemp;
-    const candidate = path.join(rootDirectory.descriptorPath, tempName(firstTarget));
+    const candidate = path.join(parentDirectory.descriptorPath, tempName(firstTarget));
     tempFd = io.openSync(candidate, tempFlags(io), 0o600);
     temp = candidate;
     const tempStats = io.fstatSync(tempFd);

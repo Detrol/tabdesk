@@ -4,6 +4,7 @@ const crypto = require('crypto');
 
 const ROOT_LEAVE_REQUEST = 'projects:root-leave-request';
 const ROOT_LEAVE_RESPONSE = 'projects:root-leave-response';
+const ROOT_LEAVE_READY = 'projects:root-leave-ready';
 const ROOT_TRANSITION_ABORT = 'projects:root-transition-abort';
 
 function createShutdownLifecycle() {
@@ -27,6 +28,37 @@ function createRendererLeaveGate({
   makeToken = () => crypto.randomUUID(),
 } = {}) {
   let active = null;
+  const readySenders = new WeakSet();
+  const readinessListeners = new Map();
+
+  function untrackReadySender(sender) {
+    readySenders.delete(sender);
+    const listeners = readinessListeners.get(sender);
+    if (!listeners) return;
+    sender.removeListener('did-start-navigation', listeners.onNavigation);
+    sender.removeListener('render-process-gone', listeners.onRenderProcessGone);
+    sender.removeListener('destroyed', listeners.onDestroyed);
+    readinessListeners.delete(sender);
+  }
+
+  function onReady(event) {
+    const sender = event?.sender;
+    if (!sender || typeof sender.on !== 'function' || sender.isDestroyed()) return;
+    if (!readinessListeners.has(sender)) {
+      const listeners = {
+        onNavigation(details = {}) {
+          if (details.isMainFrame && !details.isSameDocument) readySenders.delete(sender);
+        },
+        onRenderProcessGone() { readySenders.delete(sender); },
+        onDestroyed() { untrackReadySender(sender); },
+      };
+      readinessListeners.set(sender, listeners);
+      sender.on('did-start-navigation', listeners.onNavigation);
+      sender.on('render-process-gone', listeners.onRenderProcessGone);
+      sender.once('destroyed', listeners.onDestroyed);
+    }
+    readySenders.add(sender);
+  }
 
   function clearTimer(request) {
     clearTimeout(request.timer);
@@ -146,6 +178,13 @@ function createRendererLeaveGate({
       fail(request, { ok: false, canceled: true, error: 'canceled' });
       return;
     }
+    if (request.decisionOnly) {
+      active = null;
+      clearTimer(request);
+      detach(request);
+      request.resolve({ ok: true });
+      return;
+    }
     request.phase = 'committing';
     let result;
     try {
@@ -192,16 +231,18 @@ function createRendererLeaveGate({
   }
 
   ipcMain.on(ROOT_LEAVE_RESPONSE, onResponse);
+  ipcMain.on(ROOT_LEAVE_READY, onReady);
 
   function run(sender, {
     ownerWindow = null,
     commit,
     rollback = () => ({ ok: true }),
     finalize = () => {},
+    decisionOnly = false,
   } = {}) {
     if (active) return Promise.resolve({ ok: false, error: 'root-change-in-progress' });
     if (!sender || sender.isDestroyed() || typeof sender.getURL !== 'function'
-      || typeof sender.reload !== 'function' || typeof commit !== 'function') {
+      || typeof sender.reload !== 'function' || (!decisionOnly && typeof commit !== 'function')) {
       return Promise.resolve({ ok: false, error: 'renderer-unavailable' });
     }
     const token = makeToken();
@@ -213,6 +254,7 @@ function createRendererLeaveGate({
         commit,
         rollback,
         finalize,
+        decisionOnly,
         resolve,
         phase: 'decision',
         committed: false,
@@ -330,12 +372,93 @@ function createRendererLeaveGate({
 
   return {
     run,
+    isReady(sender) {
+      return Boolean(sender && !sender.isDestroyed() && readySenders.has(sender));
+    },
+    decide(sender) {
+      if (!sender || sender.isDestroyed() || !readySenders.has(sender)) {
+        return Promise.resolve({ ok: false, error: 'renderer-unavailable' });
+      }
+      return run(sender, { decisionOnly: true });
+    },
     close() {
       if (active) {
         if (active.unloadAllowed) beginForcedClose(active);
         else fail(active, { ok: false, error: 'gate-closed' });
       }
       ipcMain.removeListener(ROOT_LEAVE_RESPONSE, onResponse);
+      ipcMain.removeListener(ROOT_LEAVE_READY, onReady);
+      for (const trackedSender of readinessListeners.keys()) untrackReadySender(trackedSender);
+    },
+  };
+}
+
+function createWindowLeaveGuard({ leaveGate } = {}) {
+  if (!leaveGate || typeof leaveGate.decide !== 'function'
+    || typeof leaveGate.isReady !== 'function') {
+    throw new TypeError('leaveGate is required');
+  }
+  let owner = null;
+  let sender = null;
+  let allowing = false;
+  let pending = null;
+
+  async function requestClose(action) {
+    if (pending) return { ok: false, error: 'root-change-in-progress' };
+    pending = Promise.resolve(leaveGate.decide(sender));
+    let result;
+    try {
+      result = await pending;
+    } finally {
+      pending = null;
+    }
+    if (!result?.ok) return result || { ok: false, error: 'renderer-unavailable' };
+    allowing = true;
+    try {
+      action();
+    } catch (_) {
+      allowing = false;
+      return { ok: false, error: 'renderer-unavailable' };
+    }
+    return { ok: true };
+  }
+
+  function onClose(event) {
+    if (allowing || !leaveGate.isReady(sender)) return;
+    event.preventDefault();
+    requestClose(() => owner.close()).catch(() => {});
+  }
+
+  function onPreventUnload(event) {
+    if (allowing) {
+      allowing = false;
+      event.preventDefault();
+      return;
+    }
+    if (!leaveGate.isReady(sender)) return;
+    requestClose(() => sender.reload()).catch(() => {});
+  }
+
+  return {
+    observe(window) {
+      if (owner) throw new Error('window leave guard already observed');
+      owner = window;
+      sender = window.webContents;
+      owner.on('close', onClose);
+      sender.on('will-prevent-unload', onPreventUnload);
+    },
+    requestClose(action) {
+      if (!owner || !sender || owner.isDestroyed() || sender.isDestroyed()) {
+        return Promise.resolve({ ok: false, error: 'renderer-unavailable' });
+      }
+      return requestClose(action);
+    },
+    close() {
+      if (owner) owner.removeListener('close', onClose);
+      if (sender) sender.removeListener('will-prevent-unload', onPreventUnload);
+      owner = null;
+      sender = null;
+      allowing = false;
     },
   };
 }
@@ -384,6 +507,7 @@ function createRootTransitionFinalizer({
 module.exports = {
   commitRootTransition,
   createRendererLeaveGate,
+  createWindowLeaveGuard,
   createRootTransitionFinalizer,
   createShutdownLifecycle,
   rollbackRootTransition,

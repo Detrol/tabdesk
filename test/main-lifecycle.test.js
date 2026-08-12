@@ -471,6 +471,157 @@ function createGate(harness, tokens = ['leave-token'], timeouts = {}) {
   });
 }
 
+function guardedWindow(harness, gate, { ready = true } = {}) {
+  const window = new EventEmitter();
+  let destroyed = false;
+  let closes = 0;
+  window.webContents = harness.sender;
+  window.isDestroyed = () => destroyed;
+  window.close = () => {
+    closes += 1;
+    const event = {
+      prevented: false,
+      preventDefault() { this.prevented = true; },
+    };
+    window.emit('close', event);
+    if (!event.prevented) {
+      destroyed = true;
+      window.emit('closed');
+    }
+  };
+  const guard = lifecycle.createWindowLeaveGuard({ leaveGate: gate });
+  guard.observe(window);
+  if (ready) {
+    harness.ipcMain.emit('projects:root-leave-ready', { sender: harness.sender });
+  }
+  return { window, guard, closes: () => closes, destroyed: () => destroyed };
+}
+
+test('a renderer that has not installed the leave listener cannot trap window close', async () => {
+  assert.equal(typeof lifecycle.createWindowLeaveGuard, 'function');
+  const harness = leaveHarness({ decision: 'pending' });
+  const gate = createGate(harness);
+  const guarded = guardedWindow(harness, gate, { ready: false });
+
+  guarded.window.close();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(guarded.closes(), 1);
+  assert.equal(guarded.destroyed(), true);
+  assert.equal(harness.sent.length, 0);
+  guarded.guard.close();
+  gate.close();
+});
+
+test('a crashed renderer cannot retain stale leave readiness and trap close', async () => {
+  assert.equal(typeof lifecycle.createWindowLeaveGuard, 'function');
+  const harness = leaveHarness({ decision: 'pending' });
+  const gate = createGate(harness);
+  const guarded = guardedWindow(harness, gate);
+  harness.sender.emit('render-process-gone');
+
+  guarded.window.close();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(guarded.closes(), 1);
+  assert.equal(guarded.destroyed(), true);
+  assert.equal(harness.sent.length, 0);
+  guarded.guard.close();
+  gate.close();
+});
+
+test('a renderer crash during a pending close leaves the next close unguarded', async () => {
+  assert.equal(typeof lifecycle.createWindowLeaveGuard, 'function');
+  const harness = leaveHarness({ decision: 'pending' });
+  const gate = createGate(harness);
+  const guarded = guardedWindow(harness, gate);
+
+  guarded.window.close();
+  harness.sender.emit('render-process-gone');
+  guarded.window.close();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(guarded.closes(), 2);
+  assert.equal(guarded.destroyed(), true);
+  assert.equal(harness.sent.filter(({ channel }) => (
+    channel === 'projects:root-leave-request')).length, 1);
+  guarded.guard.close();
+  gate.close();
+});
+
+test('normal window close asks once and closes only after approval', async () => {
+  assert.equal(typeof lifecycle.createWindowLeaveGuard, 'function');
+  const harness = leaveHarness();
+  const gate = createGate(harness);
+  const guarded = guardedWindow(harness, gate);
+
+  guarded.window.close();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(guarded.closes(), 2);
+  assert.equal(guarded.destroyed(), true);
+  assert.equal(harness.reloads(), 0);
+  guarded.guard.close();
+  gate.close();
+});
+
+test('canceling the normal window close keeps the renderer alive', async () => {
+  assert.equal(typeof lifecycle.createWindowLeaveGuard, 'function');
+  const harness = leaveHarness({ decision: 'cancel' });
+  const gate = createGate(harness);
+  const guarded = guardedWindow(harness, gate);
+
+  guarded.window.close();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(guarded.closes(), 1);
+  assert.equal(guarded.destroyed(), false);
+  guarded.guard.close();
+  gate.close();
+});
+
+test('ordinary dirty reload is reissued only after approval', async () => {
+  assert.equal(typeof lifecycle.createWindowLeaveGuard, 'function');
+  const harness = leaveHarness({ navigation: 'none' });
+  const gate = createGate(harness);
+  const guarded = guardedWindow(harness, gate);
+  let allowed = 0;
+
+  harness.sender.emit('will-prevent-unload', {
+    preventDefault() { allowed += 100; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.reloads(), 1);
+  assert.equal(harness.allowedUnloads(), 1);
+  assert.equal(allowed, 0);
+  guarded.guard.close();
+  gate.close();
+});
+
+test('restart side effects run only after the leave decision is approved', async () => {
+  assert.equal(typeof lifecycle.createWindowLeaveGuard, 'function');
+  const approvedHarness = leaveHarness();
+  const approvedGate = createGate(approvedHarness);
+  const approved = guardedWindow(approvedHarness, approvedGate);
+  const effects = [];
+  const approvedResult = await approved.guard.requestClose(() => effects.push('restart'));
+  assert.deepEqual(approvedResult, { ok: true });
+  assert.deepEqual(effects, ['restart']);
+  approved.guard.close();
+  approvedGate.close();
+
+  const canceledHarness = leaveHarness({ decision: 'cancel' });
+  const canceledGate = createGate(canceledHarness);
+  const canceled = guardedWindow(canceledHarness, canceledGate);
+  const canceledEffects = [];
+  const canceledResult = await canceled.guard.requestClose(() => canceledEffects.push('restart'));
+  assert.equal(canceledResult.canceled, true);
+  assert.deepEqual(canceledEffects, []);
+  canceled.guard.close();
+  canceledGate.close();
+});
+
 test('approved root change persists before its main-owned reload and finalizes on that navigation', async () => {
   assert.equal(typeof lifecycle.createRendererLeaveGate, 'function');
   const harness = leaveHarness();
@@ -743,6 +894,19 @@ test('preload exposes no renderer-controlled projects root setter', () => {
   assert.equal(api.setProjectsRoot, undefined);
 });
 
+test('preload announces leave-listener readiness only after installing the listener', () => {
+  const { api, ipcRenderer, sent } = loadPreloadApi();
+  assert.equal(ipcRenderer.listenerCount('projects:root-leave-request'), 0);
+
+  const unsubscribe = api.onProjectsRootLeaveRequested(() => true);
+
+  assert.equal(ipcRenderer.listenerCount('projects:root-leave-request'), 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{
+    channel: 'projects:root-leave-ready',
+  }]);
+  unsubscribe();
+});
+
 test('preload answers root leave requests through one semantic callback', async () => {
   const { api, ipcRenderer, sent } = loadPreloadApi();
   assert.equal(typeof api.onProjectsRootLeaveRequested, 'function');
@@ -757,10 +921,13 @@ test('preload answers root leave requests through one semantic callback', async 
   unsubscribe();
 
   assert.deepEqual(decisions, ['asked']);
-  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{
-    channel: 'projects:root-leave-response',
-    payload: { token: 'renderer-token', approved: false },
-  }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [
+    { channel: 'projects:root-leave-ready' },
+    {
+      channel: 'projects:root-leave-response',
+      payload: { token: 'renderer-token', approved: false },
+    },
+  ]);
   assert.equal(ipcRenderer.listenerCount('projects:root-leave-request'), 0);
 });
 
@@ -771,10 +938,13 @@ test('preload exposes only the semantic root leave decision, never an unload per
   ipcRenderer.emit('projects:root-leave-request', {}, { token: 'decision-token' });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{
-    channel: 'projects:root-leave-response',
-    payload: { token: 'decision-token', approved: true },
-  }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [
+    { channel: 'projects:root-leave-ready' },
+    {
+      channel: 'projects:root-leave-response',
+      payload: { token: 'decision-token', approved: true },
+    },
+  ]);
   assert.equal(ipcRenderer.listenerCount('projects:root-unload-permit'), 0);
   unsubscribe();
 });
@@ -789,7 +959,7 @@ test('preload abort suppresses a late leave decision', async () => {
   resolveDecision(true);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(sent, []);
+  assert.deepEqual(sent, [{ channel: 'projects:root-leave-ready', payload: undefined }]);
   unsubscribe();
 });
 

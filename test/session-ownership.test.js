@@ -190,7 +190,7 @@ test('an oversized session registry is quarantined without mutation', () => {
   assert.equal(cache, initial);
 });
 
-test('legacy relationship work and the whole restore share hard bounds', async () => {
+test('restores 17 unrelated legacy sessions without quadratic relationship work', async () => {
   const records = Array.from({ length: 17 }, (_, index) => ({
     session: `td-codex-${index}`,
     cwd: `/project/${index}`,
@@ -200,8 +200,16 @@ test('legacy relationship work and the whole restore share hard bounds', async (
   let writes = 0;
   const projectFiles = {
     async resolveOwner() { probes += 1; return { ok: false, error: 'project-unavailable' }; },
-    async verifySelectionOwner() { probes += 1; return { ok: false, error: 'project-unavailable' }; },
-    async restoreSelection() { admissions += 1; return { ok: false, error: 'project-unavailable' }; },
+    async verifySelectionOwner(candidate, selected) {
+      probes += 1;
+      return candidate === selected
+        ? { ok: true, projectPath: candidate, selectedPath: selected }
+        : { ok: false, error: 'project-unavailable' };
+    },
+    async restoreSelection(candidate, selected) {
+      admissions += 1;
+      return { ok: true, projectPath: candidate, selectedPath: selected };
+    },
     replaceAdmissions() {},
   };
   const ownership = createSessionOwnership({
@@ -210,13 +218,20 @@ test('legacy relationship work and the whole restore share hard bounds', async (
     forget() { return true; },
   });
 
-  assert.deepEqual(await ownership.restore(records, {
+  const restored = await ownership.restore(records, {
     persistedSessions: new Set(records.map(({ session }) => session)),
-  }), []);
-  assert.equal(probes, 0);
-  assert.equal(admissions, 0);
-  assert.equal(writes, 0);
+  });
+  assert.deepEqual(restored.map(({ session }) => session), records.map(({ session }) => session));
+  assert.equal(probes, 34);
+  assert.equal(admissions, 17);
+  assert.equal(writes, 17);
+});
 
+test('legacy restore shares one absolute deadline across ownership and admission work', async () => {
+  const record = { session: 'td-codex-deadline', cwd: '/project/deadline' };
+  let probes = 0;
+  let admissions = 0;
+  let writes = 0;
   let now = 10;
   let operation;
   const deadlineFiles = {
@@ -236,8 +251,8 @@ test('legacy relationship work and the whole restore share hard bounds', async (
     now: () => now,
     restoreTimeoutMs: 25,
   });
-  assert.deepEqual(await deadlineOwnership.restore([records[0]], {
-    persistedSessions: new Set([records[0].session]),
+  assert.deepEqual(await deadlineOwnership.restore([record], {
+    persistedSessions: new Set([record.session]),
   }), []);
   assert.equal(operation.deadline, 35);
   assert.equal(admissions, 0);

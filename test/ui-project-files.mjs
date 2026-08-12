@@ -182,6 +182,33 @@ function childExit(child, timeout) {
   });
 }
 
+async function stopIsolatedTmux(tmuxRoot) {
+  const socket = path.join(tmuxRoot, `tmux-${process.getuid()}`, 'default');
+  const environment = isolatedTmuxEnvironment(process.env, tmuxRoot);
+  const query = spawnSync('tmux', ['-S', socket, 'display-message', '-p', '#{pid}'], {
+    encoding: 'utf8',
+    env: environment,
+  });
+  if (query.status !== 0) return null;
+  const text = String(query.stdout || '').trim();
+  assert.match(text, /^\d+$/);
+  const pid = Number(text);
+  const processEnvironment = (await readFile(`/proc/${pid}/environ`))
+    .toString('utf8').split('\0');
+  assert(processEnvironment.includes(`TMUX_TMPDIR=${tmuxRoot}`),
+    `refusing to stop tmux PID ${pid} outside ${tmuxRoot}`);
+  process.kill(pid, 'SIGTERM');
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0); } catch (error) {
+      if (error?.code === 'ESRCH') return pid;
+      throw error;
+    }
+    await delay(25);
+  }
+  throw new Error(`isolated tmux PID ${pid} did not exit after SIGTERM`);
+}
+
 async function main() {
   const fixture = await mkdtemp('/tmp/tabdesk-files-ui-');
   assertDirectTmpFixture(fixture);
@@ -246,7 +273,6 @@ async function main() {
       env: {
         ...isolatedTmuxEnvironment(process.env, tmux),
         TABDESK_PROJECTS_DIR: projects,
-        TABDESK_START_CMD: 'exec bash --noprofile --norc',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -454,6 +480,23 @@ async function main() {
     assertWorktreeIdentity(worktreeSnapshot);
     ok('verified worktree switch opens its unique committed file');
 
+    await cdp.send('Page.reload');
+    await waitFor("document.readyState === 'complete' && document.querySelector('.tab.project')", 'isolated renderer reload');
+    try {
+      await waitFor("[...document.querySelectorAll('.stab:not(.ov):not(.files):not(.add)')].some((el) => el.querySelector('.label')?.textContent.includes('Terminal'))", 'restored Terminal after renderer reload');
+    } catch (error) {
+      const snapshot = await evaluate("({ strip: [...document.querySelectorAll('.stab')].map((el) => el.textContent), projects: [...document.querySelectorAll('.tab.project')].map((el) => el.title), overview: document.querySelector('.overview.shown h2')?.textContent || null })");
+      error.message += `: ${JSON.stringify(snapshot)}`;
+      throw error;
+    }
+    ok('isolated renderer reload reapplies the UI and preserves its terminal session');
+
+    await click(`document.querySelectorAll('.tab.project') && [...document.querySelectorAll('.tab.project')].find((el) => el.title.split(String.fromCharCode(10)).at(-1) === ${projectLiteral})`, 'fixture project after reload');
+    await click("document.querySelector('.stab.files')", 'Files tab after reload');
+    await waitFor("[...document.querySelectorAll('.files-tree [role=treeitem]')].some((el) => el.dataset.path === '.dotfile')", 'dotfile after reload');
+    await click("[...document.querySelectorAll('.files-tree [role=treeitem]')].find((el) => el.dataset.path === '.dotfile')", 'dotfile after reload');
+    await waitFor("document.querySelector('.files-path')?.textContent === '.dotfile' && document.querySelector('.cm-editor') && document.querySelector('.cm-gutters')", 'editor after reload');
+
     const colors = await evaluate("(() => { const probe = document.createElement('span'); const faintProbe = document.createElement('span'); probe.style.cssText = 'position:fixed;visibility:hidden;color:var(--text);background:var(--surface);border-left:1px solid var(--line)'; faintProbe.style.cssText = 'position:fixed;visibility:hidden;color:var(--faint)'; document.body.append(probe, faintProbe); const expected = getComputedStyle(probe); const editor = getComputedStyle(document.querySelector('.cm-editor')); const gutters = getComputedStyle(document.querySelector('.cm-gutters')); const value = { editorColor: editor.color, text: expected.color, editorBackground: editor.backgroundColor, surface: expected.backgroundColor, gutterColor: gutters.color, faint: getComputedStyle(faintProbe).color, gutterBorder: gutters.borderRightColor, line: expected.borderLeftColor }; probe.remove(); faintProbe.remove(); return value; })()");
     assert.equal(colors.editorColor, colors.text);
     assert.equal(colors.editorBackground, colors.surface);
@@ -474,6 +517,8 @@ async function main() {
   } finally {
     try { await closeChild(); } finally {
       try { cdp?.close(); } catch { /* already closed */ }
+      const tmuxPid = await stopIsolatedTmux(tmux);
+      if (tmuxPid) console.log(`  ok   stopped exact isolated tmux PID ${tmuxPid}`);
       await rm(fixture, { recursive: true, force: true });
       console.log(`  ok   removed exact fixture ${fixture}`);
     }

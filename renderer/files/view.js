@@ -797,7 +797,12 @@ export function createFileView({
       } else setViewMessage(result && result.error);
       return;
     }
-    if (result.revision === documentState.revision) return;
+    if (result.revision === documentState.revision) {
+      if (result.ignored !== documentState.ignored) {
+        dispatch({ type: 'metadata', ignored: result.ignored });
+      }
+      return;
+    }
     if (documentState.status === 'clean') {
       const selection = editor.getSelection();
       dispatch({

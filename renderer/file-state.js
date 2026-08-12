@@ -134,6 +134,10 @@
         return state;
       }
 
+      case 'metadata':
+        if (!['clean', 'dirty', 'conflict'].includes(state.status)) return state;
+        return { ...state, ignored: Boolean(event.ignored) };
+
       case 'reload-success':
         if (!['clean', 'dirty', 'conflict', 'deleted', 'error'].includes(state.status)) return state;
         return withStatus(state, 'clean', {

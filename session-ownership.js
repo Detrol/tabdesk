@@ -1,9 +1,22 @@
+const path = require('path');
+
 const SESSION_RECORD_LIMIT = 64;
 const TMUX_ROW_LIMIT = 256;
 const LEGACY_RELATIONSHIP_LIMIT = 256;
 const RESTORE_TIMEOUT_MS = 10_000;
 const TMUX_LIST_TIMEOUT_MS = 5_000;
 const TMUX_LIST_MAX_BUFFER = 1024 * 1024;
+
+function isConventionWorktreePath(projectPath, selectedPath) {
+  if (typeof projectPath !== 'string' || typeof selectedPath !== 'string') return false;
+  const relative = path.relative(projectPath, selectedPath);
+  if (!relative || path.isAbsolute(relative) || relative === '..'
+    || relative.startsWith(`..${path.sep}`)) return false;
+  const parts = relative.split(path.sep);
+  return (parts.length === 2 && parts[0] === '.worktrees' && Boolean(parts[1]))
+    || (parts.length === 3 && parts[0] === '.claude'
+      && parts[1] === 'worktrees' && Boolean(parts[2]));
+}
 
 function classifyTmuxSessionList(error, stdout, stderr) {
   const output = typeof stdout === 'string' ? stdout : String(stdout || '');
@@ -222,17 +235,12 @@ function createSessionOwnership({
       .sort((left, right) => left.localeCompare(right));
     const discoveredOwners = new Map();
     const relationshipVerificationFailures = new Set();
-    if (legacyPaths.length * Math.max(0, legacyPaths.length - 1)
-      > maxLegacyRelationshipProbes) {
-      const restored = [...restoredByIndex.entries()]
-        .sort(([left], [right]) => left - right)
-        .map(([, record]) => record);
-      projectFiles.replaceAdmissions('restored', restored.map(({ projectPath }) => projectPath));
-      return restored;
-    }
+    let relationshipProbes = 0;
     for (const parentPath of legacyPaths) {
       for (const childPath of legacyPaths) {
-        if (parentPath === childPath) continue;
+        if (parentPath === childPath || !isConventionWorktreePath(parentPath, childPath)) continue;
+        relationshipProbes += 1;
+        if (relationshipProbes > maxLegacyRelationshipProbes) return abort();
         if (expired()) return abort();
         let relationship;
         try {

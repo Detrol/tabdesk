@@ -51,6 +51,7 @@ const {
   createRendererLeaveGate,
   createRootTransitionFinalizer,
   createShutdownLifecycle,
+  createWindowLeaveGuard,
   rollbackRootTransition,
 } = require('./main-lifecycle');
 
@@ -68,6 +69,7 @@ const sessionOwnership = createSessionOwnership({
 const listTmuxSessions = createTmuxSessionLister({ execFile });
 const shutdownLifecycle = createShutdownLifecycle();
 const rendererLeaveGate = createRendererLeaveGate({ ipcMain });
+const windowLeaveGuard = createWindowLeaveGuard({ leaveGate: rendererLeaveGate });
 
 // Where the rail's projects live — the user's stored choice, resolved (and
 // changeable) through projects-root.js. Null until first run has picked one.
@@ -422,6 +424,7 @@ function createWindow() {
   // beforeunload guard. `closed` cannot, so only that phase may switch terminal
   // exits from natural cleanup to shutdown preservation.
   shutdownLifecycle.observeMainWindow(win);
+  windowLeaveGuard.observe(win);
 
   // webviewTag is on for the preview dock, and a <webview> brings its own
   // webPreferences with it. That makes "can attach a webview" the same thing as
@@ -1618,9 +1621,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('project-files:write', (event, args) =>
     runProjectFileRequest(event, () => projectFiles.write(args)));
   ipcMain.handle('project-files:watch', (event, args) =>
-    projectFiles.watch(event.sender.id, args, (change) => {
+    runProjectFileRequest(event, () => projectFiles.watch(event.sender.id, args, (change) => {
       if (!event.sender.isDestroyed()) event.sender.send('project-files:changed', change);
-    }));
+    })));
   ipcMain.handle('project-files:unwatch', (event) => {
     projectFiles.unwatch(event.sender.id);
     return { ok: true };
@@ -2011,11 +2014,10 @@ app.whenReady().then(async () => {
     return { ok: true };
   });
 
-  ipcMain.handle('update:restart', () => {
+  ipcMain.handle('update:restart', () => windowLeaveGuard.requestClose(() => {
     app.relaunch();
     app.quit();
-    return true;
-  });
+  }).then((result) => result.ok));
 
   // First check once the window has settled, then on a slow timer.
   const firstCheck = setTimeout(() => checkForUpdate(win), 8000);
@@ -2335,6 +2337,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('will-quit', () => {
+  windowLeaveGuard.close();
   rendererLeaveGate.close();
   projectFiles.close();
 });

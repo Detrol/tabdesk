@@ -926,6 +926,21 @@ test('Git ignore rules also hide broken and external symlink entries', async (t)
   assert.equal(shown.entries.find(({ name }) => name === 'broken-link').ignored, true);
 });
 
+test('omits a symlink alias whose external target is Git metadata', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const other = path.join(fx.base, 'other');
+  fs.mkdirSync(other);
+  gitProject(other);
+  fs.symlinkSync(path.join(other, '.git'), path.join(fx.project, 'metadata-link'), 'dir');
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  const listed = await files.list({ ...ids, directory: '', showIgnored: true });
+  assert.equal(listed.entries.some(({ name }) => name === 'metadata-link'), false);
+});
+
 test('revalidates a symlink target on every listing call', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -2227,6 +2242,44 @@ test('atomically saves exact bytes while retaining mode, BOM, CRLF, and final ne
   assert.deepEqual(documentTemps(fx.project), []);
 });
 
+test('creates a nested document temporary file through the target parent directory', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const nested = path.join(fx.project, 'restricted-parent');
+  fs.mkdirSync(nested);
+  const target = path.join(nested, 'note.txt');
+  fs.writeFileSync(target, 'before\n');
+  let temporaryParent;
+  const io = new Proxy(fs, {
+    get(source, property) {
+      if (property === 'openSync') {
+        return (value, flags, mode) => {
+          if (isExclusiveCreate(flags) && String(value).includes('.tabdesk-')) {
+            temporaryParent = source.realpathSync(path.dirname(value));
+          }
+          return source.openSync(value, flags, mode);
+        };
+      }
+      return source[property];
+    },
+  });
+  const { files, ids } = await admittedFiles(fx.project, { fs: io });
+  const opened = await files.read({ ...ids, path: 'restricted-parent/note.txt' });
+
+  const saved = await files.write({
+    ...ids,
+    path: 'restricted-parent/note.txt',
+    content: 'after\n',
+    expectedRevision: opened.revision,
+    overwrite: false,
+  });
+
+  assert.equal(saved.ok, true);
+  assert.equal(temporaryParent, nested);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'after\n');
+  assert.deepEqual(documentTemps(nested), []);
+});
+
 test('preserves a no-final-newline convention when editing inside the document', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -2989,6 +3042,57 @@ test('collapses more than 256 pending watcher paths into one root invalidation',
   assert.equal(scheduler.size, 1);
   scheduler.flush();
   assert.deepEqual(events, [{ ...ids, path: '', kind: 'tree-invalidated' }]);
+});
+
+test('rejects an over-budget watcher tree before starting Chokidar', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(path.join(fx.project, 'one.txt'), 'one');
+  fs.writeFileSync(path.join(fx.project, 'two.txt'), 'two');
+  fs.writeFileSync(path.join(fx.project, 'three.txt'), 'three');
+  let starts = 0;
+  const files = createProjectFiles({
+    watchMaxEntries: 2,
+    watchFactory() {
+      starts += 1;
+      return new FakeRootWatcher();
+    },
+  });
+  t.after(() => files.close());
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  assert.deepEqual(await files.watch('renderer-1', ids, () => {}), {
+    ok: false, error: 'watch-failed',
+  });
+  assert.equal(starts, 0);
+});
+
+test('closes an active watcher when runtime discovery exceeds its entry budget', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const watcher = new FakeRootWatcher();
+  let watchOptions;
+  const files = createProjectFiles({
+    watchMaxEntries: 2,
+    watchFactory(_root, options) {
+      watchOptions = options;
+      return watcher;
+    },
+  });
+  t.after(() => files.close());
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+  const events = [];
+  assert.deepEqual(await files.watch('renderer-1', ids, (event) => events.push(event)), {
+    ok: true,
+  });
+
+  assert.equal(watchOptions.ignored(path.join(fx.project, 'one.txt')), false);
+  assert.equal(watchOptions.ignored(path.join(fx.project, 'two.txt')), false);
+  assert.equal(watchOptions.ignored(path.join(fx.project, 'three.txt')), true);
+  assert.equal(watcher.closed, true);
+  assert.deepEqual(events, [{ ...ids, path: '', kind: 'watch-failed' }]);
 });
 
 test('watches and normalizes from the verified target of a symlink-spelled root', async (t) => {

@@ -461,6 +461,33 @@ app.on('ready', async () => {
       const removedAliasHasNoStaleReload = aliasLists === aliasListsAfterRemoval;
       await aliasView.destroy();
 
+      let ignoredMetadata = false;
+      const ignoredMetadataApi = makeFilesApi({
+        entries: [fileEntry('ignored-later.txt')],
+        read: async ({ path }) => ({
+          ok: true,
+          path,
+          content: 'unchanged',
+          revision: 'a'.repeat(64),
+          ignored: ignoredMetadata,
+        }),
+      });
+      const ignoredMetadataView = TabDeskFiles.createFileView({
+        api: ignoredMetadataApi, t: (key) => key,
+      });
+      document.querySelector('#test-root').append(ignoredMetadataView.element);
+      await ignoredMetadataView.activate('/ignored-metadata');
+      treeItem(ignoredMetadataView, 'ignored-later.txt').click();
+      await wait(20);
+      ignoredMetadata = true;
+      ignoredMetadataApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: '.gitignore', kind: 'changed',
+      });
+      await wait(20);
+      const ignoreOnlyHintUpdatesOpenStatus = ignoredMetadataView.element
+        .querySelector('.files-status').textContent.includes('files.ignored');
+      await ignoredMetadataView.destroy();
+
       const delayedB = deferred();
       const rootReads = [];
       let bLists = 0;
@@ -1241,6 +1268,7 @@ app.on('ready', async () => {
         pendingWatchAfterDestroyInert,
         canonicalStructuralHintRefreshesAlias,
         removedAliasHasNoStaleReload,
+        ignoreOnlyHintUpdatesOpenStatus,
         rootRaceSafe,
         becameDirty,
         rootLeaveCanceled,
@@ -1332,6 +1360,8 @@ app.on('ready', async () => {
     ok('canonical structural watcher hints refresh expanded symlink aliases',
       result.canonicalStructuralHintRefreshesAlias);
     ok('root rebuild drops detached alias directory records', result.removedAliasHasNoStaleReload);
+    ok('ignore-only watcher hints update the open document status',
+      result.ignoreOnlyHintUpdatesOpenStatus);
     ok('stale root-switch continuation cannot open the prior root lastFile', result.rootRaceSafe);
     ok('real editor input drives the file view dirty state', result.becameDirty);
     ok('root leave cancel and approval are non-mutating for the dirty buffer',

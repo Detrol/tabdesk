@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createRendererLeaveGate } = require('../main-lifecycle');
+const { createRendererLeaveGate, createWindowLeaveGuard } = require('../main-lifecycle');
 
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-root-reload-test-'));
 const FIXTURE = path.join(PROFILE, 'dirty.html');
@@ -24,16 +24,22 @@ app.whenReady().then(async () => {
   let interleavedWindow;
   let closeWindow;
   let crashWindow;
+  let guardedWindow;
   let gate;
   let interleavedGate;
   let closeGate;
   let crashGate;
+  let guardedGate;
+  let windowGuard;
   try {
     fs.writeFileSync(FIXTURE, `<!doctype html><meta charset="utf-8"><script>
       const { ipcRenderer } = require('electron');
       ipcRenderer.on('projects:root-leave-request', (_event, { token }) => {
-        ipcRenderer.send('projects:root-leave-response', { token, approved: true });
+        ipcRenderer.send('projects:root-leave-response', {
+          token, approved: window.__approveLeave !== false,
+        });
       });
+      ipcRenderer.send('projects:root-leave-ready');
       window.addEventListener('beforeunload', (event) => {
         event.preventDefault();
         event.returnValue = '';
@@ -230,6 +236,33 @@ app.whenReady().then(async () => {
         && closeWindow.isDestroyed()
         && closeEffects.join(',') === 'persist,finalize',
       JSON.stringify({ closeResult, closeEffects, closed, destroyed: closeWindow.isDestroyed() }));
+
+    guardedWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { contextIsolation: false, nodeIntegration: true },
+    });
+    await guardedWindow.loadFile(FIXTURE);
+    await guardedWindow.webContents.executeJavaScript('document.body.click(); true', true);
+    let ordinaryPrevented = 0;
+    guardedWindow.webContents.on('will-prevent-unload', () => { ordinaryPrevented += 1; });
+    guardedGate = createRendererLeaveGate({
+      ipcMain,
+      decisionTimeoutMs: 1000,
+      navigationTimeoutMs: 1000,
+      makeToken: () => 'ordinary-close-token',
+    });
+    windowGuard = createWindowLeaveGuard({ leaveGate: guardedGate });
+    windowGuard.observe(guardedWindow);
+    // The real gate exists before preload announces readiness. This focused
+    // harness creates its gate after load, so replay that already-observed
+    // lifecycle edge explicitly.
+    ipcMain.emit('projects:root-leave-ready', { sender: guardedWindow.webContents });
+    const ordinaryClosed = new Promise((resolve) => guardedWindow.once('closed', resolve));
+    guardedWindow.close();
+    await ordinaryClosed;
+    ok('ordinary real BrowserWindow close asks then permits exactly its approved unload',
+      guardedWindow.isDestroyed() && ordinaryPrevented === 1,
+      JSON.stringify({ destroyed: guardedWindow.isDestroyed(), ordinaryPrevented }));
   } catch (error) {
     failures += 1;
     console.error(error && error.stack ? error.stack : error);
@@ -238,10 +271,13 @@ app.whenReady().then(async () => {
     if (interleavedGate) interleavedGate.close();
     if (closeGate) closeGate.close();
     if (crashGate) crashGate.close();
+    if (windowGuard) windowGuard.close();
+    if (guardedGate) guardedGate.close();
     if (window && !window.isDestroyed()) window.destroy();
     if (interleavedWindow && !interleavedWindow.isDestroyed()) interleavedWindow.destroy();
     if (closeWindow && !closeWindow.isDestroyed()) closeWindow.destroy();
     if (crashWindow && !crashWindow.isDestroyed()) crashWindow.destroy();
+    if (guardedWindow && !guardedWindow.isDestroyed()) guardedWindow.destroy();
     try { fs.rmSync(PROFILE, { recursive: true, force: true }); } catch (_) { /* gone */ }
     app.exit(failures ? 1 : 0);
   }

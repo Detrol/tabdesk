@@ -768,8 +768,8 @@ function createProjectFiles(options = {}) {
       if (error && (error.code === 'EACCES' || error.code === 'EPERM')) return { error: denied };
       return { error: 'unreadable' };
     }
-    if (!contained(root.real, real)) return { error: 'outside-root' };
     if (hasGitComponent(root.real, real)) return { error: 'git-metadata-denied' };
+    if (!contained(root.real, real)) return { error: 'outside-root' };
     return { logical, real };
   }
 
@@ -838,6 +838,7 @@ function createProjectFiles(options = {}) {
       entry.unavailable = 'unreadable';
       return entry;
     }
+    if (hasGitComponent(root.real, real)) return null;
     if (!contained(root.real, real)) {
       try {
         const target = io.statSync(real);
@@ -848,7 +849,6 @@ function createProjectFiles(options = {}) {
       entry.unavailable = 'outside-root';
       return entry;
     }
-    if (hasGitComponent(root.real, real)) return null;
     try {
       const target = io.statSync(real);
       entry.kind = target.isDirectory() ? 'directory' : target.isFile() ? 'file' : 'other';
@@ -1019,7 +1019,8 @@ function createProjectFiles(options = {}) {
     if (active) active.watcher.close();
   }
 
-  async function watch(ownerId, request = {}, emit) {
+  async function watch(ownerId, request = {}, emit, operation) {
+    if (!operation) return withOperation((active) => watch(ownerId, request, emit, active));
     const owner = watcherOwner(ownerId);
     if (!owner || typeof emit !== 'function' || watchersClosed) {
       return { ok: false, error: 'watch-failed' };
@@ -1027,7 +1028,8 @@ function createProjectFiles(options = {}) {
     const token = ++owner.token;
     closeActive(owner);
 
-    const selected = await selectedRoot(request.projectId, request.rootId);
+    if (operationExpired(operation)) return { ok: false, error: 'operation-timeout' };
+    const selected = await selectedRoot(request.projectId, request.rootId, operation);
     if (owner.token !== token || watchersClosed) return { ok: false, error: 'watch-failed' };
     if (selected.error) return { ok: false, error: selected.error };
 
@@ -1044,14 +1046,18 @@ function createProjectFiles(options = {}) {
       watchFactory: options.watchFactory,
       scheduler: options.scheduler,
       debounceMs: options.watchDebounceMs,
+      maxEntries: options.watchMaxEntries,
+      maxDepth: options.watchMaxDepth,
     });
     if (!candidate.ok) return candidate;
 
-    const current = await selectedRoot(request.projectId, request.rootId);
-    if (owner.token !== token || watchersClosed || candidate.failed || current.error
+    const current = await selectedRoot(request.projectId, request.rootId, operation);
+    if (owner.token !== token || watchersClosed || operationExpired(operation)
+      || candidate.failed || current.error
       || current.root !== selected.root || current.real !== selected.real) {
       candidate.close();
-      return { ok: false, error: current.error || 'watch-failed' };
+      return { ok: false, error: current.error
+        || (operationExpired(operation) ? 'operation-timeout' : 'watch-failed') };
     }
 
     owner.active = {
