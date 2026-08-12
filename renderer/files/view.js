@@ -591,7 +591,9 @@ export function createFileView({
     const record = loadedDirectories.get(directory);
     if (!record) return;
     for (const [path] of [...loadedDirectories]) {
-      if (path === directory || path.startsWith(`${directory}/`)) loadedDirectories.delete(path);
+      if (!directory || path === directory || path.startsWith(`${directory}/`)) {
+        loadedDirectories.delete(path);
+      }
     }
     record.group.dataset.loaded = 'false';
     await loadDirectory(directory, record.group);
@@ -820,7 +822,9 @@ export function createFileView({
       setWatchFailed(true);
       return;
     }
-    const directory = parentPath(change.path || '');
+    const structural = change.kind === 'added' || change.kind === 'removed'
+      || change.kind === 'tree-invalidated';
+    const directory = structural ? '' : parentPath(change.path || '');
     if (loadedDirectories.has(directory)) await reloadDirectory(directory);
     if (pendingDocumentOperation && operationCurrent(pendingDocumentOperation)) {
       return;

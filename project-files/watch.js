@@ -9,6 +9,8 @@ const EVENT_KINDS = {
   addDir: 'tree-invalidated',
   unlinkDir: 'tree-invalidated',
 };
+const MAX_PENDING_PATHS = 256;
+const TEMPORARY_NAME = /^\.[\s\S]+\.tabdesk-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/i;
 
 function contained(root, target) {
   const relative = path.relative(root, target);
@@ -21,7 +23,7 @@ function hasGitComponent(root, target) {
 }
 
 function isTemporary(parts) {
-  return parts.some((part) => part.includes('.tabdesk-'));
+  return parts.some((part) => TEMPORARY_NAME.test(part));
 }
 
 function isLogicalRoot(root, value) {
@@ -90,6 +92,7 @@ async function createRootWatcher(root, emit, options = {}) {
   const listeners = [];
   let closed = false;
   let failed = false;
+  let collapsed = false;
 
   function send(event) {
     try {
@@ -133,18 +136,34 @@ async function createRootWatcher(root, emit, options = {}) {
       fail();
       return;
     }
+    const scheduleHint = (key, hint) => {
+      const previous = pending.get(key);
+      if (previous !== undefined) scheduler.clearTimeout(previous);
+      const timer = scheduler.setTimeout(() => {
+        pending.delete(key);
+        if (key === '') collapsed = false;
+        if (closed) return;
+        if (!sameRootIdentity(root, io)) {
+          fail();
+          return;
+        }
+        send(hint);
+      }, debounceMs);
+      pending.set(key, timer);
+    };
+    if (collapsed) {
+      scheduleHint('', { path: '', kind: 'tree-invalidated' });
+      return;
+    }
     const previous = pending.get(relative);
-    if (previous !== undefined) scheduler.clearTimeout(previous);
-    const timer = scheduler.setTimeout(() => {
-      pending.delete(relative);
-      if (closed) return;
-      if (!sameRootIdentity(root, io)) {
-        fail();
-        return;
-      }
-      send({ path: relative, kind: EVENT_KINDS[event] });
-    }, debounceMs);
-    pending.set(relative, timer);
+    if (previous === undefined && pending.size >= MAX_PENDING_PATHS) {
+      for (const timer of pending.values()) scheduler.clearTimeout(timer);
+      pending.clear();
+      collapsed = true;
+      scheduleHint('', { path: '', kind: 'tree-invalidated' });
+      return;
+    }
+    scheduleHint(relative, { path: relative, kind: EVENT_KINDS[event] });
   }
 
   for (const event of Object.keys(EVENT_KINDS)) {

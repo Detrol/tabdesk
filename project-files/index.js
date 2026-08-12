@@ -829,6 +829,8 @@ function createProjectFiles(options = {}) {
       symlink: link.isSymbolicLink(),
       unavailable: undefined,
     };
+    const directoryGitPath = relativeGitPath(root.real, directoryReal);
+    entry.gitPath = directoryGitPath ? `${directoryGitPath}/${name}` : name;
     let real;
     try {
       real = io.realpathSync(logical);
@@ -854,8 +856,6 @@ function createProjectFiles(options = {}) {
     } catch (_) {
       entry.unavailable = 'unreadable';
     }
-    const directoryGitPath = relativeGitPath(root.real, directoryReal);
-    entry.gitPath = directoryGitPath ? `${directoryGitPath}/${name}` : name;
     return entry;
   }
 

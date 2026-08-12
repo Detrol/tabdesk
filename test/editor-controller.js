@@ -420,6 +420,47 @@ app.on('ready', async () => {
       const pendingWatchAfterDestroyInert = !watchLifecycleView.element
         .querySelector('.files-status').textContent.includes('files.error.watch-failed');
 
+      let aliasEntries = [{
+        name: 'old.txt', path: 'alias/old.txt', kind: 'file', hidden: false,
+        ignored: false, symlink: false,
+      }];
+      let aliasVisible = true;
+      let aliasLists = 0;
+      const aliasApi = makeFilesApi({ read: async () => ({ ok: false, error: 'unreadable' }) });
+      aliasApi.listProjectFiles = async ({ directory }) => ({
+        ok: true,
+        entries: directory === '' && aliasVisible ? [{
+          name: 'alias', path: 'alias', kind: 'directory', hidden: false,
+          ignored: false, symlink: true,
+        }] : directory === 'alias' ? (aliasLists += 1, aliasEntries) : [],
+      });
+      const aliasView = TabDeskFiles.createFileView({ api: aliasApi, t: (key) => key });
+      document.querySelector('#test-root').append(aliasView.element);
+      await aliasView.activate('/alias-refresh');
+      treeItem(aliasView, 'alias').click();
+      await wait(20);
+      aliasEntries = [...aliasEntries, {
+        name: 'new.txt', path: 'alias/new.txt', kind: 'file', hidden: false,
+        ignored: false, symlink: false,
+      }];
+      aliasApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: 'target/new.txt', kind: 'added',
+      });
+      await wait(20);
+      const canonicalStructuralHintRefreshesAlias = Boolean(treeItem(aliasView, 'alias/new.txt'));
+      aliasVisible = false;
+      aliasApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: 'target', kind: 'removed',
+      });
+      await wait(20);
+      const aliasListsAfterRemoval = aliasLists;
+      aliasApi.emit({
+        projectId: 'project-a', rootId: 'root-a', path: 'alias/old.txt', kind: 'changed',
+      });
+      await wait(20);
+      const removedAliasHasNoStaleReload = aliasLists === aliasListsAfterRemoval;
+      await aliasView.destroy();
+
       const delayedB = deferred();
       const rootReads = [];
       let bLists = 0;
@@ -1198,6 +1239,8 @@ app.on('ready', async () => {
         pendingWatchAfterDeactivateInert,
         destroyClearsWarningImmediately,
         pendingWatchAfterDestroyInert,
+        canonicalStructuralHintRefreshesAlias,
+        removedAliasHasNoStaleReload,
         rootRaceSafe,
         becameDirty,
         rootLeaveCanceled,
@@ -1286,6 +1329,9 @@ app.on('ready', async () => {
     ok('destroy clears watcher warning before pending watcher work settles',
       result.destroyClearsWarningImmediately);
     ok('watch completion after destroy is inert', result.pendingWatchAfterDestroyInert);
+    ok('canonical structural watcher hints refresh expanded symlink aliases',
+      result.canonicalStructuralHintRefreshesAlias);
+    ok('root rebuild drops detached alias directory records', result.removedAliasHasNoStaleReload);
     ok('stale root-switch continuation cannot open the prior root lastFile', result.rootRaceSafe);
     ok('real editor input drives the file view dirty state', result.becameDirty);
     ok('root leave cancel and approval are non-mutating for the dirty buffer',

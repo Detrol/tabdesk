@@ -905,6 +905,27 @@ test('lists contained entries safely, omits Git metadata, and sorts directories 
   assert.equal((await files.list({ ...ids, directory: 'git-link' })).error, 'git-metadata-denied');
 });
 
+test('Git ignore rules also hide broken and external symlink entries', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const outside = path.join(fx.base, 'outside');
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, path.join(fx.project, 'external-link'), 'dir');
+  fs.symlinkSync('missing-target', path.join(fx.project, 'broken-link'));
+  fs.appendFileSync(path.join(fx.project, '.gitignore'), 'external-link\nbroken-link\n');
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  const hidden = await files.list({ ...ids, directory: '' });
+  assert.equal(hidden.entries.some(({ name }) => name === 'external-link'), false);
+  assert.equal(hidden.entries.some(({ name }) => name === 'broken-link'), false);
+  const shown = await files.list({ ...ids, directory: '', showIgnored: true });
+  assert.equal(shown.entries.find(({ name }) => name === 'external-link').ignored, true);
+  assert.equal(shown.entries.find(({ name }) => name === 'broken-link').ignored, true);
+});
+
 test('revalidates a symlink target on every listing call', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -2950,6 +2971,26 @@ test('coalesces file watcher hints into opaque relative events', async (t) => {
   assert.equal(events.every((event) => !path.isAbsolute(event.path)), true);
 });
 
+test('collapses more than 256 pending watcher paths into one root invalidation', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const scheduler = manualScheduler();
+  const watcher = new FakeRootWatcher();
+  const files = createProjectFiles({ watchFactory: () => watcher, scheduler });
+  t.after(() => files.close());
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+  const events = [];
+  await files.watch('renderer-1', ids, (event) => events.push(event));
+
+  for (let index = 0; index < 257; index++) {
+    watcher.emit('unlink', path.join(fx.project, `removed-${index}.txt`));
+  }
+  assert.equal(scheduler.size, 1);
+  scheduler.flush();
+  assert.deepEqual(events, [{ ...ids, path: '', kind: 'tree-invalidated' }]);
+});
+
 test('watches and normalizes from the verified target of a symlink-spelled root', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -3073,8 +3114,18 @@ test('normalizes directory hints and suppresses unsafe watcher paths', async (t)
   fs.writeFileSync(path.join(fx.project, '.git', 'config'), 'secret');
   fs.mkdirSync(path.join(fx.project, '.git-archive'));
   fs.writeFileSync(path.join(fx.project, '.git-archive', 'visible.txt'), 'visible');
-  const temp = path.join(fx.project, '.draft.txt.tabdesk-123.tmp');
+  const temp = path.join(
+    fx.project,
+    '.draft.txt.tabdesk-123e4567-e89b-12d3-a456-426614174000.tmp',
+  );
+  const legitimate = path.join(fx.project, 'notes.tabdesk-draft.md');
+  const newlineTemp = path.join(
+    fx.project,
+    '.line\nname.tabdesk-123e4567-e89b-12d3-a456-426614174000.tmp',
+  );
   fs.writeFileSync(temp, 'temporary');
+  fs.writeFileSync(legitimate, 'legitimate');
+  fs.writeFileSync(newlineTemp, 'temporary');
   const metadataAlias = path.join(fx.project, 'metadata-alias');
   fs.symlinkSync('.git', metadataAlias, 'dir');
   const outside = path.join(fx.base, 'outside.txt');
@@ -3085,6 +3136,8 @@ test('normalizes directory hints and suppresses unsafe watcher paths', async (t)
   assert.equal(watchOptions.ignored(metadataAlias), true);
   assert.equal(watchOptions.ignored(outside), true);
   assert.equal(watchOptions.ignored(temp), true);
+  assert.equal(watchOptions.ignored(newlineTemp), true);
+  assert.equal(watchOptions.ignored(legitimate), false);
 
   watcher.emit('addDir', path.join(fx.project, 'new directory'));
   watcher.emit('unlinkDir', path.join(fx.project, 'old-directory'));
@@ -3093,6 +3146,7 @@ test('normalizes directory hints and suppresses unsafe watcher paths', async (t)
   watcher.emit('change', path.join(fx.project, '.git', 'config'));
   watcher.emit('add', metadataAlias);
   watcher.emit('change', temp);
+  watcher.emit('change', legitimate);
   watcher.emit('change', outside);
   scheduler.flush();
 
@@ -3101,6 +3155,7 @@ test('normalizes directory hints and suppresses unsafe watcher paths', async (t)
     { ...ids, path: 'old-directory', kind: 'tree-invalidated' },
     { ...ids, path: '.git-archive/visible.txt', kind: 'changed' },
     { ...ids, path: 'space # å.txt', kind: 'changed' },
+    { ...ids, path: 'notes.tabdesk-draft.md', kind: 'changed' },
   ]);
 });
 
