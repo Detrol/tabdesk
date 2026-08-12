@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
+const { isolatedTmuxEnvironment } = require('./tmux-test-environment');
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const electron = require('electron');
 const STEP_TIMEOUT = 10_000;
@@ -243,9 +244,8 @@ async function main() {
     ], {
       cwd: repo,
       env: {
-        ...process.env,
+        ...isolatedTmuxEnvironment(process.env, tmux),
         TABDESK_PROJECTS_DIR: projects,
-        TMUX_TMPDIR: tmux,
         TABDESK_START_CMD: 'exec bash --noprofile --norc',
       },
       stdio: ['ignore', 'pipe', 'pipe'],

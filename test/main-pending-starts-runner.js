@@ -3,6 +3,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { isolatedTmuxEnvironment } = require('./tmux-test-environment');
+
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-main-starts-'));
 const electron = require('electron');
 const inheritedSocket = path.join(scratch, 'inherited-tmux.sock');
@@ -40,12 +42,7 @@ try {
     TMUX: `${inheritedSocket},${inheritedPid},0`,
     TMUX_PANE: '%0',
   };
-  const childEnv = {
-    ...inheritedEnv,
-    TMUX_TMPDIR: path.join(scratch, 'tmux'),
-  };
-  delete childEnv.TMUX;
-  delete childEnv.TMUX_PANE;
+  const childEnv = isolatedTmuxEnvironment(inheritedEnv, path.join(scratch, 'tmux'));
   const proofEnv = { ...childEnv, TMUX_TMPDIR: proofRoot };
   execFileSync('tmux', ['new-session', '-d', '-s', 'proof'], {
     env: proofEnv,
