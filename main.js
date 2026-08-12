@@ -41,9 +41,10 @@ const syncInvite = require('./sync/invite');
 const tabOrder = require('./renderer/tab-order');
 const { createProjectFiles } = require('./project-files');
 const {
-  classifyTmuxSessionList,
+  RESTORE_TIMEOUT_MS,
   createSessionOwnership,
   createSessionRegistry,
+  createTmuxSessionLister,
 } = require('./session-ownership');
 const {
   commitRootTransition,
@@ -64,6 +65,7 @@ const sessionOwnership = createSessionOwnership({
   remember: sessionRegistry.remember,
   forget: sessionRegistry.forget,
 });
+const listTmuxSessions = createTmuxSessionLister({ execFile });
 const shutdownLifecycle = createShutdownLifecycle();
 const rendererLeaveGate = createRendererLeaveGate({ ipcMain });
 
@@ -165,22 +167,16 @@ function killTmuxSessionByName(session) {
 // Session names currently spoken for: the registry plus whatever tmux itself
 // is holding. Used to pick the next free suffix for a second tab on the same
 // project — reserving in the registry is what keeps two fast clicks apart.
-function liveSessions() {
-  return new Promise((resolve) => {
-    const taken = new Set(openTabs().map((r) => r.session));
-    for (const s of tmuxSessions.values()) taken.add(s);
-    try {
-      execFile('tmux', ['ls', '-F', '#S'], (err, stdout) => {
-        if (!err && stdout) {
-          for (const line of String(stdout).split('\n')) {
-            const name = line.trim();
-            if (name) taken.add(name);
-          }
-        }
-        resolve(taken);
-      });
-    } catch (_) { resolve(taken); }
-  });
+async function liveSessions(operation) {
+  const stored = sessionRegistry.snapshot();
+  if (!stored.known) return null;
+  const taken = new Set(stored.records.map((record) => record.session));
+  for (const session of tmuxSessions.values()) taken.add(session);
+  if (!agents.onPath('tmux')) return taken;
+  const listing = await listTmuxSessions(operation);
+  if (!listing.known) return null;
+  for (const { session } of listing.rows) taken.add(session);
+  return taken;
 }
 
 // Aggregate Claude Code usage off the main thread.
@@ -1174,11 +1170,14 @@ app.whenReady().then(async () => {
   // know the name they resolve to.
   async function allocateSession({ cwd, agent, name, basePromised }) {
     if (typeof cwd !== 'string' || !cwd || typeof agent !== 'string' || !agent) return null;
-    const taken = await liveSessions();
+    const operation = { deadline: Date.now() + RESTORE_TIMEOUT_MS };
+    const taken = await liveSessions(operation);
+    if (!taken || Date.now() >= operation.deadline) return null;
     const base = `td-${agent}-${slugFor(cwd)}`;
     const label = name || path.basename(cwd);
     if (!basePromised && !taken.has(base)) {
-      const owned = await sessionOwnership.rememberCurrent({ session: base, cwd, agent, name: label });
+      const owned = await sessionOwnership.rememberCurrent(
+        { session: base, cwd, agent, name: label }, undefined, operation);
       if (!owned) return null;
       return { session: base, suffix: 0 };
     }
@@ -1187,7 +1186,7 @@ app.whenReady().then(async () => {
     const session = `${base}-${suffix}`;
     const owned = await sessionOwnership.rememberCurrent({
       session, cwd, agent, name: `${label} ·${suffix}`,
-    });
+    }, undefined, operation);
     if (!owned) return null;
     return { session, suffix };
   }
@@ -1218,13 +1217,34 @@ app.whenReady().then(async () => {
   // tmux reports each session's path physically, but the rail knows a
   // symlinked project by its spelling under the projects folder — adopting the
   // physical spelling would grow a second rail row for the same project.
+  const PROJECT_DIRECTORY_LIMIT = 4096;
+  const boundedProjectNames = (base) => {
+    let directory;
+    const names = [];
+    let seen = 0;
+    try {
+      directory = fs.opendirSync(base);
+      for (;;) {
+        const entry = directory.readSync();
+        if (!entry) return names;
+        seen += 1;
+        if (seen > PROJECT_DIRECTORY_LIMIT) return null;
+        if (!entry.name.startsWith('.')) names.push(entry.name);
+      }
+    } catch (_) {
+      return null;
+    } finally {
+      try { directory?.closeSync(); } catch (_) { /* already closed */ }
+    }
+  };
   const projectSpellings = () => {
     const out = [];
     const base = rootDir();
     if (!base) return out;
+    const names = boundedProjectNames(base);
+    if (!names) return null;
     try {
-      for (const name of fs.readdirSync(base)) {
-        if (name.startsWith('.')) continue;
+      for (const name of names) {
         const full = path.join(base, name);
         try { out.push({ path: full, real: fs.realpathSync(full) }); } catch (_) { /* dead link */ }
       }
@@ -1232,8 +1252,18 @@ app.whenReady().then(async () => {
     return out;
   };
 
-  ipcMain.handle('tabs:restore', () => new Promise((resolve) => {
-    const prepared = sessionOwnership.prepareRestore(openTabs(), fs.existsSync);
+  ipcMain.handle('tabs:restore', async () => {
+    const stored = sessionRegistry.snapshot();
+    if (!stored.known) {
+      projectFiles.replaceAdmissions('restored', []);
+      return [];
+    }
+    const operation = { deadline: Date.now() + RESTORE_TIMEOUT_MS };
+    const prepared = sessionOwnership.prepareRestore(stored.records, fs.existsSync);
+    if (!prepared.known) {
+      projectFiles.replaceAdmissions('restored', []);
+      return [];
+    }
     const records = prepared.records;
     const claimed = prepared.claimed;
     // A session is the project's own only if its name is the one that project
@@ -1248,45 +1278,53 @@ app.whenReady().then(async () => {
           ...keep,
           ...orphans.sort((a, b) => a.session.localeCompare(b.session)),
         ];
-        const restored = await sessionOwnership.restore(surviving, { persistedSessions: claimed });
-        resolve(restored.map((record) => ({ ...record, primary: primary(record) })));
+        const restored = await sessionOwnership.restore(surviving, {
+          persistedSessions: claimed,
+          operation,
+        });
+        return restored.map((record) => ({ ...record, primary: primary(record) }));
       } catch (_) {
         projectFiles.replaceAdmissions('restored', []);
-        resolve([]);
+        return [];
       }
     };
     try {
-      execFile('tmux', ['ls', '-F', '#S #{session_path}'], {
-        env: { ...process.env, LC_ALL: 'C' },
-        maxBuffer: 1024 * 1024,
-      }, (err, stdout, stderr) => {
-        // Only a complete parseable listing or tmux's stable C-locale
-        // "no server running" response can prove what is absent. Every other
-        // failure leaves persisted claims untouched for a later retry.
-        const listing = classifyTmuxSessionList(err, stdout, stderr);
-        if (!listing.known) return done(records, []);
-        const orphans = [];
-        const live = new Set();
-        const spellings = projectSpellings();
-        for (const { session, cwd: raw } of listing.rows) {
-          if (!session.startsWith('td-')) continue;
-          live.add(session);
-          if (claimed.has(session)) continue;
-          if (!raw || !fs.existsSync(raw)) continue;
-          const cwd = projectsRoot.logicalizeCwd(raw, spellings);
-          orphans.push({ session, cwd, agent: null, name: path.basename(cwd) });
-        }
-        // A record whose session tmux no longer holds is not something to come
-        // back to: the agent inside it exited while TabDesk was closed, so
-        // nothing was running to strike the record. Left in, it becomes a tab
-        // that looks live and starts a brand new agent when clicked. Drop it —
-        // the conversation itself is still offered under the overview's
-        // "earlier", which is where starting it again belongs.
-        const keep = sessionOwnership.reconcileLive(prepared, live);
-        done(keep, orphans);
-      });
-    } catch (_) { done(records, []); }
-  }));
+      // Only a complete parseable listing or tmux's stable C-locale
+      // "no server running" response can prove what is absent. Every other
+      // failure leaves persisted claims quarantined for a later retry.
+      const listing = await listTmuxSessions(operation);
+      if (!listing.known) {
+        projectFiles.replaceAdmissions('restored', []);
+        return [];
+      }
+      const orphans = [];
+      const live = new Set();
+      const spellings = projectSpellings();
+      if (!spellings) {
+        projectFiles.replaceAdmissions('restored', []);
+        return [];
+      }
+      for (const { session, cwd: raw } of listing.rows) {
+        if (!session.startsWith('td-')) continue;
+        live.add(session);
+        if (claimed.has(session)) continue;
+        if (!raw || !fs.existsSync(raw)) continue;
+        const cwd = projectsRoot.logicalizeCwd(raw, spellings);
+        orphans.push({ session, cwd, agent: null, name: path.basename(cwd) });
+      }
+      // A record whose session tmux no longer holds is not something to come
+      // back to: the agent inside it exited while TabDesk was closed, so
+      // nothing was running to strike the record. Left in, it becomes a tab
+      // that looks live and starts a brand new agent when clicked. Drop it —
+      // the conversation itself is still offered under the overview's
+      // "earlier", which is where starting it again belongs.
+      const keep = sessionOwnership.reconcileLive(prepared, live);
+      return done(keep, orphans);
+    } catch (_) {
+      projectFiles.replaceAdmissions('restored', []);
+      return [];
+    }
+  });
 
   // What the project's overview lists under "earlier": the conversations the
   // installed agents can still resume, read out of their own stores. Nothing
@@ -1462,15 +1500,16 @@ app.whenReady().then(async () => {
       // stat rather than the Dirent: a symlinked project is still a project
       // (isDirectory() is false for the link itself), and dot-dirs (.git,
       // .trash, editor state) are bookkeeping, not projects.
-      const dirs = fs.readdirSync(identity.base, { withFileTypes: true })
-        .filter((e) => !e.name.startsWith('.'))
-        .map((e) => {
-          const full = path.join(identity.base, e.name);
+      const names = boundedProjectNames(identity.base);
+      if (!names) throw new Error('project directory is unavailable or too large');
+      const dirs = names
+        .map((name) => {
+          const full = path.join(identity.base, name);
           let st;
           try { st = fs.statSync(full); } catch (_) { return null; } // dead link
           if (!st.isDirectory()) return null;
           return {
-            name: e.name, path: full, mtime: st.mtimeMs,
+            name, path: full, mtime: st.mtimeMs,
             model: model.getFor(full, agents.getFor(full)), closed: closed.has(full),
             worktrees: [],
           };

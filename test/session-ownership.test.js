@@ -10,6 +10,9 @@ const {
   classifyTmuxSessionList,
   createSessionOwnership,
   createSessionRegistry,
+  createTmuxSessionLister,
+  SESSION_RECORD_LIMIT,
+  TMUX_ROW_LIMIT,
 } = require('../session-ownership');
 const TabOrder = require('../renderer/tab-order');
 
@@ -88,6 +91,11 @@ test('tmux listing classifier trusts only complete success or stable C-locale ab
     '',
     'no server running on /tmp/tmux-test/default\n',
   ), { known: true, rows: [] });
+  assert.deepEqual(classifyTmuxSessionList(
+    Object.assign(new Error('missing socket'), { code: 1 }),
+    '',
+    'error connecting to /tmp/tmux-test/default (No such file or directory)\n',
+  ), { known: true, rows: [] });
 
   const unknown = [
     [Object.assign(new Error('missing'), { code: 'ENOENT' }), '', ''],
@@ -106,6 +114,134 @@ test('tmux listing classifier trusts only complete success or stable C-locale ab
       rows: [],
     });
   }
+});
+
+test('tmux listing is row-bounded and a timed-out client is killed fail-closed', async () => {
+  const exact = Array.from({ length: TMUX_ROW_LIMIT }, (_, index) =>
+    `td-${index} /project/${index}\n`).join('');
+  assert.equal(classifyTmuxSessionList(null, exact, '').known, true);
+  assert.deepEqual(classifyTmuxSessionList(null, `${exact}td-overflow /overflow\n`, ''), {
+    known: false,
+    rows: [],
+  });
+
+  let killed = 0;
+  const list = createTmuxSessionLister({
+    timeoutMs: 15,
+    execFile(file, args, options) {
+      assert.equal(file, 'tmux');
+      assert.deepEqual(args, ['ls', '-F', '#S #{session_path}']);
+      assert.equal(options.killSignal, 'SIGKILL');
+      assert.equal(options.env.LC_ALL, 'C');
+      return {
+        kill(signal) {
+          assert.equal(signal, 'SIGKILL');
+          killed += 1;
+          return true;
+        },
+      };
+    },
+  });
+
+  assert.deepEqual(await list({ deadline: Date.now() + 100 }), {
+    known: false,
+    rows: [],
+  });
+  assert.equal(killed, 1);
+
+  let expiredSpawns = 0;
+  const expiredList = createTmuxSessionLister({
+    now: () => 50,
+    execFile() { expiredSpawns += 1; },
+  });
+  assert.deepEqual(await expiredList({ deadline: 50 }), { known: false, rows: [] });
+  assert.equal(expiredSpawns, 0);
+});
+
+test('an oversized session registry is quarantined without mutation', () => {
+  const initial = Array.from({ length: SESSION_RECORD_LIMIT + 1 }, (_, index) => ({
+    session: `td-codex-${index}`,
+    cwd: `/project/${index}`,
+  }));
+  let cache = initial;
+  let writes = 0;
+  const sessions = createSessionRegistry({
+    read: () => cache,
+    write(next) {
+      writes += 1;
+      cache = next;
+      return true;
+    },
+    upsert: TabOrder.upsertRecord,
+  });
+
+  cache = initial.slice(0, SESSION_RECORD_LIMIT);
+  assert.equal(sessions.snapshot().known, true);
+  assert.equal(sessions.remember(initial.at(-1)), false);
+  assert.equal(writes, 0);
+  assert.equal(cache.length, SESSION_RECORD_LIMIT);
+
+  cache = initial;
+  assert.deepEqual(sessions.snapshot(), { known: false, records: [] });
+  assert.equal(sessions.remember({ session: 'td-codex-new', cwd: '/new' }), false);
+  assert.equal(sessions.forget(initial[0].session), false);
+  assert.equal(sessions.replace([]), false);
+  assert.equal(writes, 0);
+  assert.equal(cache, initial);
+});
+
+test('legacy relationship work and the whole restore share hard bounds', async () => {
+  const records = Array.from({ length: 17 }, (_, index) => ({
+    session: `td-codex-${index}`,
+    cwd: `/project/${index}`,
+  }));
+  let probes = 0;
+  let admissions = 0;
+  let writes = 0;
+  const projectFiles = {
+    async resolveOwner() { probes += 1; return { ok: false, error: 'project-unavailable' }; },
+    async verifySelectionOwner() { probes += 1; return { ok: false, error: 'project-unavailable' }; },
+    async restoreSelection() { admissions += 1; return { ok: false, error: 'project-unavailable' }; },
+    replaceAdmissions() {},
+  };
+  const ownership = createSessionOwnership({
+    projectFiles,
+    remember() { writes += 1; return true; },
+    forget() { return true; },
+  });
+
+  assert.deepEqual(await ownership.restore(records, {
+    persistedSessions: new Set(records.map(({ session }) => session)),
+  }), []);
+  assert.equal(probes, 0);
+  assert.equal(admissions, 0);
+  assert.equal(writes, 0);
+
+  let now = 10;
+  let operation;
+  const deadlineFiles = {
+    async resolveOwner(cwd, active) {
+      operation = active;
+      now = active.deadline;
+      return { ok: true, projectPath: cwd };
+    },
+    async verifySelectionOwner() { probes += 1; return { ok: true, projectPath: '/project' }; },
+    async restoreSelection() { admissions += 1; return { ok: true, projectPath: '/project' }; },
+    replaceAdmissions() {},
+  };
+  const deadlineOwnership = createSessionOwnership({
+    projectFiles: deadlineFiles,
+    remember() { writes += 1; return true; },
+    forget() { return true; },
+    now: () => now,
+    restoreTimeoutMs: 25,
+  });
+  assert.deepEqual(await deadlineOwnership.restore([records[0]], {
+    persistedSessions: new Set([records[0].session]),
+  }), []);
+  assert.equal(operation.deadline, 35);
+  assert.equal(admissions, 0);
+  assert.equal(writes, 0);
 });
 
 test('session registry rolls back cache mutations when durable remember or forget fails', () => {

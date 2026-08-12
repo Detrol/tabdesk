@@ -22,6 +22,24 @@ fs.mkdirSync(PROJECTS);
 fs.mkdirSync(TMUX);
 fs.mkdirSync(SOURCE);
 
+const realOpendirSync = fs.opendirSync;
+let overflowProjectDirectory = false;
+fs.opendirSync = function controlledOpendirSync(target, ...rest) {
+  if (overflowProjectDirectory && path.resolve(target) === path.resolve(PROJECTS)) {
+    let index = 0;
+    return {
+      readSync() {
+        if (index > 4096) return null;
+        const entry = { name: `overflow-${String(index).padStart(4, '0')}` };
+        index += 1;
+        return entry;
+      },
+      closeSync() {},
+    };
+  }
+  return Reflect.apply(realOpendirSync, fs, [target, ...rest]);
+};
+
 app.disableHardwareAcceleration();
 app.setPath('userData', PROFILE);
 app.commandLine.appendSwitch('remote-debugging-port', '0');
@@ -33,9 +51,21 @@ process.env.TMUX_TMPDIR = TMUX;
 // touch a user's server.
 const realExecFile = childProcess.execFile;
 const tmuxKills = [];
+let tmuxListCalls = 0;
+let nextTmuxList = null;
 childProcess.execFile = function recordedExecFile(file, args, ...rest) {
   if (file === 'tmux' && Array.isArray(args) && args[0] === 'kill-session') {
     tmuxKills.push(String(args[2] || '').replace(/^=/, ''));
+  }
+  if (file === 'tmux' && Array.isArray(args) && args[0] === 'ls') {
+    tmuxListCalls += 1;
+    if (nextTmuxList) {
+      const result = nextTmuxList;
+      nextTmuxList = null;
+      const callback = rest.at(-1);
+      setImmediate(() => callback(result.error || null, result.stdout || '', result.stderr || ''));
+      return { kill() { result.kills = (result.kills || 0) + 1; return true; } };
+    }
   }
   return Reflect.apply(realExecFile, childProcess, [file, args, ...rest]);
 };
@@ -894,6 +924,20 @@ async function run() {
     describeWorktreeCalls - descriptionsBefore === 22,
     String(describeWorktreeCalls - descriptionsBefore));
 
+  overflowProjectDirectory = true;
+  const overflowProjects = await win.webContents.executeJavaScript('window.api.listProjects()');
+  overflowProjectDirectory = false;
+  const revokedAfterOverflow = await win.webContents.executeJavaScript(
+    `window.api.openProjectFiles(${JSON.stringify(PROJECT_PATHS[0])})`);
+  check('projects:list rejects a 4097-entry root without retaining prior admissions',
+    Array.isArray(overflowProjects) && overflowProjects.length === 0
+      && revokedAfterOverflow?.ok === false
+      && revokedAfterOverflow?.error === 'project-unavailable',
+    JSON.stringify({ overflowProjects: overflowProjects.length, revokedAfterOverflow }));
+  const restoredProjects = await win.webContents.executeJavaScript('window.api.listProjects()');
+  check('projects:list can recover after a bounded root overflow',
+    restoredProjects.length === 22, String(restoredProjects.length));
+
   console.log('== bounded project-file IPC ==');
   delayFileOperations = true;
   await sender.executeJavaScript(`
@@ -935,6 +979,69 @@ async function run() {
   check('project-file IPC releases capacity after failure',
     failedFileOperation.includes('injected file operation failure') && afterFailure?.ok === true,
     JSON.stringify({ failedFileOperation, afterFailure }));
+
+  console.log('== bounded session restore ==');
+  const priorRecords = records().map((record) => ({ ...record }));
+  const oversized = Array.from({ length: 65 }, (_, index) => ({
+    session: `td-codex-overflow-${index}`,
+    cwd: PROJECT_PATHS[0],
+    agent: 'codex',
+    name: `Overflow ${index}`,
+  }));
+  settingsModule.set('openTabs', oversized);
+  const oversizedCallsBefore = tmuxListCalls;
+  const oversizedRestore = await sender.executeJavaScript('window.api.restoreTabs()');
+  const oversizedAllocation = await sender.executeJavaScript(
+    `window.api.allocateSession(${JSON.stringify(PROJECT_PATHS[0])}, "codex", "Overflow", false)`);
+  check('oversized session registry is quarantined before tmux or allocation work',
+    Array.isArray(oversizedRestore) && oversizedRestore.length === 0
+      && oversizedAllocation === null && tmuxListCalls === oversizedCallsBefore
+      && records().length === oversized.length,
+    JSON.stringify({
+      restored: oversizedRestore,
+      allocation: oversizedAllocation,
+      tmuxCalls: tmuxListCalls - oversizedCallsBefore,
+      records: records().length,
+    }));
+  settingsModule.set('openTabs', priorRecords);
+
+  const quarantineSession = await reserveSession(sender, 'tmux overflow quarantine');
+  const overflowRows = Array.from({ length: 257 }, (_, index) =>
+    `td-overflow-${index} ${PROJECT_PATHS[0]}\n`).join('');
+  nextTmuxList = { stdout: overflowRows };
+  const overflowRestore = await sender.executeJavaScript('window.api.restoreTabs()');
+  check('oversized tmux listing keeps persisted claims quarantined',
+    Array.isArray(overflowRestore) && overflowRestore.length === 0
+      && hasRecord(quarantineSession),
+    JSON.stringify({ restored: overflowRestore, record: hasRecord(quarantineSession) }));
+
+  const recordsBeforeOverflowAllocation = records().map((record) => record.session);
+  nextTmuxList = { stdout: overflowRows };
+  const overflowAllocation = await sender.executeJavaScript(
+    `window.api.allocateSession(${JSON.stringify(PROJECT_PATHS[0])}, "codex", "Tmux overflow", false)`);
+  check('unknown tmux listing blocks allocation without changing the registry',
+    overflowAllocation === null
+      && JSON.stringify(records().map((record) => record.session))
+        === JSON.stringify(recordsBeforeOverflowAllocation),
+    JSON.stringify({ allocation: overflowAllocation, records: records().map((row) => row.session) }));
+  releaseSessions(sender, quarantineSession, overflowAllocation?.session);
+  await settle();
+
+  tmuxAvailable = false;
+  const noTmuxCallsBefore = tmuxListCalls;
+  const plainAllocation = await sender.executeJavaScript(
+    `window.api.allocateSession(${JSON.stringify(PROJECT_PATHS[0])}, "codex", "No tmux", false)`);
+  check('verified no-tmux mode can reserve a plain PTY without probing tmux',
+    plainAllocation?.session && hasRecord(plainAllocation.session)
+      && tmuxListCalls === noTmuxCallsBefore,
+    JSON.stringify({
+      allocation: plainAllocation,
+      records: records().map((row) => row.session),
+      tmuxCalls: tmuxListCalls - noTmuxCallsBefore,
+    }));
+  releaseSessions(sender, plainAllocation?.session);
+  tmuxAvailable = true;
+  await settle();
 
   delayOwnership = true;
   console.log('== pending terminal starts ==');

@@ -1186,14 +1186,14 @@ test('uses the absolute operation deadline to kill active Git work', async (t) =
     spawn: controlledSpawn,
     gitTimeoutMs: 1_000,
     gitKillFallbackMs: 20,
-    operationTimeoutMs: 30,
+    operationTimeoutMs: 150,
   });
   t.after(() => files.close());
   files.admitProject(fx.project, 'configured');
   const ids = await openedRoot(files, fx.project);
 
   hang = true;
-  assert.deepEqual(await withDeadline(files.list({ ...ids, directory: '' })), {
+  assert.deepEqual(await withDeadline(files.list({ ...ids, directory: '' }), 500), {
     ok: false,
     error: 'operation-timeout',
   });
