@@ -50,6 +50,10 @@ const REQUIRED_FILE_KEYS = [
   'files.error.conflict',
   'files.error.write-failed',
   'files.error.watch-failed',
+  'files.error.directory-too-large',
+  'files.error.worktree-limit',
+  'files.error.operation-timeout',
+  'files.error.busy',
 ];
 
 const loading = State.reduce(State.initial(), {

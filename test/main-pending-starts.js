@@ -71,8 +71,9 @@ for (let index = 1; index <= 21; index++) {
 
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 async function waitFor(predicate, label, timeout = 5000) {
@@ -98,6 +99,10 @@ const projectFilesModule = require(projectFilesPath);
 let projectFiles;
 let delayOwnership = false;
 const ownershipGates = [];
+let delayFileOperations = false;
+let nextFileOperationFailure = false;
+const fileOperationGates = [];
+let describeWorktreeCalls = 0;
 require.cache[projectFilesPath].exports = {
   ...projectFilesModule,
   createProjectFiles(options) {
@@ -116,6 +121,28 @@ require.cache[projectFilesPath].exports = {
         returned.resolve();
       }
     };
+    const describeWorktrees = projectFiles.describeWorktrees;
+    projectFiles.describeWorktrees = (...args) => {
+      describeWorktreeCalls += 1;
+      return describeWorktrees(...args);
+    };
+    for (const method of ['openProject', 'list', 'read', 'write']) {
+      const invoke = projectFiles[method];
+      projectFiles[method] = async (...args) => {
+        if (nextFileOperationFailure) {
+          nextFileOperationFailure = false;
+          throw new Error('injected file operation failure');
+        }
+        if (delayFileOperations) {
+          const control = deferred();
+          const gate = { method, release: control.resolve, settled: false };
+          fileOperationGates.push(gate);
+          await control.promise;
+          gate.settled = true;
+        }
+        return invoke(...args);
+      };
+    }
     return projectFiles;
   },
 };
@@ -849,7 +876,10 @@ async function run() {
     sendToRenderer(channel, payload);
   };
 
+  const sender = win.webContents;
   console.log('== projects:list Git scheduling ==');
+  await win.webContents.executeJavaScript('window.api.listProjects()');
+  const descriptionsBefore = describeWorktreeCalls;
   const listings = await win.webContents.executeJavaScript(
     'Promise.all([window.api.listProjects(), window.api.listProjects()])');
   for (const [index, rows] of listings.entries()) {
@@ -860,9 +890,53 @@ async function run() {
     check(`concurrent projects:list #${index + 1} returns every verified worktree`, complete,
       JSON.stringify(projects.map((row) => row.worktrees.length)));
   }
+  check('concurrent projects:list coalesces one Git/worktree scan per configured row',
+    describeWorktreeCalls - descriptionsBefore === 22,
+    String(describeWorktreeCalls - descriptionsBefore));
+
+  console.log('== bounded project-file IPC ==');
+  delayFileOperations = true;
+  await sender.executeJavaScript(`
+    window.__tabdeskFileOperations = Array.from({ length: 4 }, () =>
+      window.api.openProjectFiles(${JSON.stringify(PROJECTS)}));
+    true;
+  `);
+  await waitFor(() => fileOperationGates.filter((gate) => !gate.settled).length === 4,
+    'four active file operations');
+  const busy = await sender.executeJavaScript(`
+    window.__tabdeskFifthFileOperation = window.api.openProjectFiles(${JSON.stringify(PROJECTS)});
+    Promise.race([
+      window.__tabdeskFifthFileOperation,
+      new Promise((resolve) => setTimeout(() => resolve({ deadline: true }), 100)),
+    ]);
+  `);
+  check('project-file IPC accepts exactly four operations and rejects the fifth',
+    busy?.ok === false && busy?.error === 'busy', JSON.stringify(busy));
+  if (busy?.deadline) {
+    await waitFor(() => fileOperationGates.filter((gate) => !gate.settled).length === 5,
+      'unbounded fifth file operation');
+  }
+  for (const gate of fileOperationGates.filter((candidate) => !candidate.settled)) gate.release();
+  const completedFileOperations = await sender.executeJavaScript(
+    'Promise.all(window.__tabdeskFileOperations)');
+  check('project-file IPC releases capacity after success',
+    completedFileOperations.every((result) => result?.ok === true),
+    JSON.stringify(completedFileOperations));
+  await sender.executeJavaScript('window.__tabdeskFifthFileOperation');
+
+  delayFileOperations = false;
+  nextFileOperationFailure = true;
+  const failedFileOperation = await sender.executeJavaScript(`
+    window.api.openProjectFiles(${JSON.stringify(PROJECTS)})
+      .then(() => 'unexpected-success', (error) => String(error?.message || error));
+  `);
+  const afterFailure = await sender.executeJavaScript(
+    `window.api.openProjectFiles(${JSON.stringify(PROJECTS)})`);
+  check('project-file IPC releases capacity after failure',
+    failedFileOperation.includes('injected file operation failure') && afterFailure?.ok === true,
+    JSON.stringify({ failedFileOperation, afterFailure }));
 
   delayOwnership = true;
-  const sender = win.webContents;
   console.log('== pending terminal starts ==');
   for (const backend of ['term', 'embed']) {
     await closeReservedPending(sender, backend, 'pre-owner');

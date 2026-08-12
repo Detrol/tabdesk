@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const childProcess = require('child_process');
-const { readDocument, writeDocument } = require('./document');
+const { MAX_BYTES, readDocument, writeDocument } = require('./document');
 const { createRootWatcher } = require('./watch');
 
 const SOURCES = new Set(['configured', 'picker', 'restored']);
@@ -12,6 +12,9 @@ const GIT_MAX_QUEUED = 16;
 const GIT_MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const GIT_MAX_OUTPUT_BYTES = 1024 * 1024;
 const GIT_KILL_FALLBACK_MS = 250;
+const DIRECTORY_MAX_ENTRIES = 4096;
+const WORKTREE_MAX_CANDIDATES = 64;
+const OPERATION_TIMEOUT_MS = 10_000;
 
 function relativeParts(value, { root = false } = {}) {
   if (typeof value !== 'string' || value.includes('\0') || value.includes('\\')) return null;
@@ -87,6 +90,8 @@ function createProjectFiles(options = {}) {
     ? options.gitMaxOutputBytes : GIT_MAX_OUTPUT_BYTES;
   const gitKillFallbackMs = Number.isInteger(options.gitKillFallbackMs) && options.gitKillFallbackMs > 0
     ? options.gitKillFallbackMs : GIT_KILL_FALLBACK_MS;
+  const operationTimeoutMs = Number.isInteger(options.operationTimeoutMs) && options.operationTimeoutMs > 0
+    ? options.operationTimeoutMs : OPERATION_TIMEOUT_MS;
   const byPath = new Map();
   const byId = new Map();
   const watcherOwners = new Map();
@@ -95,6 +100,36 @@ function createProjectFiles(options = {}) {
   let activeGit = 0;
   let gitClosed = false;
   let watchersClosed = false;
+
+  function createOperation() {
+    return { deadline: Date.now() + operationTimeoutMs };
+  }
+
+  function operationRemaining(operation) {
+    return operation ? Math.max(0, operation.deadline - Date.now()) : Infinity;
+  }
+
+  function operationExpired(operation) {
+    return operationRemaining(operation) <= 0;
+  }
+
+  function operationFailure() {
+    return Object.assign(new Error('Operation timed out'), { code: 'TABDESK_OPERATION_TIMEOUT' });
+  }
+
+  function operationError(error) {
+    return error?.code === 'TABDESK_OPERATION_TIMEOUT' ? 'operation-timeout' : 'git-unavailable';
+  }
+
+  function withOperation(run) {
+    const operation = createOperation();
+    let timeout;
+    const result = Promise.resolve(run(operation));
+    const expired = new Promise((resolve) => {
+      timeout = setTimeout(() => resolve({ ok: false, error: 'operation-timeout' }), operationTimeoutMs);
+    });
+    return Promise.race([result, expired]).finally(() => clearTimeout(timeout));
+  }
 
   function closeOwnedWatchers(projectId, rootId) {
     for (const owner of watcherOwners.values()) {
@@ -161,17 +196,17 @@ function createProjectFiles(options = {}) {
 
   function startQueuedGit(job) {
     if (gitClosed || job.closed) {
-      job.reject(gitFailure('runner closed'));
+      job.reject(job.failure || gitFailure('runner closed'));
       return;
     }
     activeGit += 1;
     activeGitJobs.add(job);
     Promise.resolve()
       .then(() => {
-        if (gitClosed || job.closed) throw gitFailure('runner closed');
+        if (gitClosed || job.closed) throw job.failure || gitFailure('runner closed');
         return job.start((cancel) => {
           job.cancel = cancel;
-          if (gitClosed || job.closed) cancel();
+          if (gitClosed || job.closed) cancel(job.failure || gitFailure('runner closed'));
         });
       })
       .then(job.resolve, job.reject)
@@ -184,19 +219,48 @@ function createProjectFiles(options = {}) {
       });
   }
 
-  function scheduleGit(start) {
+  function scheduleGit(start, operation) {
     return new Promise((resolve, reject) => {
       if (gitClosed) {
         reject(gitFailure('runner closed'));
         return;
       }
-      const job = { start, resolve, reject, cancel: null, closed: false };
+      if (operationExpired(operation)) {
+        reject(operationFailure());
+        return;
+      }
+      let deadlineTimer;
+      let settled = false;
+      const settle = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadlineTimer);
+        callback(value);
+      };
+      const job = {
+        start,
+        resolve: (value) => settle(resolve, value),
+        reject: (error) => settle(reject, error),
+        cancel: null,
+        closed: false,
+        failure: null,
+      };
+      if (operation) {
+        deadlineTimer = setTimeout(() => {
+          job.closed = true;
+          job.failure = operationFailure();
+          const queued = gitQueue.indexOf(job);
+          if (queued >= 0) gitQueue.splice(queued, 1);
+          job.cancel?.(job.failure);
+          job.reject(job.failure);
+        }, Math.max(0, operationRemaining(operation) - 1));
+      }
       if (activeGit < gitMaxActive) {
         startQueuedGit(job);
       } else if (gitQueue.length < gitMaxQueued) {
         gitQueue.push(job);
       } else {
-        reject(gitFailure('queue saturated'));
+        job.reject(gitFailure('queue saturated'));
       }
     });
   }
@@ -206,12 +270,14 @@ function createProjectFiles(options = {}) {
     gitClosed = true;
     for (const job of gitQueue.splice(0)) {
       job.closed = true;
-      job.reject(gitFailure('runner closed'));
+      job.failure = gitFailure('runner closed');
+      job.reject(job.failure);
     }
     for (const job of activeGitJobs) {
       job.closed = true;
-      job.cancel?.();
-      job.reject(gitFailure('runner closed'));
+      job.failure = gitFailure('runner closed');
+      job.cancel?.(job.failure);
+      job.reject(job.failure);
     }
   }
 
@@ -223,9 +289,10 @@ function createProjectFiles(options = {}) {
     try { child.kill('SIGKILL'); } catch (_) {}
   }
 
-  function executeGit(args, { input } = {}) {
+  function executeGit(args, { input, operation } = {}) {
     const inputBytes = input === undefined ? 0 : Buffer.byteLength(input);
     if (inputBytes > gitMaxInputBytes) return Promise.reject(gitFailure('input too large'));
+    if (operationExpired(operation)) return Promise.reject(operationFailure());
     return scheduleGit((setCancel) => new Promise((resolve, reject) => {
       let child;
       let killTimer;
@@ -271,8 +338,8 @@ function createProjectFiles(options = {}) {
       const timeout = setTimeout(() => {
         terminate(gitFailure('timed out'));
       }, gitTimeoutMs);
-      setCancel(() => {
-        terminate(gitFailure('runner closed'));
+      setCancel((error) => {
+        terminate(error || gitFailure('runner closed'));
       });
 
       try {
@@ -311,7 +378,7 @@ function createProjectFiles(options = {}) {
       } catch (_) {
         terminate(gitFailure('failed to start'));
       }
-    }));
+    }), operation);
   }
 
   function isNotGitRepository(result) {
@@ -319,44 +386,48 @@ function createProjectFiles(options = {}) {
       && /not a git repository/i.test(result.stderr);
   }
 
-  async function gitCommonDir(directory) {
+  async function gitCommonDir(directory, operation) {
     try {
       const result = await executeGit([
         '-C', directory,
         'rev-parse',
         '--path-format=absolute',
         '--git-common-dir',
-      ]);
+      ], { operation });
       if (result.error) {
         return isNotGitRepository(result) ? { git: false } : { error: 'git-unavailable' };
       }
       return { git: true, commonDir: io.realpathSync(result.stdout.trim()) };
-    } catch (_) {
-      return { error: 'git-unavailable' };
+    } catch (error) {
+      return { error: operationError(error) };
     }
   }
 
-  async function isGitWorktree(directory, commonDir) {
+  async function isGitWorktree(directory, commonDir, operation) {
     try {
-      const result = await executeGit(['-C', directory.logical, 'rev-parse', '--show-toplevel']);
+      const result = await executeGit(
+        ['-C', directory.logical, 'rev-parse', '--show-toplevel'], { operation },
+      );
       if (result.error) {
         return isNotGitRepository(result) ? { worktree: false } : { error: 'git-unavailable' };
       }
       if (io.realpathSync(result.stdout.trim()) !== directory.real) return { worktree: false };
-      const candidateCommonDir = await gitCommonDir(directory.logical);
+      const candidateCommonDir = await gitCommonDir(directory.logical, operation);
       if (candidateCommonDir.error) return candidateCommonDir;
       return { worktree: candidateCommonDir.git && candidateCommonDir.commonDir === commonDir };
-    } catch (_) {
-      return { error: 'git-unavailable' };
+    } catch (error) {
+      return { error: operationError(error) };
     }
   }
 
-  async function gitRepository(directory) {
+  async function gitRepository(directory, operation) {
     let result;
     try {
-      result = await executeGit(['-C', directory, 'rev-parse', '--is-inside-work-tree']);
-    } catch (_) {
-      return { error: 'git-unavailable' };
+      result = await executeGit(
+        ['-C', directory, 'rev-parse', '--is-inside-work-tree'], { operation },
+      );
+    } catch (error) {
+      return { error: operationError(error) };
     }
     if (!result.error) {
       return result.stdout.trim() === 'true' ? { git: true } : { error: 'git-unavailable' };
@@ -364,33 +435,52 @@ function createProjectFiles(options = {}) {
     return isNotGitRepository(result) ? { git: false } : { error: 'git-unavailable' };
   }
 
-  function conventionCandidates(project) {
-    const candidates = [];
-    for (const folder of ['.worktrees', path.join('.claude', 'worktrees')]) {
-      let names;
-      try {
-        names = io.readdirSync(path.join(project.logical, folder));
-      } catch (_) {
-        continue;
+  function boundedDirectoryNames(directory) {
+    const names = [];
+    let opened;
+    try {
+      opened = io.opendirSync(directory);
+      for (;;) {
+        const entry = opened.readSync();
+        if (!entry) return { names };
+        if (names.length === DIRECTORY_MAX_ENTRIES) return { error: 'directory-too-large' };
+        names.push(entry.name);
       }
-      for (const name of names) {
-        if (name.startsWith('.')) continue;
-        const dir = safeDirectory(io, path.join(project.logical, folder, name));
-        if (dir) candidates.push({ ...dir, label: name });
-      }
+    } catch (_) {
+      return { error: 'unreadable' };
+    } finally {
+      try { opened?.closeSync(); } catch (_) { /* best effort after enumeration */ }
     }
-    return candidates;
   }
 
-  async function verifiedWorktrees(project, candidates) {
-    const projectCommonDir = await gitCommonDir(project.logical);
+  function conventionCandidates(project, operation) {
+    const candidates = [];
+    for (const folder of ['.worktrees', path.join('.claude', 'worktrees')]) {
+      const listed = boundedDirectoryNames(path.join(project.logical, folder));
+      if (listed.error === 'directory-too-large') return { error: 'worktree-limit' };
+      if (listed.error) continue;
+      for (const name of listed.names) {
+        if (operationExpired(operation)) return { error: 'operation-timeout' };
+        if (name.startsWith('.')) continue;
+        const dir = safeDirectory(io, path.join(project.logical, folder, name));
+        if (!dir) continue;
+        if (candidates.length === WORKTREE_MAX_CANDIDATES) return { error: 'worktree-limit' };
+        candidates.push({ ...dir, label: name });
+      }
+    }
+    return { candidates };
+  }
+
+  async function verifiedWorktrees(project, candidates, operation) {
+    const projectCommonDir = await gitCommonDir(project.logical, operation);
     if (projectCommonDir.error) return projectCommonDir;
     if (!projectCommonDir.git) return { worktrees: [] };
     const seen = new Set();
     const worktrees = [];
     for (const candidate of candidates) {
+      if (operationExpired(operation)) return { error: 'operation-timeout' };
       if (seen.has(candidate.real)) continue;
-      const verified = await isGitWorktree(candidate, projectCommonDir.commonDir);
+      const verified = await isGitWorktree(candidate, projectCommonDir.commonDir, operation);
       if (verified.error) return verified;
       if (!verified.worktree) continue;
       seen.add(candidate.real);
@@ -449,16 +539,24 @@ function createProjectFiles(options = {}) {
     ));
   }
 
-  async function openProject(projectPath) {
+  async function openProject(projectPath, operation) {
+    if (!operation) return withOperation((active) => openProject(projectPath, active));
     const requested = safeDirectory(io, projectPath);
     const project = requested && byPath.get(requested.logical);
     if (!project) return { ok: false, error: 'project-unavailable' };
 
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (operationExpired(operation)) return { ok: false, error: 'operation-timeout' };
       if (!refreshProject(project)) return { ok: false, error: 'project-unavailable' };
-      const candidates = conventionCandidates(project);
-      const verified = await verifiedWorktrees(project, candidates);
-      if (verified.error) return { ok: false, error: 'project-unavailable' };
+      const discovered = conventionCandidates(project, operation);
+      if (discovered.error) return { ok: false, error: discovered.error };
+      const candidates = discovered.candidates;
+      const verified = await verifiedWorktrees(project, candidates, operation);
+      if (verified.error) return {
+        ok: false,
+        error: verified.error === 'operation-timeout' ? verified.error : 'project-unavailable',
+      };
+      if (operationExpired(operation)) return { ok: false, error: 'operation-timeout' };
       if (!rootsStillValid(project, candidates)) {
         if (!byPath.has(project.logical)) return { ok: false, error: 'project-unavailable' };
         continue;
@@ -470,8 +568,9 @@ function createProjectFiles(options = {}) {
     return { ok: false, error: 'project-unavailable' };
   }
 
-  async function describeWorktrees(projectPath) {
-    const opened = await openProject(projectPath);
+  async function describeWorktrees(projectPath, operation) {
+    if (!operation) return withOperation((active) => describeWorktrees(projectPath, active));
+    const opened = await openProject(projectPath, operation);
     if (!opened.ok) return [];
     const project = byId.get(opened.projectId);
     return [...project.rootsById.values()]
@@ -486,7 +585,7 @@ function createProjectFiles(options = {}) {
       && byId.get(project.id) === project;
   }
 
-  async function verifiedOwnerForSelection(project, selected, { admitted = false } = {}) {
+  async function verifiedOwnerForSelection(project, selected, { admitted = false, operation } = {}) {
     if (admitted && !currentAdmission(project)) {
       return { ok: false, error: 'project-unavailable' };
     }
@@ -495,19 +594,25 @@ function createProjectFiles(options = {}) {
       return { ok: true, project };
     }
 
-    const candidate = conventionCandidates(project).find(({ logical }) => logical === selected.logical);
+    const discovered = conventionCandidates(project, operation);
+    if (discovered.error) return { ok: false, error: discovered.error };
+    const candidate = discovered.candidates.find(({ logical }) => logical === selected.logical);
     if (!candidate || !sameDirectory(candidate, selected)) {
       return { ok: false, error: 'project-unavailable' };
     }
-    const projectCommonDir = await gitCommonDir(project.logical);
+    const projectCommonDir = await gitCommonDir(project.logical, operation);
     if (projectCommonDir.error) {
+      if (projectCommonDir.error === 'operation-timeout') {
+        return { ok: false, error: projectCommonDir.error };
+      }
       return { ok: false, error: 'project-unavailable', verificationFailed: true };
     }
     if (!projectCommonDir.git) {
       return { ok: false, error: 'project-unavailable' };
     }
-    const verified = await isGitWorktree(selected, projectCommonDir.commonDir);
+    const verified = await isGitWorktree(selected, projectCommonDir.commonDir, operation);
     if (verified.error) {
+      if (verified.error === 'operation-timeout') return { ok: false, error: verified.error };
       return { ok: false, error: 'project-unavailable', verificationFailed: true };
     }
     if (!verified.worktree) {
@@ -515,8 +620,10 @@ function createProjectFiles(options = {}) {
     }
 
     const currentSelected = safeDirectory(io, selected.logical);
-    const currentCandidate = conventionCandidates(project)
-      .find(({ logical }) => logical === selected.logical);
+    if (operationExpired(operation)) return { ok: false, error: 'operation-timeout' };
+    const currentCandidates = conventionCandidates(project, operation);
+    if (currentCandidates.error) return { ok: false, error: currentCandidates.error };
+    const currentCandidate = currentCandidates.candidates.find(({ logical }) => logical === selected.logical);
     if ((admitted && !currentAdmission(project)) || !refreshProject(project)
       || !sameDirectory(selected, currentSelected)
       || !sameDirectory(selected, currentCandidate)) {
@@ -525,16 +632,18 @@ function createProjectFiles(options = {}) {
     return { ok: true, project };
   }
 
-  async function resolveOwner(selectedPath) {
+  async function resolveOwner(selectedPath, operation) {
+    if (!operation) return withOperation((active) => resolveOwner(selectedPath, active));
     const selected = safeDirectory(io, selectedPath);
     if (!selected) return { ok: false, error: 'project-unavailable' };
 
     const exact = byPath.get(selected.logical);
     if (exact) {
-      const resolved = await verifiedOwnerForSelection(exact, selected, { admitted: true });
+      const resolved = await verifiedOwnerForSelection(exact, selected, { admitted: true, operation });
       if (resolved.ok) {
         return { ok: true, projectPath: exact.logical, selectedPath: selected.logical };
       }
+      if (resolved.error === 'operation-timeout' || resolved.error === 'worktree-limit') return resolved;
       if (resolved.verificationFailed) {
         return { ok: false, error: 'project-unavailable', verificationFailed: true };
       }
@@ -542,7 +651,8 @@ function createProjectFiles(options = {}) {
 
     for (const project of [...byPath.values()]) {
       if (project === exact) continue;
-      const resolved = await verifiedOwnerForSelection(project, selected, { admitted: true });
+      const resolved = await verifiedOwnerForSelection(project, selected, { admitted: true, operation });
+      if (resolved.error === 'operation-timeout' || resolved.error === 'worktree-limit') return resolved;
       if (resolved.verificationFailed) {
         return { ok: false, error: 'project-unavailable', verificationFailed: true };
       }
@@ -552,13 +662,17 @@ function createProjectFiles(options = {}) {
     return { ok: false, error: 'project-unavailable' };
   }
 
-  async function verifySelectionOwner(candidateProjectPath, selectedPath) {
+  async function verifySelectionOwner(candidateProjectPath, selectedPath, operation) {
+    if (!operation) {
+      return withOperation((active) => verifySelectionOwner(candidateProjectPath, selectedPath, active));
+    }
     const project = safeDirectory(io, candidateProjectPath);
     const selected = safeDirectory(io, selectedPath);
     if (!project || !selected) return { ok: false, error: 'project-unavailable' };
 
-    const resolved = await verifiedOwnerForSelection(project, selected);
+    const resolved = await verifiedOwnerForSelection(project, selected, { operation });
     if (!resolved.ok) {
+      if (resolved.error === 'operation-timeout' || resolved.error === 'worktree-limit') return resolved;
       return {
         ok: false,
         error: 'project-unavailable',
@@ -568,34 +682,46 @@ function createProjectFiles(options = {}) {
     return { ok: true, projectPath: project.logical, selectedPath: selected.logical };
   }
 
-  async function restoreSelection(storedProjectPath, selectedPath) {
-    const verified = await verifySelectionOwner(storedProjectPath, selectedPath);
-    if (!verified.ok) return { ok: false, error: 'project-unavailable' };
+  async function restoreSelection(storedProjectPath, selectedPath, operation) {
+    if (!operation) {
+      return withOperation((active) => restoreSelection(storedProjectPath, selectedPath, active));
+    }
+    const verified = await verifySelectionOwner(storedProjectPath, selectedPath, operation);
+    if (!verified.ok) {
+      if (verified.error === 'operation-timeout' || verified.error === 'worktree-limit') return verified;
+      return { ok: false, error: 'project-unavailable' };
+    }
+    if (operationExpired(operation)) return { ok: false, error: 'operation-timeout' };
     const admitted = admitProject(verified.projectPath, 'restored');
     if (!admitted.ok) return admitted;
     return verified;
   }
 
-  async function admitSelection(selectedPath, source) {
+  async function admitSelection(selectedPath, source, operation) {
+    if (!operation) return withOperation((active) => admitSelection(selectedPath, source, active));
     if (!SOURCES.has(source)) return { ok: false, error: 'project-unavailable' };
     const selected = safeDirectory(io, selectedPath);
     if (!selected) return { ok: false, error: 'project-unavailable' };
 
     for (const project of [...byPath.values()]) {
-      const resolved = await verifiedOwnerForSelection(project, selected, { admitted: true });
+      const resolved = await verifiedOwnerForSelection(project, selected, { admitted: true, operation });
+      if (resolved.error === 'operation-timeout' || resolved.error === 'worktree-limit') return resolved;
       if (resolved.verificationFailed) return { ok: false, error: 'project-unavailable' };
       if (!resolved.ok || project.logical === selected.logical) continue;
+      if (operationExpired(operation)) return { ok: false, error: 'operation-timeout' };
       const admitted = admitProject(project.logical, source);
       if (!admitted.ok) return admitted;
       return { ok: true, projectPath: project.logical, selectedPath: selected.logical };
     }
 
+    if (operationExpired(operation)) return { ok: false, error: 'operation-timeout' };
     const admitted = admitProject(selected.logical, source);
     if (!admitted.ok) return admitted;
     return { ok: true, projectPath: selected.logical, selectedPath: selected.logical };
   }
 
-  async function selectedRoot(projectId, rootId) {
+  async function selectedRoot(projectId, rootId, operation) {
+    if (operationExpired(operation)) return { error: 'operation-timeout' };
     const project = typeof projectId === 'string' && byId.get(projectId);
     if (!project || !refreshProject(project)) return { error: 'project-unavailable' };
     const root = typeof rootId === 'string' && project.rootsById.get(rootId);
@@ -607,11 +733,12 @@ function createProjectFiles(options = {}) {
     }
 
     if (root.kind === 'worktree') {
-      const projectCommonDir = await gitCommonDir(project.logical);
+      const projectCommonDir = await gitCommonDir(project.logical, operation);
       const verified = !projectCommonDir.error && projectCommonDir.git
-        ? await isGitWorktree(current, projectCommonDir.commonDir)
-        : { error: 'project-unavailable' };
+        ? await isGitWorktree(current, projectCommonDir.commonDir, operation)
+        : { error: projectCommonDir.error || 'project-unavailable' };
       if (verified.error || !verified.worktree) {
+        if (verified.error === 'operation-timeout') return { error: verified.error };
         invalidateRoot(project, root);
         return { error: 'project-unavailable' };
       }
@@ -732,46 +859,50 @@ function createProjectFiles(options = {}) {
     return entry;
   }
 
-  async function gitIgnored(root, paths) {
+  async function gitIgnored(root, paths, operation) {
     if (!paths.length) return Promise.resolve({ ignored: new Set() });
-    const repository = await gitRepository(root.real);
+    const repository = await gitRepository(root.real, operation);
     if (repository.error) return repository;
     if (!repository.git) return { ignored: new Set() };
     let result;
     try {
       result = await executeGit(['-C', root.real, 'check-ignore', '--stdin', '-z'], {
         input: Buffer.from(`${paths.join('\0')}\0`, 'utf8'),
+        operation,
       });
-    } catch (_) {
-      return { error: 'git-unavailable' };
+    } catch (error) {
+      return { error: operationError(error) };
     }
     if (result.error && Number(result.error.code) !== 1) return { error: 'git-unavailable' };
     const ignored = result.stdout.split('\0').filter(Boolean);
     return { ignored: new Set(ignored) };
   }
 
-  async function list({ projectId, rootId, directory, showIgnored } = {}) {
+  async function list(request = {}, operation) {
+    if (!operation) return withOperation((active) => list(request, active));
+    const { projectId, rootId, directory, showIgnored } = request;
     const parts = relativeParts(directory, { root: true });
     if (!parts) return { ok: false, error: 'invalid-path' };
     if (parts.includes('.git')) return { ok: false, error: 'git-metadata-denied' };
-    const selected = await selectedRoot(projectId, rootId);
+    const selected = await selectedRoot(projectId, rootId, operation);
     if (selected.error) return { ok: false, error: selected.error };
     const snapshot = directorySnapshot(selected, parts);
     if (snapshot.error) return { ok: false, error: snapshot.error };
 
-    let names;
-    try {
-      names = io.readdirSync(snapshot.target.real);
-    } catch (_) {
-      return { ok: false, error: 'unreadable' };
-    }
-    const entries = names
+    const listed = boundedDirectoryNames(snapshot.target.real);
+    if (listed.error) return { ok: false, error: listed.error };
+    const entries = listed.names
       .map((name) => inspectEntry(selected, parts, snapshot.target.real, name))
       .filter(Boolean);
     const beforeGit = currentDirectory(selected, parts, snapshot);
     if (beforeGit.error) return { ok: false, error: beforeGit.error };
-    const ignored = await gitIgnored(selected, [...new Set(entries.map((entry) => entry.gitPath).filter(Boolean))]);
+    const ignored = await gitIgnored(
+      selected,
+      [...new Set(entries.map((entry) => entry.gitPath).filter(Boolean))],
+      operation,
+    );
     if (ignored.error) return { ok: false, error: ignored.error };
+    if (operationExpired(operation)) return { ok: false, error: 'operation-timeout' };
     const afterGit = currentDirectory(selected, parts, snapshot);
     if (afterGit.error) return { ok: false, error: afterGit.error };
     for (const entry of entries) entry.ignored = Boolean(entry.gitPath && ignored.ignored.has(entry.gitPath));
@@ -790,8 +921,8 @@ function createProjectFiles(options = {}) {
     return extension || 'text';
   }
 
-  async function resolveDocumentRequest(projectId, rootId, parts) {
-    const selected = await selectedRoot(projectId, rootId);
+  async function resolveDocumentRequest(projectId, rootId, parts, operation) {
+    const selected = await selectedRoot(projectId, rootId, operation);
     if (selected.error) return { error: selected.error };
     const target = resolveContained(selected, parts, {
       missing: 'deleted',
@@ -808,16 +939,17 @@ function createProjectFiles(options = {}) {
     return { path: directory ? `${directory}/${parts.at(-1)}` : parts.at(-1) };
   }
 
-  async function read(request = {}) {
+  async function read(request = {}, operation) {
+    if (!operation) return withOperation((active) => read(request, active));
     const parts = relativeParts(request.path);
     if (!parts) return { ok: false, error: 'invalid-path' };
     if (parts.includes('.git')) return { ok: false, error: 'git-metadata-denied' };
-    const resolved = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+    const resolved = await resolveDocumentRequest(request.projectId, request.rootId, parts, operation);
     if (resolved.error) return { ok: false, error: resolved.error };
     const snapshot = await readDocument(resolved.target, {
       fs: io,
       revalidate: async () => {
-        const current = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+        const current = await resolveDocumentRequest(request.projectId, request.rootId, parts, operation);
         return current.error ? { error: current.error } : current.target;
       },
     });
@@ -826,9 +958,9 @@ function createProjectFiles(options = {}) {
     const candidateGitPath = documentGitPath(resolved.selected, parts);
     if (candidateGitPath.error) return { ok: false, error: candidateGitPath.error };
     const gitPath = candidateGitPath.path;
-    const ignored = await gitIgnored(resolved.selected, [gitPath]);
+    const ignored = await gitIgnored(resolved.selected, [gitPath], operation);
     if (ignored.error) return { ok: false, error: ignored.error };
-    const current = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+    const current = await resolveDocumentRequest(request.projectId, request.rootId, parts, operation);
     if (current.error) return { ok: false, error: current.error };
     if (current.target.real !== resolved.target.real) return { ok: false, error: 'unreadable' };
 
@@ -843,7 +975,8 @@ function createProjectFiles(options = {}) {
     };
   }
 
-  async function write(request = {}) {
+  async function write(request = {}, operation) {
+    if (!operation) return withOperation((active) => write(request, active));
     const parts = relativeParts(request.path);
     if (!parts) return { ok: false, error: 'invalid-path' };
     if (parts.includes('.git')) return { ok: false, error: 'git-metadata-denied' };
@@ -851,7 +984,8 @@ function createProjectFiles(options = {}) {
       || typeof request.overwrite !== 'boolean') {
       return { ok: false, error: 'invalid-request' };
     }
-    const resolved = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+    if (request.content.length > MAX_BYTES) return { ok: false, error: 'too-large' };
+    const resolved = await resolveDocumentRequest(request.projectId, request.rootId, parts, operation);
     if (resolved.error) return { ok: false, error: resolved.error };
     return writeDocument(resolved.target, request, {
       fs: io,
@@ -863,7 +997,7 @@ function createProjectFiles(options = {}) {
       },
       beforeReplace: options.beforeReplace,
       revalidate: async () => {
-        const current = await resolveDocumentRequest(request.projectId, request.rootId, parts);
+        const current = await resolveDocumentRequest(request.projectId, request.rootId, parts, operation);
         return current.error ? { error: current.error } : current.target;
       },
     });

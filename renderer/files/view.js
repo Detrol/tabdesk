@@ -6,7 +6,7 @@ const SAFE_ERRORS = new Set([
   'project-unavailable', 'root-unavailable', 'invalid-path', 'outside-root',
   'git-metadata-denied', 'not-file', 'not-text', 'too-large',
   'permission-denied', 'unreadable', 'deleted', 'conflict', 'write-failed',
-  'watch-failed',
+  'watch-failed', 'directory-too-large', 'worktree-limit', 'operation-timeout', 'busy',
 ]);
 const SAFE_UNAVAILABLE = new Set(['outside-root', 'unreadable', 'not-file']);
 

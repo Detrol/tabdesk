@@ -1418,47 +1418,54 @@ app.whenReady().then(async () => {
   // The projects folder itself leads the list: work that spans projects — an
   // agent asked about the whole tree — runs in the root, and those sessions
   // and conversations need a row to live under just like any project's do.
-  const projectDescriptionQueue = [];
-  let activeProjectDescriptions = 0;
-  function drainProjectDescriptions() {
-    while (activeProjectDescriptions < 4 && projectDescriptionQueue.length) {
-      const job = projectDescriptionQueue.shift();
-      activeProjectDescriptions += 1;
-      Promise.resolve()
-        .then(() => projectFiles.describeWorktrees(job.projectPath))
-        .then(job.resolve, job.reject)
-        .finally(() => {
-          activeProjectDescriptions -= 1;
-          drainProjectDescriptions();
-        });
-    }
-  }
-  function describeProject(projectPath) {
-    return new Promise((resolve, reject) => {
-      projectDescriptionQueue.push({ projectPath, resolve, reject });
-      drainProjectDescriptions();
-    });
-  }
-  ipcMain.handle('projects:list', async () => {
+  function projectsRootIdentity() {
     const base = rootDir();
-    if (!base) {
-      projectFiles.replaceAdmissions('configured', []);
-      return [];
+    if (!base) return null;
+    try {
+      const real = fs.realpathSync(base);
+      const stats = fs.statSync(real);
+      if (!stats.isDirectory()) return { base, key: `${base}\0unavailable` };
+      return {
+        base,
+        key: `${base}\0${real}\0${stats.dev}\0${stats.ino}\0${stats.birthtimeMs}`,
+      };
+    } catch (_) {
+      return { base, key: `${base}\0unavailable` };
     }
+  }
+
+  async function describeProjectRows(rows) {
+    let next = 0;
+    async function worker() {
+      for (;;) {
+        const index = next++;
+        if (index >= rows.length) return;
+        const row = rows[index];
+        const worktrees = await projectFiles.describeWorktrees(row.path);
+        row.worktrees = worktrees.map((worktree) => ({
+          ...worktree,
+          model: model.getFor(worktree.path, agents.getFor(worktree.path)),
+        }));
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, rows.length) }, worker));
+  }
+
+  async function listProjects(identity) {
     try {
       const closed = new Set(closedProjects());
       const root = {
-        name: path.basename(base), path: base, root: true,
-        model: model.getFor(base, agents.getFor(base)),
+        name: path.basename(identity.base), path: identity.base, root: true,
+        model: model.getFor(identity.base, agents.getFor(identity.base)),
         closed: false, worktrees: [],
       };
       // stat rather than the Dirent: a symlinked project is still a project
       // (isDirectory() is false for the link itself), and dot-dirs (.git,
       // .trash, editor state) are bookkeeping, not projects.
-      const dirs = fs.readdirSync(base, { withFileTypes: true })
+      const dirs = fs.readdirSync(identity.base, { withFileTypes: true })
         .filter((e) => !e.name.startsWith('.'))
         .map((e) => {
-          const full = path.join(base, e.name);
+          const full = path.join(identity.base, e.name);
           let st;
           try { st = fs.statSync(full); } catch (_) { return null; } // dead link
           if (!st.isDirectory()) return null;
@@ -1471,19 +1478,38 @@ app.whenReady().then(async () => {
         .filter(Boolean)
         .sort((a, b) => b.mtime - a.mtime);
       const rows = [root, ...dirs];
+      if (projectsRootIdentity()?.key !== identity.key) return [];
       projectFiles.replaceAdmissions('configured', rows.map((row) => row.path));
-      await Promise.all(rows.map(async (row) => {
-        const worktrees = await describeProject(row.path);
-        row.worktrees = worktrees.map((worktree) => ({
-          ...worktree,
-          model: model.getFor(worktree.path, agents.getFor(worktree.path)),
-        }));
-      }));
+      await describeProjectRows(rows);
+      if (projectsRootIdentity()?.key !== identity.key) return [];
       return rows;
     } catch (_) {
+      if (projectsRootIdentity()?.key === identity.key) {
+        projectFiles.replaceAdmissions('configured', []);
+      }
+      return [];
+    }
+  }
+
+  let projectsListFlight = null;
+  ipcMain.handle('projects:list', (event) => {
+    const identity = projectsRootIdentity();
+    if (!identity) {
       projectFiles.replaceAdmissions('configured', []);
       return [];
     }
+    if (projectsListFlight) {
+      if (projectsListFlight.sender === event.sender && projectsListFlight.key === identity.key) {
+        return projectsListFlight.promise;
+      }
+      return [];
+    }
+    const flight = { sender: event.sender, key: identity.key, promise: null };
+    flight.promise = listProjects(identity).finally(() => {
+      if (projectsListFlight === flight) projectsListFlight = null;
+    });
+    projectsListFlight = flight;
+    return flight.promise;
   });
 
   // Closing a tab is a decision about the rail, so it has to outlive the
@@ -1524,11 +1550,34 @@ app.whenReady().then(async () => {
     };
   });
 
-  ipcMain.handle('project-files:open', (_event, projectPath) =>
-    projectFiles.openProject(projectPath));
-  ipcMain.handle('project-files:list', (_event, args) => projectFiles.list(args));
-  ipcMain.handle('project-files:read', (_event, args) => projectFiles.read(args));
-  ipcMain.handle('project-files:write', (_event, args) => projectFiles.write(args));
+  const projectFileRequests = new Map();
+  function runProjectFileRequest(event, operation) {
+    const sender = event.sender;
+    let state = projectFileRequests.get(sender.id);
+    if (!state || state.sender !== sender) {
+      state = { sender, active: 0, destroyed: false };
+      projectFileRequests.set(sender.id, state);
+      sender.once('destroyed', () => {
+        state.destroyed = true;
+        if (projectFileRequests.get(sender.id) === state) projectFileRequests.delete(sender.id);
+      });
+    }
+    if (state.destroyed || sender.isDestroyed()) return { ok: false, error: 'project-unavailable' };
+    if (state.active >= 4) return { ok: false, error: 'busy' };
+    state.active += 1;
+    return Promise.resolve()
+      .then(operation)
+      .finally(() => { state.active = Math.max(0, state.active - 1); });
+  }
+
+  ipcMain.handle('project-files:open', (event, projectPath) =>
+    runProjectFileRequest(event, () => projectFiles.openProject(projectPath)));
+  ipcMain.handle('project-files:list', (event, args) =>
+    runProjectFileRequest(event, () => projectFiles.list(args)));
+  ipcMain.handle('project-files:read', (event, args) =>
+    runProjectFileRequest(event, () => projectFiles.read(args)));
+  ipcMain.handle('project-files:write', (event, args) =>
+    runProjectFileRequest(event, () => projectFiles.write(args)));
   ipcMain.handle('project-files:watch', (event, args) =>
     projectFiles.watch(event.sender.id, args, (change) => {
       if (!event.sender.isDestroyed()) event.sender.send('project-files:changed', change);

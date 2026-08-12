@@ -245,6 +245,32 @@ test('offers only verified Git worktrees after the project root', async (t) => {
   ]);
 });
 
+test('fails closed above 64 convention worktree candidates without returning a prefix', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  gitProject(fx.project);
+  const first = path.join(fx.project, '.worktrees');
+  const second = path.join(fx.project, '.claude', 'worktrees');
+  fs.mkdirSync(first, { recursive: true });
+  fs.mkdirSync(second, { recursive: true });
+  for (let index = 0; index < 32; index++) {
+    fs.mkdirSync(path.join(first, `first-${String(index).padStart(2, '0')}`));
+    fs.mkdirSync(path.join(second, `second-${String(index).padStart(2, '0')}`));
+  }
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+
+  const exact = await files.openProject(fx.project);
+  assert.equal(exact.ok, true);
+  assert.deepEqual(exact.roots.map(({ kind }) => kind), ['project']);
+
+  fs.mkdirSync(path.join(second, 'overflow'));
+  assert.deepEqual(await files.openProject(fx.project), {
+    ok: false,
+    error: 'worktree-limit',
+  });
+});
+
 test('accepts an admitted symlink spelling without admitting its real spelling', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -666,6 +692,7 @@ test('rejects a project repointed during Git root discovery', async (t) => {
     fs: {
       statSync: fs.statSync,
       realpathSync: fs.realpathSync,
+      opendirSync: fs.opendirSync,
       readdirSync: fs.readdirSync,
     },
     spawn(file, args, options) {
@@ -704,6 +731,7 @@ test('retries worktree discovery when a worktree symlink is repointed mid-refres
     fs: {
       statSync: fs.statSync,
       realpathSync: fs.realpathSync,
+      opendirSync: fs.opendirSync,
       readdirSync: fs.readdirSync,
     },
     spawn(file, args, options) {
@@ -745,6 +773,7 @@ test('retries when a worktree candidate is repointed before Git reads it', async
     fs: {
       statSync: fs.statSync,
       realpathSync: fs.realpathSync,
+      opendirSync: fs.opendirSync,
       readdirSync: fs.readdirSync,
     },
     spawn(file, args, options) {
@@ -802,6 +831,27 @@ test('lists only canonical relative directories and denies Git metadata', async 
     assert.equal((await files.list({ ...ids, directory })).error, 'invalid-path');
   }
   assert.equal((await files.list({ ...ids, directory: '.git' })).error, 'git-metadata-denied');
+});
+
+test('streams at most 4096 directory entries and fails closed at 4097', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  for (let index = 0; index < 4096; index++) {
+    fs.writeFileSync(path.join(fx.project, `entry-${String(index).padStart(4, '0')}`), 'x');
+  }
+  const files = createProjectFiles();
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  const exact = await files.list({ ...ids, directory: '' });
+  assert.equal(exact.ok, true);
+  assert.equal(exact.entries.length, 4096);
+
+  fs.writeFileSync(path.join(fx.project, 'overflow'), 'x');
+  assert.deepEqual(await files.list({ ...ids, directory: '' }), {
+    ok: false,
+    error: 'directory-too-large',
+  });
 });
 
 test('lists contained entries safely, omits Git metadata, and sorts directories first', async (t) => {
@@ -1115,6 +1165,79 @@ test('times out Git, kills its process group, and releases the execution slot', 
   assert.equal((await files.list({ ...ids, directory: '' })).ok, true);
 });
 
+test('uses the absolute operation deadline to kill active Git work', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let hang = false;
+  const children = [];
+  function controlledSpawn(file, args, options) {
+    if (!hang) return spawn(file, args, options);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kills = 0;
+    child.kill = () => { child.kills += 1; return true; };
+    children.push(child);
+    return child;
+  }
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitTimeoutMs: 1_000,
+    gitKillFallbackMs: 20,
+    operationTimeoutMs: 30,
+  });
+  t.after(() => files.close());
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  hang = true;
+  assert.deepEqual(await withDeadline(files.list({ ...ids, directory: '' })), {
+    ok: false,
+    error: 'operation-timeout',
+  });
+  assert.equal(children.length, 1);
+  assert.equal(children[0].kills, 1);
+});
+
+test('expires a queued Git operation without spawning it after its deadline', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  fs.writeFileSync(path.join(fx.project, 'normal.txt'), 'normal');
+  let hang = false;
+  const children = [];
+  function controlledSpawn(file, args, options) {
+    if (!hang) return spawn(file, args, options);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => true;
+    children.push(child);
+    return child;
+  }
+  const files = createProjectFiles({
+    spawn: controlledSpawn,
+    gitTimeoutMs: 1_000,
+    gitKillFallbackMs: 100,
+    gitMaxActive: 1,
+    gitMaxQueued: 1,
+    operationTimeoutMs: 30,
+  });
+  t.after(() => files.close());
+  files.admitProject(fx.project, 'configured');
+  const ids = await openedRoot(files, fx.project);
+
+  hang = true;
+  const active = files.list({ ...ids, directory: '' });
+  await waitForCondition(() => children.length === 1);
+  const queued = files.list({ ...ids, directory: '' });
+  assert.deepEqual(await withDeadline(queued), { ok: false, error: 'operation-timeout' });
+  assert.equal(children.length, 1);
+  assert.deepEqual(await withDeadline(active), { ok: false, error: 'operation-timeout' });
+});
+
 test('caps active and queued Git jobs, rejects saturation, and drains the queue after timeouts', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -1139,6 +1262,8 @@ test('caps active and queued Git jobs, rejects saturation, and drains the queue 
   });
   files.admitProject(fx.project, 'configured');
   const ids = await openedRoot(files, fx.project);
+  const timeoutResourcesBefore = process.getActiveResourcesInfo()
+    .filter((resource) => resource === 'Timeout').length;
 
   hang = true;
   const active = files.list({ ...ids, directory: '' });
@@ -1150,6 +1275,9 @@ test('caps active and queued Git jobs, rejects saturation, and drains the queue 
   assert.deepEqual(await withDeadline(queued), { ok: false, error: 'git-unavailable' });
   assert.equal(children.length, 2);
   assert.equal(children.every((child) => !processExists(child.pid)), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(process.getActiveResourcesInfo().filter((resource) => resource === 'Timeout').length,
+    timeoutResourcesBefore);
 });
 
 test('close kills active Git groups, rejects queued work, and prevents later spawns', async (t) => {
@@ -1608,6 +1736,7 @@ test('fails closed when a directory is retargeted between containment and enumer
     fs: {
       statSync: fs.statSync,
       lstatSync: fs.lstatSync,
+      opendirSync: fs.opendirSync,
       readdirSync: fs.readdirSync,
       realpathSync(value) {
         const resolved = fs.realpathSync(value);
@@ -2138,6 +2267,30 @@ test('rejects oversized output before creating a temporary file', async (t) => {
   assert.deepEqual(documentTemps(fx.project), []);
 });
 
+test('rejects an obviously oversized JS string before inspecting its contents', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'small.txt');
+  fs.writeFileSync(target, 'small');
+  const { files, ids } = await admittedFiles(fx.project);
+  const opened = await files.read({ ...ids, path: 'small.txt' });
+  const originalIncludes = String.prototype.includes;
+  let oversizedIncludes = 0;
+  String.prototype.includes = function instrumentedIncludes(...args) {
+    if (this.length > 5 * 1024 * 1024) oversizedIncludes += 1;
+    return Reflect.apply(originalIncludes, this, args);
+  };
+  t.after(() => { String.prototype.includes = originalIncludes; });
+
+  assert.deepEqual(await files.write({
+    ...ids, path: 'small.txt', content: 'x'.repeat((5 * 1024 * 1024) + 1),
+    expectedRevision: opened.revision, overwrite: false,
+  }), { ok: false, error: 'too-large' });
+  assert.equal(oversizedIncludes, 0);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'small');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
 test('detects a change after temp flush and removes only its own temporary file', async (t) => {
   const fx = fixture();
   t.after(fx.cleanup);
@@ -2158,6 +2311,36 @@ test('detects a change after temp flush and removes only its own temporary file'
   }), { ok: false, error: 'conflict' });
   assert.equal(hookCalls, 1);
   assert.equal(fs.readFileSync(target, 'utf8'), 'external');
+  assert.deepEqual(documentTemps(fx.project), []);
+});
+
+test('does not publish a write after its absolute operation deadline', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const target = path.join(fx.project, 'late.txt');
+  fs.writeFileSync(target, 'original');
+  const gate = deferred();
+  let reachedGate = false;
+  const { files, ids } = await admittedFiles(fx.project, {
+    operationTimeoutMs: 30,
+    beforeReplace: async () => {
+      reachedGate = true;
+      await gate.promise;
+    },
+  });
+  const opened = await files.read({ ...ids, path: 'late.txt' });
+
+  const writing = files.write({
+    ...ids, path: 'late.txt', content: 'late mutation',
+    expectedRevision: opened.revision, overwrite: false,
+  });
+  await waitForCondition(() => reachedGate);
+  assert.deepEqual(await withDeadline(writing), { ok: false, error: 'operation-timeout' });
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original');
+
+  gate.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original');
   assert.deepEqual(documentTemps(fx.project), []);
 });
 

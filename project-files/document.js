@@ -116,6 +116,7 @@ async function readDocument(target, options = {}) {
 }
 
 function encode(content, format) {
+  if (content.length > MAX_BYTES) return failure('too-large');
   if (content.includes('\0')) return failure('not-text');
   const normalized = content.replace(/\r\n?/g, '\n');
   const body = Buffer.from(normalized.replace(/\n/g, format.lineEnding), 'utf8');
