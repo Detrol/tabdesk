@@ -835,7 +835,8 @@ function projectTabPositions(projectCwd) {
   if (activeCwd !== projectCwd) return positions;
   for (const tab of sessionsOf(projectCwd)) {
     if (tab.tabEl && tab.tabEl.isConnected) {
-      positions.set(tab.id, tab.tabEl.getBoundingClientRect().left);
+      const { left, top } = tab.tabEl.getBoundingClientRect();
+      positions.set(tab.id, { left, top });
     }
   }
   return positions;
@@ -852,11 +853,14 @@ function cancelProjectTabAnimations(projectCwd) {
 function animateProjectTabOrder(projectCwd, before) {
   for (const tab of sessionsOf(projectCwd)) {
     if (tab.id === draggedTabId || !before.has(tab.id)) continue;
-    const delta = before.get(tab.id) - tab.tabEl.getBoundingClientRect().left;
-    if (Math.abs(delta) < 0.5) continue;
+    const previous = before.get(tab.id);
+    const { left, top } = tab.tabEl.getBoundingClientRect();
+    const deltaX = previous.left - left;
+    const deltaY = previous.top - top;
+    if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) continue;
     const animation = tab.tabEl.animate([
-      { transform: `translateX(${delta}px)` },
-      { transform: 'translateX(0)' },
+      { transform: `translate(${deltaX}px, ${deltaY}px)` },
+      { transform: 'translate(0, 0)' },
     ], {
       duration: 180,
       easing: 'cubic-bezier(.2,.8,.2,1)',

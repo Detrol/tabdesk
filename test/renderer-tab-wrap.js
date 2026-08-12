@@ -22,9 +22,12 @@ async function geometry(window) {
       rows: new Set(tabs.map((tab) => Math.round(tab.getBoundingClientRect().top))).size,
       stripHeight: stripRect.height,
       stripBottom: stripRect.bottom,
+      maxTabBottom: Math.max(...tabs.map((tab) => tab.getBoundingClientRect().bottom)),
       panelTop: panels.getBoundingClientRect().top,
       scrollWidth: strip.scrollWidth,
       clientWidth: strip.clientWidth,
+      scrollHeight: strip.scrollHeight,
+      clientHeight: strip.clientHeight,
     };
   })()`);
 }
@@ -49,7 +52,10 @@ app.whenReady().then(async () => {
 
     const wrapped = await geometry(window);
     assert(wrapped.rows > 1, JSON.stringify(wrapped));
+    assert(wrapped.stripHeight > 38, JSON.stringify(wrapped));
     assert(wrapped.scrollWidth <= wrapped.clientWidth + 1, JSON.stringify(wrapped));
+    assert(wrapped.maxTabBottom <= wrapped.stripBottom + 1, JSON.stringify(wrapped));
+    assert(wrapped.scrollHeight <= wrapped.clientHeight + 1, JSON.stringify(wrapped));
     assert(Math.abs(wrapped.panelTop - wrapped.stripBottom) <= 1, JSON.stringify(wrapped));
 
     await window.webContents.executeJavaScript(`new Promise((resolve) => {
