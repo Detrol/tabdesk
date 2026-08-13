@@ -1285,7 +1285,15 @@ app.whenReady().then(async () => {
           persistedSessions: claimed,
           operation,
         });
-        return restored.map((record) => ({ ...record, primary: primary(record) }));
+        const titles = await history.codexSessionTitles(restored
+          .filter((record) => record.agent === 'codex')
+          .map((record) => record.agentSession));
+        return restored.map((record) => {
+          const title = titles.get(record.agentSession);
+          const named = title && title !== record.name ? { ...record, name: title } : record;
+          if (named !== record) rememberTab(named);
+          return { ...named, primary: primary(named) };
+        });
       } catch (_) {
         projectFiles.replaceAdmissions('restored', []);
         return [];
@@ -1302,6 +1310,7 @@ app.whenReady().then(async () => {
       }
       const orphans = [];
       const live = new Set();
+      const liveCwds = new Map();
       const spellings = projectSpellings();
       if (!spellings) {
         projectFiles.replaceAdmissions('restored', []);
@@ -1310,9 +1319,10 @@ app.whenReady().then(async () => {
       for (const { session, cwd: raw } of listing.rows) {
         if (!session.startsWith('td-')) continue;
         live.add(session);
-        if (claimed.has(session)) continue;
         if (!raw || !fs.existsSync(raw)) continue;
         const cwd = projectsRoot.logicalizeCwd(raw, spellings);
+        liveCwds.set(session, cwd);
+        if (claimed.has(session)) continue;
         orphans.push({ session, cwd, agent: null, name: path.basename(cwd) });
       }
       // A record whose session tmux no longer holds is not something to come
@@ -1321,7 +1331,7 @@ app.whenReady().then(async () => {
       // that looks live and starts a brand new agent when clicked. Drop it —
       // the conversation itself is still offered under the overview's
       // "earlier", which is where starting it again belongs.
-      const keep = sessionOwnership.reconcileLive(prepared, live);
+      const keep = sessionOwnership.reconcileLive(prepared, live, liveCwds, fs.existsSync);
       return done(keep, orphans);
     } catch (_) {
       projectFiles.replaceAdmissions('restored', []);

@@ -130,7 +130,7 @@ test('tmux listing is row-bounded and a timed-out client is killed fail-closed',
     timeoutMs: 15,
     execFile(file, args, options) {
       assert.equal(file, 'tmux');
-      assert.deepEqual(args, ['ls', '-F', '#S #{session_path}']);
+      assert.deepEqual(args, ['ls', '-F', '#S #{pane_current_path}']);
       assert.equal(options.killSignal, 'SIGKILL');
       assert.equal(options.env.LC_ALL, 'C');
       return {
@@ -821,6 +821,34 @@ test('a missing live cwd stays claimed across consecutive restarts until tmux pr
   const final = state.ownership.prepareRestore(state.records(), fs.existsSync);
   assert.deepEqual(state.ownership.reconcileLive(final, new Set()), []);
   assert.deepEqual(state.records(), []);
+});
+
+test('a live session whose directory moved follows the current tmux pane path', async (t) => {
+  const fx = fixture();
+  t.after(fx.cleanup);
+  const missing = path.join(fx.base, 'old-project-path');
+  const record = {
+    session: 'td-codex-moved', cwd: missing, projectPath: missing,
+    agent: 'codex', name: 'Moved', agentSession: 'conversation-id',
+  };
+  const state = registry([record], createProjectFiles());
+  const prepared = state.ownership.prepareRestore(state.records(), fs.existsSync);
+
+  const keep = state.ownership.reconcileLive(
+    prepared,
+    new Set([record.session]),
+    new Map([[record.session, fx.project]]),
+    fs.existsSync,
+  );
+
+  assert.deepEqual(keep, [{
+    session: record.session, cwd: fx.project,
+    agent: 'codex', name: 'Moved', agentSession: 'conversation-id',
+  }]);
+  assert.deepEqual(await state.ownership.restore(keep, {
+    persistedSessions: prepared.claimed,
+  }), [{ ...keep[0], projectPath: fx.project }]);
+  assert.deepEqual(state.records(), [{ ...keep[0], projectPath: fx.project }]);
 });
 
 test('failed durable cleanup keeps the quarantine record until a later retry succeeds', async (t) => {

@@ -351,6 +351,17 @@ app.on('ready', async () => {
   ok('rad utan cwd ar inte meta', H.codexMeta('{"type":"event_msg"}') === null);
   ok('titel ur user_message',
     H.codexTitle(line({ type: 'event_msg', payload: { type: 'user_message', message: 'Fixa bygget' } })) === 'Fixa bygget');
+  const codexInjectedLegacyContext = line({
+    type: 'event_msg',
+    payload: {
+      type: 'user_message',
+      message: '# AGENTS.md instructions for /srv/dev/tabdesk\n<INSTRUCTIONS>...',
+    },
+  });
+  ok('injicerad legacy-kontext blir ingen titel',
+    H.codexTitle(codexInjectedLegacyContext
+      + line({ type: 'event_msg', payload: { type: 'user_message', message: 'Riktig titel' } }))
+      === 'Riktig titel');
   const codexResponseTitle = line({
     type: 'response_item',
     payload: {
@@ -395,11 +406,62 @@ app.on('ready', async () => {
   ok('aldre dag hittas', codexRows[1].title === 'Gammalt arende');
   ok('agenten ar utsatt', codexRows.every((r) => r.agent === 'codex'));
 
+  const { execFileSync } = require('child_process');
+  const codexDb = path.join(STORE, 'state_5.sqlite');
+  const codexSql = (sql) => execFileSync('sqlite3', [codexDb, sql], { encoding: 'utf8' });
+  codexSql(`
+    CREATE TABLE threads (
+      id TEXT PRIMARY KEY,
+      cwd TEXT NOT NULL,
+      source TEXT NOT NULL,
+      thread_source TEXT,
+      title TEXT NOT NULL,
+      first_user_message TEXT NOT NULL,
+      archived INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      created_at_ms INTEGER,
+      updated_at_ms INTEGER,
+      recency_at_ms INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO threads VALUES
+      ('99999999-9999-4999-8999-999999999999', '${CWD}', 'cli', 'user',
+       'Titel fran Codex index', 'Titel fran Codex index', 0,
+       1000, 2000, 1000000, 2000000, 1900000),
+      ('88888888-8888-4888-8888-888888888888', '${CWD}', 'exec', 'user',
+       'Icke-interaktiv', 'Icke-interaktiv', 0,
+       2000, 3000, 2000000, 3000000, 2900000),
+      ('77777777-7777-4777-8777-777777777777', '${CWD}', 'cli', 'subagent',
+       'Underagent', 'Underagent', 0,
+       3000, 4000, 3000000, 4000000, 3900000),
+      ('66666666-6666-4666-8666-666666666666', '${CWD}', 'cli', 'user',
+       'Arkiverad', 'Arkiverad', 1,
+       4000, 5000, 4000000, 5000000, 4900000);
+    WITH RECURSIVE noise(n) AS (
+      VALUES(1) UNION ALL SELECT n + 1 FROM noise WHERE n < 350
+    )
+    INSERT INTO threads
+      SELECT printf('00000000-0000-4000-8000-%012d', n), '/annat/projekt', 'cli', 'user',
+        'Brus', 'Brus', 0, 5000 + n, 5000 + n, 5000000 + n, 5000000 + n, 5000000 + n
+      FROM noise;
+  `);
+  const indexedCodexRows = await H.previousSessions(CWD, ['codex'], { codex: codexDb });
+  ok('Codex index hittar projektet bakom mer an 300 andra sessioner',
+    indexedCodexRows.length === 1
+      && indexedCodexRows[0].id === '99999999-9999-4999-8999-999999999999',
+    indexedCodexRows.map((r) => r.id).join(', '));
+  ok('Codex index ger den riktiga titeln', indexedCodexRows[0]?.title === 'Titel fran Codex index',
+    indexedCodexRows[0]?.title);
+  const indexedTitles = await H.codexSessionTitles(
+    ['99999999-9999-4999-8999-999999999999', '--unsafe-id'], codexDb);
+  ok('Codex index kan namnge en flyttad aktiv session via dess id',
+    indexedTitles.get('99999999-9999-4999-8999-999999999999') === 'Titel fran Codex index'
+      && indexedTitles.size === 1);
+
   console.log('== opencode sessionslager ==');
   // opencode keeps everything in one SQLite file. The fixture is a minimal
   // schema the real CLI would write — enough for history, transcript and
   // usage to exercise their queries without depending on a live install.
-  const { execFileSync } = require('child_process');
   const ocdb = path.join(STORE, 'opencode.db');
   const ocSql = (sql) => execFileSync('sqlite3', [ocdb, sql], { encoding: 'utf8' });
   ocSql(`

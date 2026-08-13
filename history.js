@@ -209,17 +209,24 @@ function codexMeta(firstLine) {
 // tool preamble, so the first real turn comes after that context. Older Codex
 // versions duplicate it as a user_message event; newer ones only keep the
 // response_item.
-function codexTitle(text) {
-  const m = /"user_message"[^\n]{0,120}?"message":"((?:[^"\\]|\\.)*)"/.exec(text);
-  if (m) return clip(unquote(m[1]));
+function codexPrompt(value) {
+  const prompt = typeof value === 'string' ? value.trim() : '';
+  if (!prompt
+    || prompt.startsWith('# AGENTS.md instructions for ')
+    || prompt.startsWith('<environment_context>')) return null;
+  return prompt;
+}
 
-  // Newer Codex rollouts no longer duplicate user turns as user_message
-  // events. Their first user response_item is injected project context, so
-  // ignore those known wrappers and use the first actual input_text instead.
+function codexTitle(text) {
   for (const raw of text.split('\n')) {
     let record;
     try { record = JSON.parse(raw); } catch (_) { continue; }
     const payload = record && record.payload;
+    if (record.type === 'event_msg' && payload?.type === 'user_message') {
+      const prompt = codexPrompt(payload.message);
+      if (prompt) return clip(prompt);
+      continue;
+    }
     if (record.type !== 'response_item'
       || !payload
       || payload.type !== 'message'
@@ -228,13 +235,67 @@ function codexTitle(text) {
 
     const prompt = payload.content
       .filter((item) => item && item.type === 'input_text' && typeof item.text === 'string')
-      .map((item) => item.text.trim())
-      .find((value) => value
-        && !value.startsWith('# AGENTS.md instructions for ')
-        && !value.startsWith('<environment_context>'));
+      .map((item) => codexPrompt(item.text))
+      .find(Boolean);
     if (prompt) return clip(prompt);
   }
   return null;
+}
+
+async function indexedCodexSessions(cwd, database) {
+  try {
+    if (!fs.existsSync(database)) return null;
+  } catch (_) {
+    return null;
+  }
+  const dirs = spellingsOf(cwd).map(opencodeStore.sqlString).join(', ');
+  const rows = await opencodeStore.query(
+    'SELECT id, title, first_user_message, created_at, updated_at, '
+    + 'created_at_ms, updated_at_ms, recency_at_ms FROM threads '
+    + `WHERE cwd IN (${dirs}) AND archived = 0 `
+    + "AND source NOT IN ('exec', 'codex_exec', 'mcp') "
+    + "AND source NOT LIKE '{\"subagent\"%' "
+    + "AND COALESCE(thread_source, '') <> 'subagent' "
+    + 'ORDER BY COALESCE(NULLIF(recency_at_ms, 0), NULLIF(updated_at_ms, 0), updated_at * 1000) DESC '
+    + `LIMIT ${MAX_PER_AGENT}`,
+    database);
+  if (!rows) return null;
+
+  const out = [];
+  for (const row of rows) {
+    const id = String(row.id || '');
+    if (!SAFE_ID.test(id)) continue;
+    const titleRaw = String(row.title || row.first_user_message || '').trim();
+    const at = Number(row.recency_at_ms) || Number(row.updated_at_ms)
+      || Number(row.updated_at) * 1000 || 0;
+    const born = Number(row.created_at_ms) || Number(row.created_at) * 1000 || 0;
+    out.push({ agent: 'codex', id, title: titleRaw ? clip(titleRaw) : null, at, born });
+  }
+  return out;
+}
+
+async function codexSessionTitles(ids, root) {
+  const safe = [...new Set(Array.isArray(ids) ? ids : [])]
+    .filter((id) => typeof id === 'string' && SAFE_ID.test(id))
+    .slice(0, 64);
+  const out = new Map();
+  if (!safe.length) return out;
+  const database = root || path.join(os.homedir(), '.codex', 'state_5.sqlite');
+  try {
+    if (!fs.existsSync(database)) return out;
+  } catch (_) {
+    return out;
+  }
+  const rows = await opencodeStore.query(
+    'SELECT id, title, first_user_message FROM threads '
+    + `WHERE id IN (${safe.map(opencodeStore.sqlString).join(', ')})`,
+    database);
+  for (const row of rows || []) {
+    const id = String(row.id || '');
+    const title = String(row.title || row.first_user_message || '').trim();
+    if (SAFE_ID.test(id) && title) out.set(id, clip(title));
+  }
+  return out;
 }
 
 async function codexDays(root) {
@@ -251,7 +312,7 @@ async function codexDays(root) {
   return out;
 }
 
-async function codexSessions(cwd, root) {
+async function rolloutCodexSessions(cwd, root) {
   const spellings = spellingsOf(cwd);
   const base = root || path.join(os.homedir(), '.codex', 'sessions');
   const out = [];
@@ -285,6 +346,19 @@ async function codexSessions(cwd, root) {
     }
   }
   return out;
+}
+
+async function codexSessions(cwd, root) {
+  const explicitDatabase = typeof root === 'string' && path.extname(root) === '.sqlite';
+  const database = explicitDatabase
+    ? root
+    : (!root ? path.join(os.homedir(), '.codex', 'state_5.sqlite') : null);
+  if (database) {
+    const indexed = await indexedCodexSessions(cwd, database);
+    if (indexed) return indexed;
+    if (explicitDatabase) return [];
+  }
+  return rolloutCodexSessions(cwd, root);
 }
 
 // ---- opencode ------------------------------------------------------------
@@ -390,6 +464,7 @@ module.exports = {
   // Exported for the tests, which drive the parsers directly rather than
   // depending on whatever conversations happen to be on the machine.
   claudeDirFor, spellingsOf, claudeTitle, claudeSessions, codexMeta, codexTitle, codexSessions,
+  codexSessionTitles,
   opencodeSessions,
   kimiSessions,
 };

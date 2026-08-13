@@ -1012,6 +1012,27 @@ async function run() {
 
   console.log('== bounded session restore ==');
   const priorRecords = records().map((record) => ({ ...record }));
+  const movedSession = 'td-codex-moved-project';
+  const missingProject = path.join(SCRATCH, 'moved-away');
+  settingsModule.set('openTabs', [{
+    session: movedSession,
+    cwd: missingProject,
+    projectPath: missingProject,
+    agent: 'codex',
+    name: 'Moved project',
+  }]);
+  nextTmuxList = { stdout: `${movedSession} ${PROJECT_PATHS[0]}\n` };
+  const movedRestore = await sender.executeJavaScript('window.api.restoreTabs()');
+  check('restore follows a live tmux pane after its stored directory moved',
+    movedRestore.length === 1
+      && movedRestore[0].session === movedSession
+      && movedRestore[0].cwd === PROJECT_PATHS[0]
+      && movedRestore[0].projectPath === PROJECT_PATHS[0]
+      && records()[0]?.cwd === PROJECT_PATHS[0]
+      && records()[0]?.projectPath === PROJECT_PATHS[0],
+    JSON.stringify({ restored: movedRestore, records: records() }));
+  settingsModule.set('openTabs', priorRecords);
+
   const oversized = Array.from({ length: 65 }, (_, index) => ({
     session: `td-codex-overflow-${index}`,
     cwd: PROJECT_PATHS[0],

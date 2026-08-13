@@ -76,7 +76,7 @@ function createTmuxSessionLister({
         finish(classifyTmuxSessionList(error, stdout, stderr));
       };
       try {
-        child = execFile('tmux', ['ls', '-F', '#S #{session_path}'], {
+        child = execFile('tmux', ['ls', '-F', '#S #{pane_current_path}'], {
           env: { ...env, LC_ALL: 'C' },
           maxBuffer,
           killSignal: 'SIGKILL',
@@ -334,12 +334,26 @@ function createSessionOwnership({
     return { known: true, records: restorable, persisted: candidates, claimed };
   }
 
-  function reconcileLive(prepared, liveSessions) {
+  function reconcileLive(prepared, liveSessions, liveCwds, exists) {
     const live = liveSessions instanceof Set ? liveSessions : new Set();
     for (const record of prepared?.persisted || []) {
       if (!live.has(record.session)) forget(record.session);
     }
-    return (prepared?.records || []).filter((record) => live.has(record.session));
+    const keep = (prepared?.records || []).filter((record) => live.has(record.session));
+    if (!(liveCwds instanceof Map) || typeof exists !== 'function') return keep;
+
+    const restorable = new Set(keep.map((record) => record.session));
+    for (const stored of prepared?.persisted || []) {
+      if (!live.has(stored.session) || restorable.has(stored.session)) continue;
+      const cwd = liveCwds.get(stored.session);
+      if (typeof cwd !== 'string' || !cwd || !exists(cwd)) continue;
+      // The old owner cannot authorize a path that no longer exists. Treat the
+      // live pane's current directory like an orphan so restore() verifies and
+      // persists its ownership afresh before exposing it to the renderer.
+      const { projectPath: _staleOwner, ...record } = stored;
+      keep.push({ ...record, cwd });
+    }
+    return keep;
   }
 
   return { rememberCurrent, prepareRestore, reconcileLive, restore };
