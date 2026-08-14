@@ -47,6 +47,7 @@ function setup(stage) {
       rootLeaveSubscriptions: 0,
       rootLeaveChecks: 0,
       rootLeaveDecision: null,
+      allocations: [],
       tray: null,
     };
     const stage = ${JSON.stringify(stage)};
@@ -115,11 +116,55 @@ function setup(stage) {
           fallback: 'shell',
         },
       },
-      listProjects: async () => [{ name: 'Fixture', path: '/fixture', worktrees: [] }],
-      restoreTabs: async () => [],
+      listProjects: async () => stage === 'workspace-overview'
+        ? [{
+          name: 'trading',
+          path: '/srv/dev/trading',
+          branch: null,
+          worktrees: [{
+            name: 'risk-fix',
+            path: '/srv/dev/trading/.worktrees/risk-fix',
+            branch: 'fix/risk',
+          }],
+          repositories: [{
+            kind: 'repository',
+            name: 'tradingagents',
+            path: '/srv/dev/trading/tradingagents',
+            branch: 'codex-subscription',
+          }],
+        }]
+        : [{ name: 'Fixture', path: '/fixture', worktrees: [] }],
+      restoreTabs: async () => stage === 'workspace-overview'
+        ? [
+          {
+            session: 'td-shell-tradingagents',
+            cwd: '/srv/dev/trading/tradingagents',
+            projectPath: '/srv/dev/trading/tradingagents',
+            agent: 'shell',
+            name: 'Terminal',
+          },
+          {
+            session: 'td-codex-tradingagents',
+            cwd: '/srv/dev/trading/tradingagents',
+            projectPath: '/srv/dev/trading/tradingagents',
+            agent: 'shell',
+            name: 'Crypto analysis',
+          },
+          {
+            session: 'td-shell-daily-report',
+            cwd: '/srv/dev/trading/reports/daily',
+            projectPath: '/srv/dev/trading/reports/daily',
+            agent: 'shell',
+            name: 'Daily report',
+          },
+        ]
+        : [],
       activityNow: async () => ({}),
       previousSessions: async () => [],
-      allocateSession: async () => ({ session: 'reserved-session', suffix: 0 }),
+      allocateSession: async (...args) => {
+        state.allocations.push(args);
+        return { session: 'reserved-session', suffix: 0 };
+      },
       getModel: async () => 'default',
       getEffort: async () => 'default',
       releaseSession: (session) => {
@@ -202,6 +247,49 @@ async function runGeneratedDeclineScenario() {
       tabsAfterClose: document.querySelectorAll('.stab:not(.ov):not(.files):not(.add)').length,
     };
   })()`);
+}
+
+async function runWorkspaceOverviewScenario() {
+  const window = await createRenderer('workspace-overview');
+  await waitFor(window, 'tabs.size === 3', 'restored workspace sessions');
+  await window.webContents.executeJavaScript("showOverview('/srv/dev/trading')");
+  const result = await window.webContents.executeJavaScript(`(() => {
+    const workspace = document.querySelector(
+      '.ov-workspace[data-path="/srv/dev/trading/tradingagents"]');
+    const worktree = document.querySelector(
+      '.ov-workspace[data-path="/srv/dev/trading/.worktrees/risk-fix"]');
+    const folder = document.querySelector(
+      '.ov-workspace[data-path="/srv/dev/trading/reports/daily"]');
+    return {
+      projects: [...projects.keys()],
+      parentSessions: sessionsOf('/srv/dev/trading').map((tab) => ({
+        session: tab.session,
+        cwd: tab.cwd,
+        projectCwd: tab.projectCwd,
+      })),
+      nestedSessions: sessionsOf('/srv/dev/trading/tradingagents').length,
+      workspace: workspace && {
+        branch: workspace.querySelector('.ov-branch')?.textContent || '',
+        sessions: workspace.querySelectorAll('.ov-row').length,
+        open: workspace.open,
+      },
+      worktree: worktree && {
+        branch: worktree.querySelector('.ov-branch')?.textContent || '',
+        open: worktree.open,
+      },
+      folder: folder && {
+        kind: folder.querySelector('.ov-kind')?.textContent || '',
+        sessions: folder.querySelectorAll('.ov-row').length,
+        open: folder.open,
+      },
+    };
+  })()`);
+  result.allocation = await window.webContents.executeJavaScript(`(() => {
+    document.querySelector(
+      '.ov-workspace-start[data-path="/srv/dev/trading/tradingagents"]')?.click();
+    return window.__sessionTest.allocations[0] || null;
+  })()`);
+  return result;
 }
 
 async function runScenario(stage) {
@@ -297,6 +385,33 @@ app.whenReady().then(async () => {
         && declined.releasedSessions[0] === declined.generated
         && declined.tabsAfterClose === 0,
       JSON.stringify(declined));
+
+    const workspace = await runWorkspaceOverviewScenario();
+    ok('restored nested repository sessions appear in the parent Overview without another rail project',
+      workspace.projects.length === 1
+        && workspace.projects[0] === '/srv/dev/trading'
+        && workspace.parentSessions.length === 3
+        && workspace.parentSessions.filter((tab) =>
+          tab.cwd === '/srv/dev/trading/tradingagents'
+            && tab.projectCwd === '/srv/dev/trading').length === 2
+        && workspace.parentSessions.some((tab) =>
+          tab.cwd === '/srv/dev/trading/reports/daily'
+            && tab.projectCwd === '/srv/dev/trading')
+        && workspace.nestedSessions === 0
+        && workspace.workspace?.branch === 'codex-subscription'
+        && workspace.workspace?.sessions === 2
+        && workspace.workspace?.open === true,
+      JSON.stringify(workspace));
+    ok('Overview shows an ordinary nested folder only because it has a restorable session',
+      workspace.folder?.kind === 'overview.kind.folder'
+        && workspace.folder?.sessions === 1
+        && workspace.folder?.open === true,
+      JSON.stringify(workspace));
+    ok('Overview offers inactive worktrees and starts a repository in its exact cwd',
+      workspace.worktree?.branch === 'fix/risk'
+        && workspace.worktree?.open === false
+        && workspace.allocation?.[0] === '/srv/dev/trading/tradingagents',
+      JSON.stringify(workspace));
   } catch (error) {
     failures += 1;
     console.error(error && error.stack ? error.stack : error);

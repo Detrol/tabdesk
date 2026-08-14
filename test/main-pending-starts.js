@@ -92,6 +92,11 @@ git(SOURCE, ['commit', '-m', 'initial']);
 const REAL_WORKTREE = path.join(SOURCE, '.worktrees', 'topic');
 fs.mkdirSync(path.dirname(REAL_WORKTREE));
 git(SOURCE, ['worktree', 'add', '-b', 'topic', REAL_WORKTREE]);
+const NESTED_REPOSITORY = path.join(SOURCE, 'nested-repository');
+fs.mkdirSync(NESTED_REPOSITORY);
+git(NESTED_REPOSITORY, ['init', '--initial-branch=research']);
+fs.mkdirSync(path.join(SOURCE, 'invalid-repository', '.git'), { recursive: true });
+fs.symlinkSync(NESTED_REPOSITORY, path.join(SOURCE, 'linked-repository'), 'dir');
 const PROJECT_PATHS = [];
 for (let index = 1; index <= 21; index++) {
   const project = path.join(PROJECTS, `project-${String(index).padStart(2, '0')}`);
@@ -915,10 +920,18 @@ async function run() {
   for (const [index, rows] of listings.entries()) {
     const projects = rows.filter((row) => !row.root);
     const complete = rows.length === 22 && projects.length === 21
-      && projects.every((row) => row.worktrees.length === 1
-        && row.worktrees[0].path === `${row.path}/.worktrees/topic`);
-    check(`concurrent projects:list #${index + 1} returns every verified worktree`, complete,
-      JSON.stringify(projects.map((row) => row.worktrees.length)));
+      && projects.every((row) => row.branch === 'main'
+        && row.worktrees.length === 1
+        && row.worktrees[0].path === `${row.path}/.worktrees/topic`
+        && row.worktrees[0].branch === 'topic'
+        && row.repositories?.length === 1
+        && row.repositories[0].path === `${row.path}/nested-repository`
+        && row.repositories[0].branch === 'research');
+    check(`concurrent projects:list #${index + 1} returns every verified worktree and nested repository`,
+      complete, JSON.stringify(projects.map((row) => ({
+        worktrees: row.worktrees,
+        repositories: row.repositories,
+      }))));
   }
   check('concurrent projects:list coalesces one Git/worktree scan per configured row',
     describeWorktreeCalls - descriptionsBefore === 22,
@@ -937,6 +950,16 @@ async function run() {
   const restoredProjects = await win.webContents.executeJavaScript('window.api.listProjects()');
   check('projects:list can recover after a bounded root overflow',
     restoredProjects.length === 22, String(restoredProjects.length));
+  const nestedProject = path.join(PROJECT_PATHS[0], 'nested-repository');
+  const nestedAllocation = await win.webContents.executeJavaScript(
+    `window.api.allocateSession(${JSON.stringify(nestedProject)}, "codex", "Nested", false)`);
+  const nestedRecord = nestedAllocation?.session
+    ? records().find((row) => row.session === nestedAllocation.session)
+    : null;
+  check('a verified nested repository can reserve a session under its exact ownership',
+    nestedRecord?.cwd === nestedProject && nestedRecord?.projectPath === nestedProject,
+    JSON.stringify({ nestedAllocation, nestedRecord }));
+  if (nestedAllocation?.session) releaseSessions(sender, nestedAllocation.session);
 
   console.log('== bounded project-file IPC ==');
   delayFileOperations = true;

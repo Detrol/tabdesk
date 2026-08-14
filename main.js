@@ -1221,7 +1221,7 @@ app.whenReady().then(async () => {
   // symlinked project by its spelling under the projects folder — adopting the
   // physical spelling would grow a second rail row for the same project.
   const PROJECT_DIRECTORY_LIMIT = 4096;
-  const boundedProjectNames = (base) => {
+  const boundedProjectNames = (base, limit = PROJECT_DIRECTORY_LIMIT) => {
     let directory;
     const names = [];
     let seen = 0;
@@ -1231,7 +1231,7 @@ app.whenReady().then(async () => {
         const entry = directory.readSync();
         if (!entry) return names;
         seen += 1;
-        if (seen > PROJECT_DIRECTORY_LIMIT) return null;
+        if (seen > limit) return null;
         if (!entry.name.startsWith('.')) names.push(entry.name);
       }
     } catch (_) {
@@ -1427,31 +1427,35 @@ app.whenReady().then(async () => {
   // git binary — small reads — so the status bar can ask on every tab switch
   // without spawning anything. Detached HEAD shortens to 7 hex; anything
   // unreadable is null and the bar shows project only.
+  const branchAt = (dir) => {
+    try {
+      const gitPath = path.join(dir, '.git');
+      const st = fs.lstatSync(gitPath);
+      let headFile;
+      if (st.isFile()) {
+        const text = fs.readFileSync(gitPath, 'utf8').trim();
+        const m = /^gitdir:\s*(.+)$/i.exec(text);
+        if (!m) return null;
+        const gitdir = path.isAbsolute(m[1]) ? m[1] : path.resolve(dir, m[1]);
+        headFile = path.join(gitdir, 'HEAD');
+      } else if (st.isDirectory()) {
+        headFile = path.join(gitPath, 'HEAD');
+      } else {
+        return null;
+      }
+      const head = fs.readFileSync(headFile, 'utf8').trim();
+      const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+      if (ref) return ref[1];
+      if (/^[0-9a-f]{7,40}$/i.test(head)) return head.slice(0, 7);
+    } catch (_) { /* not a checkout at this exact directory */ }
+    return null;
+  };
   const branchOf = (cwd) => {
     if (typeof cwd !== 'string' || !cwd) return null;
     let dir = cwd;
     for (let n = 0; n < 48; n++) {
-      try {
-        const gitPath = path.join(dir, '.git');
-        const st = fs.lstatSync(gitPath);
-        let headFile;
-        if (st.isFile()) {
-          const text = fs.readFileSync(gitPath, 'utf8').trim();
-          const m = /^gitdir:\s*(.+)$/i.exec(text);
-          if (!m) return null;
-          const gitdir = path.isAbsolute(m[1]) ? m[1] : path.resolve(dir, m[1]);
-          headFile = path.join(gitdir, 'HEAD');
-        } else if (st.isDirectory()) {
-          headFile = path.join(gitPath, 'HEAD');
-        } else {
-          return null;
-        }
-        const head = fs.readFileSync(headFile, 'utf8').trim();
-        const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
-        if (ref) return ref[1];
-        if (/^[0-9a-f]{7,40}$/i.test(head)) return head.slice(0, 7);
-        return null;
-      } catch (_) { /* keep walking */ }
+      const branch = branchAt(dir);
+      if (branch) return branch;
       const parent = path.dirname(dir);
       if (parent === dir) return null;
       dir = parent;
@@ -1485,6 +1489,32 @@ app.whenReady().then(async () => {
     }
   }
 
+  // ponytail: one level and 256 entries cover current Overview discovery;
+  // recurse only if deeper repositories become a demonstrated need.
+  const WORKSPACE_DIRECTORY_LIMIT = 256;
+  function nestedRepositories(projectPath) {
+    const names = boundedProjectNames(projectPath, WORKSPACE_DIRECTORY_LIMIT);
+    if (!names) return [];
+    const repositories = [];
+    for (const name of names) {
+      const repositoryPath = path.join(projectPath, name);
+      try {
+        if (!fs.lstatSync(repositoryPath).isDirectory()) continue;
+      } catch (_) {
+        continue;
+      }
+      const branch = branchAt(repositoryPath);
+      if (!branch) continue;
+      repositories.push({
+        kind: 'repository',
+        name,
+        path: repositoryPath,
+        branch,
+      });
+    }
+    return repositories.sort((left, right) => left.name.localeCompare(right.name));
+  }
+
   async function describeProjectRows(rows) {
     let next = 0;
     async function worker() {
@@ -1493,10 +1523,13 @@ app.whenReady().then(async () => {
         if (index >= rows.length) return;
         const row = rows[index];
         const worktrees = await projectFiles.describeWorktrees(row.path);
+        row.branch = branchOf(row.path);
         row.worktrees = worktrees.map((worktree) => ({
           ...worktree,
+          branch: branchOf(worktree.path),
           model: model.getFor(worktree.path, agents.getFor(worktree.path)),
         }));
+        row.repositories = row.root ? [] : nestedRepositories(row.path);
       }
     }
     await Promise.all(Array.from({ length: Math.min(4, rows.length) }, worker));
@@ -1508,7 +1541,7 @@ app.whenReady().then(async () => {
       const root = {
         name: path.basename(identity.base), path: identity.base, root: true,
         model: model.getFor(identity.base, agents.getFor(identity.base)),
-        closed: false, worktrees: [],
+        closed: false, worktrees: [], repositories: [],
       };
       // stat rather than the Dirent: a symlinked project is still a project
       // (isDirectory() is false for the link itself), and dot-dirs (.git,
@@ -1524,16 +1557,19 @@ app.whenReady().then(async () => {
           return {
             name, path: full, mtime: st.mtimeMs,
             model: model.getFor(full, agents.getFor(full)), closed: closed.has(full),
-            worktrees: [],
+            worktrees: [], repositories: [],
           };
         })
         .filter(Boolean)
         .sort((a, b) => b.mtime - a.mtime);
       const rows = [root, ...dirs];
       if (projectsRootIdentity()?.key !== identity.key) return [];
-      projectFiles.replaceAdmissions('configured', rows.map((row) => row.path));
       await describeProjectRows(rows);
       if (projectsRootIdentity()?.key !== identity.key) return [];
+      projectFiles.replaceAdmissions('configured', rows.flatMap((row) => [
+        row.path,
+        ...row.repositories.map((repository) => repository.path),
+      ]));
       return rows;
     } catch (_) {
       if (projectsRootIdentity()?.key === identity.key) {

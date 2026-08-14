@@ -1552,7 +1552,13 @@ function buildProject(p, { atTop } = {}) {
   else railList.appendChild(el);
 
   const rec = {
-    name: p.name, path: p.path, worktrees: p.worktrees || [], el, lastId: null,
+    name: p.name,
+    path: p.path,
+    branch: p.branch || null,
+    worktrees: p.worktrees || [],
+    repositories: p.repositories || [],
+    el,
+    lastId: null,
   };
   projects.set(p.path, rec);
   renderProject(p.path);
@@ -1774,7 +1780,50 @@ function liveRow(s) {
   return row;
 }
 
-// The "running now" list is the one part of the overview that changes while you
+function workspaceGroups(project, mine) {
+  const workspaces = new Map();
+  const add = (workspace) => {
+    if (!workspace?.path || workspaces.has(workspace.path)) return;
+    workspaces.set(workspace.path, { ...workspace, sessions: [] });
+  };
+  add({ kind: 'project', name: project.name, path: project.path, branch: project.branch });
+  for (const worktree of project.worktrees) add({ kind: 'worktree', ...worktree });
+  for (const repository of project.repositories) add({ kind: 'repository', ...repository });
+
+  for (const session of mine) {
+    const workspace = [...workspaces.values()]
+      .filter((candidate) => candidate.kind !== 'project' || session.cwd === candidate.path)
+      .filter((candidate) => session.cwd === candidate.path
+        || session.cwd.startsWith(`${candidate.path}/`))
+      .sort((left, right) => right.path.length - left.path.length)[0];
+    if (workspace) {
+      workspace.sessions.push(session);
+      continue;
+    }
+    const name = session.cwd.split('/').filter(Boolean).pop() || session.cwd;
+    add({ kind: 'folder', name, path: session.cwd, branch: null });
+    workspaces.get(session.cwd).sessions.push(session);
+  }
+  return [...workspaces.values()];
+}
+
+function workspaceEl(workspace) {
+  const item = newEl('details', 'ov-workspace');
+  item.dataset.path = workspace.path;
+  item.open = workspace.sessions.length > 0;
+  const summary = newEl('summary', 'ov-workspace-head');
+  summary.append(
+    newEl('span', 'ov-workspace-name', workspace.name),
+    newEl('span', 'ov-kind', t(`overview.kind.${workspace.kind}`)),
+  );
+  if (workspace.branch) summary.appendChild(newEl('span', 'ov-branch', workspace.branch));
+  summary.appendChild(newEl('span', 'ov-workspace-count', String(workspace.sessions.length)));
+  item.appendChild(summary);
+  for (const session of workspace.sessions) item.appendChild(liveRow(session));
+  return item;
+}
+
+// The workspace list is the one part of the overview that changes while you
 // look at it, so renderProject calls this on every state change. Patched rather
 // than rebuilt: this runs on every chunk of output, and replacing the buttons
 // under the pointer would eat clicks.
@@ -1782,16 +1831,24 @@ function renderLiveRows(cwd) {
   if (overviewCwd !== cwd) return;
   const host = overviewEl.querySelector('.ov-sec.live');
   if (!host) return;
+  const project = projects.get(cwd);
+  if (!project) return;
   const mine = sessionsOf(cwd);
+  const groups = workspaceGroups(project, mine);
+  const ordered = groups.flatMap((workspace) => workspace.sessions);
+  const signature = groups.map((workspace) =>
+    `${workspace.path}\0${workspace.sessions.map((session) => session.id).join(',')}`).join('\1');
   const rows = [...host.querySelectorAll('.ov-row')];
-  if (rows.length !== mine.length || rows.some((el, i) => el.dataset.id !== mine[i].id)) {
+  if (host.dataset.signature !== signature
+    || rows.length !== mine.length
+    || rows.some((el, i) => el.dataset.id !== ordered[i].id)) {
     while (host.children.length > 1) host.lastElementChild.remove();   // keep the <h3>
-    if (!mine.length) host.appendChild(newEl('p', 'ov-empty', t('overview.none')));
-    for (const s of mine) host.appendChild(liveRow(s));
+    host.dataset.signature = signature;
+    for (const workspace of groups) host.appendChild(workspaceEl(workspace));
     return;
   }
   rows.forEach((el, i) => {
-    const s = mine[i];
+    const s = ordered[i];
     const dot = el.querySelector('.dot');
     const cls = dotClass(s);
     if (dot.className !== cls) dot.className = cls;
@@ -1837,10 +1894,16 @@ async function renderOverview(cwd) {
     last.addEventListener('click', () => newSession(cwd, a.id, { resume: {} }));
     chips.appendChild(last);
   }
-  for (const w of p.worktrees) {
-    const chip = newEl('button', 'ov-chip wt', `⑂ ${w.name.split('/').pop()}`);
-    chip.title = w.path;
-    chip.addEventListener('click', () => newSession(w.path, null, { projectCwd: cwd }));
+  for (const workspace of workspaceGroups(p, sessionsOf(cwd))) {
+    if (workspace.path === cwd) continue;
+    const chip = newEl('button', `ov-chip ov-workspace-start ${workspace.kind}`,
+      `+ ${workspace.name}`);
+    chip.dataset.path = workspace.path;
+    chip.title = workspace.branch
+      ? `${workspace.branch}\n${workspace.path}`
+      : workspace.path;
+    chip.addEventListener('click', () =>
+      newSession(workspace.path, null, { projectCwd: cwd }));
     chips.appendChild(chip);
   }
   start.appendChild(chips);
@@ -2677,7 +2740,9 @@ if (!bootRoot.configured) {
     t: (key) => window.t(key),
   });
 } else {
+let configuredProjects = [];
 window.api.listProjects().then((list) => {
+  configuredProjects = list.map((project) => project.path);
   for (const p of list) {
     if (p.closed) continue;
     buildProject(p);
@@ -2685,7 +2750,12 @@ window.api.listProjects().then((list) => {
   return window.api.restoreTabs();
 }).then((records) => {
   for (const rec of records || []) {
-    const owner = rec.projectPath || ownerOf(rec.cwd);
+    // Display ownership follows the deepest configured rail row. The exact,
+    // verified projectPath stays in main's session record and is not rewritten.
+    const verifiedOwner = rec.projectPath || ownerOf(rec.cwd);
+    const owner = configuredProjects
+      .filter((candidate) => rec.cwd === candidate || rec.cwd.startsWith(`${candidate}/`))
+      .sort((left, right) => right.length - left.length)[0] || verifiedOwner;
     if (!projects.has(owner)) {
       buildProject({ name: owner.split('/').pop(), path: owner, worktrees: [] });
     }
