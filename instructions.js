@@ -30,6 +30,7 @@ const FILES = {
   gemini:   { project: 'GEMINI.md', global: () => path.join(os.homedir(), '.gemini', 'GEMINI.md') },
   opencode: { project: 'AGENTS.md', global: () => path.join(os.homedir(), '.config', 'opencode', 'AGENTS.md') },
   kimi:     { project: 'AGENTS.md', global: () => path.join(model.KIMI_HOME(), 'AGENTS.md') },
+  grok:     { project: 'AGENTS.md', global: () => path.join(model.GROK_HOME(), 'AGENTS.md') },
   // Aider has no user-wide instruction file worth editing — its conventions
   // file is something you opt into per project.
   aider:    { project: 'AGENTS.md', global: null },

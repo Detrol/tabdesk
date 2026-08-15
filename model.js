@@ -9,6 +9,7 @@
 // Where the choices come from, per agent:
 //   claude    the alias list below (TabDesk's own, and stable across releases)
 //   opencode  `opencode models`, which the CLI answers from its own providers
+//   grok      `grok models`, parsed from its stable bullet list
 //   codex     the models this machine has actually run, read out of the recent
 //             rollouts (plus the config default). Codex has no list command
 //             and bakes its /model choices into the binary — but every session
@@ -38,6 +39,12 @@ const KIMI_HOME = () => {
   return path.join(os.homedir(), '.kimi-code');
 };
 const KIMI_CONFIG = () => path.join(KIMI_HOME(), 'config.toml');
+const GROK_HOME = () => {
+  const env = process.env.GROK_HOME;
+  if (env && typeof env === 'string' && env.trim()) return path.resolve(env.trim());
+  return path.join(os.homedir(), '.grok');
+};
+const GROK_CONFIG = () => path.join(GROK_HOME(), 'config.toml');
 
 // Aliases, not pinned model ids: each alias tracks the latest model in its
 // family, so this list doesn't go stale on the next release. The "[1m]" suffix
@@ -93,6 +100,16 @@ function globalDefault(agent = 'claude') {
       // Top-level default_model = "…", not inside a [table].
       const head = fs.readFileSync(KIMI_CONFIG(), 'utf8').split(/^\s*\[/m)[0];
       const m = head.match(/^\s*default_model\s*=\s*"([^"]+)"/m);
+      return m && SAFE_ID.test(m[1]) ? m[1] : 'default';
+    } catch (_) { return 'default'; }
+  }
+  if (agent === 'grok') {
+    try {
+      const text = fs.readFileSync(GROK_CONFIG(), 'utf8');
+      const table = /^\s*\[models\]\s*$/m.exec(text);
+      if (!table) return 'default';
+      const block = text.slice(table.index + table[0].length).split(/^\s*\[/m)[0];
+      const m = /^\s*default\s*=\s*"([^"]+)"/m.exec(block);
       return m && SAFE_ID.test(m[1]) ? m[1] : 'default';
     } catch (_) { return 'default'; }
   }
@@ -221,6 +238,37 @@ function listFromCommand(agent, bin, args) {
   });
 }
 
+function grokModelsFromText(text) {
+  const out = [];
+  for (const line of String(text || '').split('\n')) {
+    const match = /^\s*[*-]\s+([^\s(]+)/.exec(line);
+    if (match && SAFE_ID.test(match[1]) && !out.includes(match[1])) out.push(match[1]);
+  }
+  return out;
+}
+
+function listFromGrok() {
+  const key = 'grok';
+  const hit = listCache.get(key);
+  if (hit && Date.now() - hit.at < LIST_TTL_MS) return Promise.resolve(hit.models);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (models) => {
+      if (done) return;
+      done = true;
+      listCache.set(key, { at: Date.now(), models });
+      resolve(models);
+    };
+    try {
+      const child = execFile('grok', ['models'], { timeout: 8000 }, (err, stdout) => {
+        if (err || !stdout) return finish([]);
+        finish(grokModelsFromText(stdout).map((id) => ({ id, label: id, hint: null })));
+      });
+      child.on('error', () => finish([]));
+    } catch (_) { finish([]); }
+  });
+}
+
 // The rows the picker shows for an agent. Always starts with Default; an agent
 // with nothing else to offer gets that row alone, and the renderer shows the
 // picker as read-only rather than empty.
@@ -289,6 +337,9 @@ function list(agent = 'claude') {
   if (agent === 'kimi') {
     return listFromKimi().then((models) => [DEFAULT_ROW, ...models]);
   }
+  if (agent === 'grok') {
+    return listFromGrok().then((models) => [DEFAULT_ROW, ...models]);
+  }
   return Promise.resolve([DEFAULT_ROW]);
 }
 
@@ -354,4 +405,7 @@ function watchGlobal(onChange) {
 // re-read them all at once after an import rewrote them.
 function allFor() { return { ...storedModels() }; }
 
-module.exports = { list, globalDefault, getFor, setFor, allFor, flagFor, keyFor, watchGlobal, codexModelsFromText, KIMI_HOME };
+module.exports = {
+  list, globalDefault, getFor, setFor, allFor, flagFor, keyFor, watchGlobal,
+  codexModelsFromText, grokModelsFromText, KIMI_HOME, GROK_HOME,
+};

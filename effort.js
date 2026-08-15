@@ -5,6 +5,7 @@
 //   codex   `-c model_reasoning_effort=<level>`, minimal … ultra
 //   kimi    no CLI flag — `env KIMI_MODEL_THINKING_EFFORT=<level>` (docs env-vars;
 //           levels come from the model's support_efforts, typically low/high/max)
+//   grok    `--reasoning-effort <level>`, none … max
 // The rest have no such setting, and the picker stays hidden for them rather
 // than pretending. Levels are each CLI's own vocabulary and never cross.
 //
@@ -25,6 +26,12 @@ const KIMI_HOME = () => {
   return path.join(os.homedir(), '.kimi-code');
 };
 const KIMI_CONFIG = () => path.join(KIMI_HOME(), 'config.toml');
+const GROK_HOME = () => {
+  const env = process.env.GROK_HOME;
+  if (env && typeof env === 'string' && env.trim()) return path.resolve(env.trim());
+  return path.join(os.homedir(), '.grok');
+};
+const GROK_CONFIG = () => path.join(GROK_HOME(), 'config.toml');
 
 const DEFAULT_ROW = { id: 'default', label: 'Default' };
 
@@ -38,6 +45,7 @@ const LEVELS = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   codex: ['minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'],
   kimi: ['low', 'high', 'max'],
+  grok: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
 };
 
 // Shown beside a level that needs saying what it is. Keys into i18n.
@@ -74,6 +82,16 @@ function globalDefault(agent = 'claude') {
       const block = think ? think[1] : text;
       const m = block.match(/^\s*effort\s*=\s*"([^"]+)"/m);
       return m && SAFE_LEVEL.test(m[1]) && LEVELS.kimi.includes(m[1]) ? m[1] : 'default';
+    } catch (_) { return 'default'; }
+  }
+  if (agent === 'grok') {
+    try {
+      const text = fs.readFileSync(GROK_CONFIG(), 'utf8');
+      const table = /^\s*\[models\]\s*$/m.exec(text);
+      if (!table) return 'default';
+      const block = text.slice(table.index + table[0].length).split(/^\s*\[/m)[0];
+      const m = /^\s*default_reasoning_effort\s*=\s*"([^"]+)"/m.exec(block);
+      return m && LEVELS.grok.includes(m[1]) ? m[1] : 'default';
     } catch (_) { return 'default'; }
   }
   return 'default';
@@ -127,6 +145,7 @@ function flagFor(agent, id) {
   if (!id || id === 'default' || !supports(agent) || !LEVELS[agent].includes(id)) return '';
   if (agent === 'claude') return ` --effort ${id}`;
   if (agent === 'kimi') return `KIMI_MODEL_THINKING_EFFORT=${id}`;
+  if (agent === 'grok') return ` --reasoning-effort ${id}`;
   return ` -c model_reasoning_effort=${id}`;
 }
 

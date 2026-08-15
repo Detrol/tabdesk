@@ -797,6 +797,8 @@ app.on('ready', async () => {
   const EF = require(path.join(ROOT, 'effort'));
   ok('claude har egna nivaer', EF.list('claude').map((r) => r.id).join(',') === 'default,low,medium,high,xhigh,max,ultracode');
   ok('codex har sina', EF.list('codex').map((r) => r.id).join(',') === 'default,minimal,low,medium,high,xhigh,ultra');
+  ok('grok har egna effort-nivaer',
+    EF.list('grok').map((r) => r.id).join(',') === 'default,none,minimal,low,medium,high,xhigh,max');
   ok('agent utan installning far inga rader', EF.list('gemini').length === 0 && !EF.supports('gemini'));
   ok('claude-flaggan', EF.flagFor('claude', 'xhigh') === ' --effort xhigh');
   ok('ultracode ar ett eget lage, inte en niva hos codex',
@@ -804,6 +806,7 @@ app.on('ready', async () => {
   ok('ultracode forklarar sig i menyn',
     (EF.list('claude').find((r) => r.id === 'ultracode') || {}).hint === 'bar.effort.hint.ultracode');
   ok('codex-flaggan ar en config-override', EF.flagFor('codex', 'ultra') === ' -c model_reasoning_effort=ultra');
+  ok('grok effort blir CLI-flagga', EF.flagFor('grok', 'xhigh') === ' --reasoning-effort xhigh');
   ok('default ger ingen flagga', EF.flagFor('claude', 'default') === '');
   ok('nivan maste finnas hos agenten', EF.flagFor('claude', 'ultra') === '' && EF.flagFor('codex', 'max') === '');
   ok('agent utan installning ger ingen flagga', EF.flagFor('gemini', 'high') === '');
@@ -821,6 +824,14 @@ app.on('ready', async () => {
   ok('distinkta modeller utan dubbletter', mids.length === 2 && mids.includes('gpt-5.6-sol') && mids.includes('gpt-5.6-terra'), mids.join(','));
   ok('osakra id avvisas', !mids.some((x) => x.includes(';')));
   ok('tom text ger tom lista', MD.codexModelsFromText('inget har').length === 0);
+  const grokModels = typeof MD.grokModelsFromText === 'function' ? MD.grokModelsFromText([
+    'Default model: grok-4.6',
+    'Available models:',
+    '  * grok-4.6 (default)',
+    '  - grok-4.5',
+    '  - bad;rm',
+  ].join('\n')) : [];
+  ok('grok-modeller parsas', grokModels.join(',') === 'grok-4.6,grok-4.5', grokModels.join(','));
 
   console.log('== nyaste rollout over dagkataloger ==');
   const CODEXROOT = fsx.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-cx-'));
@@ -850,8 +861,23 @@ app.on('ready', async () => {
   // be set before instructions.js is required — nothing above has resolved it.
   const INSROOT = fsx.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-ins-'));
   const INSPROJ = path.join(INSROOT, 'projektet');
+  const GROKHOME = path.join(PROFILE, 'grok-home');
+  const GROKBIN = path.join(PROFILE, 'bin');
   fsx.mkdirSync(INSPROJ, { recursive: true });
+  fsx.mkdirSync(GROKBIN, { recursive: true });
+  fsx.writeFileSync(path.join(GROKBIN, 'grok'), '#!/bin/sh\nexit 0\n');
+  fsx.chmodSync(path.join(GROKBIN, 'grok'), 0o755);
   process.env.TABDESK_PROJECTS_DIR = INSROOT;
+  process.env.GROK_HOME = GROKHOME;
+  process.env.PATH = GROKBIN + path.delimiter + process.env.PATH;
+  const AG = require(path.join(ROOT, 'agents'));
+  const grokAgent = AG.list().find((agent) => agent.id === 'grok');
+  ok('grok finns i agentlistan', grokAgent
+    && grokAgent.label === 'Grok'
+    && grokAgent.command === 'grok --permission-mode auto'
+    && grokAgent.takesModel
+    && grokAgent.resumeArgs === '--resume {id}'
+    && grokAgent.continueArgs === '--continue');
   const INS = require(path.join(ROOT, 'instructions'));
 
   ok('saknad fil lases som tom',
@@ -869,6 +895,10 @@ app.on('ready', async () => {
   ok('omläsning ger samma innehall',
     (() => { const r = INS.read('claude', 'project', INSPROJ); return r.ok && r.exists && r.content === '# Regler\n'; })());
   ok('roten sjalv ar ett giltigt projekt', INS.write('codex', 'project', INSROOT, 'rot\n').ok === true);
+  ok('grok anvander projektets AGENTS.md',
+    (() => { const r = INS.read('grok', 'project', INSPROJ); return r.ok && r.path === path.join(INSPROJ, 'AGENTS.md'); })());
+  ok('grok anvander global AGENTS.md',
+    (() => { const r = INS.read('grok', 'global', INSPROJ); return r.ok && r.path === path.join(GROKHOME, 'AGENTS.md'); })());
 
   try { fsx.rmSync(INSROOT, { recursive: true, force: true }); } catch (_) { /* gone */ }
   }
