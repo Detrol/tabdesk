@@ -766,9 +766,8 @@ function startCmdFor(t) {
 // Agents whose TUI does its own mouse selection and copies what you selected
 // by sending OSC 52. Their tabs keep the mouse; every other tab gets xterm's
 // own selection forced on instead (see materialize). Claude Code's fullscreen
-// renderer is the one that qualifies today — its classic renderer does not, so
-// a tab is at worst back to selecting whatever tmux gives it.
-const SELECTS_ITSELF = new Set(['claude']);
+// renderers that qualify today are Claude Code fullscreen and Grok.
+const SELECTS_ITSELF = new Set(['claude', 'grok']);
 
 // Reasoning effort, in each CLI's own syntax. Mirrors effort.js in main; the
 // level is checked against that agent's own list rather than escaped, so
@@ -776,6 +775,7 @@ const SELECTS_ITSELF = new Set(['claude']);
 const EFFORT_LEVELS = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   codex: ['minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'],
+  grok: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   kimi: ['low', 'high', 'max'],
 };
 function effortSupported(agent) { return Boolean(EFFORT_LEVELS[agent]); }
@@ -784,6 +784,7 @@ function effortFlag(agent, level) {
   if (!EFFORT_LEVELS[agent].includes(level)) return '';
   if (agent === 'claude') return ` --effort ${level}`;
   if (agent === 'kimi') return `KIMI_MODEL_THINKING_EFFORT=${level}`;
+  if (agent === 'grok') return ` --reasoning-effort ${level}`;
   return ` -c model_reasoning_effort=${level}`;
 }
 
@@ -3175,9 +3176,10 @@ function setMeterLabelRaw(sel, text) {
 //   claude   plan windows from the account API, else local transcript estimate
 //   codex    plan windows from the latest rollout
 //   kimi     plan windows from the managed /usages endpoint (same as CLI /usage)
-//   opencode no plan API and no honest per-model quota — meters stay hidden
+//   opencode/grok no plan API or honest quota — meters stay hidden
 //   other    dashed "no data" under that runtime's name
 const PLAN_METERS = [['m-session', 'session'], ['m-week', 'week'], ['m-scoped', 'scoped']];
+const NO_QUOTA_AGENTS = new Set(['opencode', 'grok']);
 let usage = null;          // last local Claude scan — Claude meters only
 let limits = { ok: false }; // last plan-limit read (claude/codex/kimi)
 let metersAgent = 'claude'; // the runtime the bar currently describes
@@ -3255,9 +3257,7 @@ function renderLocalMeters() {
   }
 }
 
-// opencode has no plan-quota API and no honest per-model limit we can show
-// next to Claude/Codex. Hide the plan meters rather than invent local spend
-// bars that look like the same thing.
+// These runtimes have no plan-quota API we can show next to Claude/Codex.
 function hidePlanMeters() {
   for (const [sel] of PLAN_METERS) {
     const el = document.getElementById(sel);
@@ -3284,7 +3284,7 @@ function renderNoDataMeters() {
 }
 
 function renderMeters() {
-  if (metersAgent === 'opencode') hidePlanMeters();
+  if (NO_QUOTA_AGENTS.has(metersAgent)) hidePlanMeters();
   else if (limits.ok) renderPlanMeters();
   else if (metersAgent === 'claude') renderLocalMeters();
   else renderNoDataMeters();
@@ -3300,7 +3300,7 @@ async function refreshLimits() {
   const agent = focusedAgent();
   metersAgent = agent;
 
-  if (agent === 'opencode') {
+  if (NO_QUOTA_AGENTS.has(agent)) {
     // Drop any previous plan payload so a later paint cannot reuse it.
     limits = { ok: false, reason: 'unsupported' };
     renderMeters();
@@ -3450,7 +3450,7 @@ setInterval(refreshLimits, 60000);  // plan quota: the number that actually move
 // started is that tab's conversation, and with two fresh tabs on one project
 // the oldest tab claims the earliest birth. Once matched the id sticks and is
 // persisted on the record, so later rounds (and restarts) just follow renames.
-const TITLED_AGENTS = new Set(['claude', 'codex']);
+const TITLED_AGENTS = new Set(['claude', 'codex', 'grok']);
 
 async function refreshTitles() {
   const eligible = [...tabs.values()].filter((t) =>

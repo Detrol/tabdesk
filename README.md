@@ -28,9 +28,9 @@ ends it too. No tmux command is ever required.
 
 - **Every project's first tab is its overview** — what it is running now, what
   it can start, and the conversations it has had before. That last list is read
-  from Claude Code's, Codex's, opencode's and Kimi Code's own session stores, so
+  from Claude Code's, Codex's, opencode's, Kimi Code's and Grok's own session stores, so
   picking one resumes it (`claude --resume`, `codex resume`, `opencode --session`,
-  `kimi --session`) in a session of its own. Sessions the SDK started — code
+  `kimi --session`, `grok --resume`) in a session of its own. Sessions the SDK started — code
   reviews, subagents — are left out; they are jobs, not conversations.
 - **The projects folder itself is the rail's home row** (`⌂`, pinned on top) —
   work that spans projects runs in the root, and its sessions and earlier
@@ -46,11 +46,13 @@ ends it too. No tmux command is ever required.
   project into a Codex project — the project's pick is only the seed the next
   session is born with, and sessions already open keep what they are running.
 - **The model bar follows the session's agent.** Claude Code gets the alias
-  list, opencode and Kimi Code are asked for their providers, and a CLI that
+  list, opencode and Kimi Code are asked for their providers, Grok is asked for
+  its models, and a CLI that
   can only be configured from inside itself shows what it is set to, read-only.
   Picks are stored per project *and* agent, so they never cross. Kimi effort
   uses `KIMI_MODEL_THINKING_EFFORT` (no CLI flag); plan meters follow the same
-  `/usages` endpoint as Kimi's own `/usage`.
+  `/usages` endpoint as Kimi's own `/usage`. Grok effort uses
+  `--reasoning-effort`; its quota meters stay hidden because no quota source is available.
 - **Finished sessions show how long they have waited**, and a project row
   carries the longest wait of the sessions under it, so a rail of green dots
   can be worked oldest-first.

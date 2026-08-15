@@ -712,6 +712,18 @@ app.on('ready', async () => {
   ok('grok transcript avvisar annan cwd',
     (typeof TR.readGrok === 'function' ? TR.readGrok('/helt/annan', grokSid, grokRoot) : null) === null);
 
+  console.log('== grok rendererpolicy ==');
+  const rendererSource = fsx.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
+  const grokSet = (name) => new RegExp(
+    `const ${name} = new Set\\(\\[[^\\]]*'grok'[^\\]]*\\]\\)`,
+  ).test(rendererSource);
+  ok('grok ager TUI-musen', grokSet('SELECTS_ITSELF'));
+  ok('grok far levande sessionstitlar', grokSet('TITLED_AGENTS'));
+  ok('grok doljer kvotmatare utan data', grokSet('NO_QUOTA_AGENTS'));
+  ok('grok renderer skickar ratt effort-flagga',
+    /grok:\s*\[[^\]]*'xhigh'[^\]]*\]/.test(rendererSource)
+    && rendererSource.includes("if (agent === 'grok') return ` --reasoning-effort ${level}`;"));
+
   console.log('== fysisk cwd tillbaka till radens stavning ==');
   const PR = require(path.join(ROOT, 'projects-root'));
   const entries = [
