@@ -647,6 +647,71 @@ app.on('ready', async () => {
   ok('kimi tool namnges', kText && kText.includes('[Bash]'));
   ok('kimi frammande cwd ger null', (await TR.read('/helt/annan', kSid, { kimi: kimiHome })) === null);
 
+  console.log('== grok sessionslager ==');
+  const grokRoot = path.join(STORE, 'grok');
+  const grokGroup = path.join(grokRoot, encodeURIComponent(CWD));
+  const grokSid = '019f86bd-6407-7b41-82df-5c2c71c85c89';
+  const grokDir = path.join(grokGroup, grokSid);
+  const grokSummary = (id, cwd, title, created, updated, extra = {}) => ({
+    info: { id, cwd },
+    generated_title: title,
+    session_summary: title ? `Reserv ${title}` : 'Reservtitel',
+    created_at: created,
+    updated_at: updated,
+    ...extra,
+  });
+  write(path.join(grokDir, 'summary.json'), JSON.stringify(grokSummary(
+    grokSid, CWD, 'Grok-arendet', '2026-08-01T10:00:00.000Z', '2026-08-05T11:00:00.000Z',
+  )), Date.parse('2026-08-05T11:00:00.000Z'));
+  for (let i = 0; i < 11; i += 1) {
+    const id = `grok-extra-${String(i).padStart(2, '0')}`;
+    write(path.join(grokGroup, id, 'summary.json'), JSON.stringify(grokSummary(
+      id, CWD, `Extra ${i}`, '2026-07-01T10:00:00.000Z', `2026-07-${String(i + 1).padStart(2, '0')}T11:00:00.000Z`,
+    )), Date.parse(`2026-07-${String(i + 1).padStart(2, '0')}T11:00:00.000Z`));
+  }
+  write(path.join(grokGroup, 'foreign-session', 'summary.json'), JSON.stringify(grokSummary(
+    'foreign-session', '/helt/annan', 'Fel projekt', '2026-08-03T10:00:00.000Z', '2026-08-03T11:00:00.000Z',
+  )));
+  write(path.join(grokGroup, 'subagent-session', 'summary.json'), JSON.stringify(grokSummary(
+    'subagent-session', CWD, 'Underagent', '2026-08-04T10:00:00.000Z', '2026-08-04T11:00:00.000Z',
+    { session_kind: 'subagent' },
+  )));
+  write(path.join(grokGroup, '--unsafe', 'summary.json'), JSON.stringify(grokSummary(
+    '--unsafe', CWD, 'Osaker', '2026-08-04T10:00:00.000Z', '2026-08-04T11:00:00.000Z',
+  )));
+
+  const grokRows = typeof H.grokSessions === 'function'
+    ? await H.grokSessions(CWD, grokRoot)
+    : [];
+  ok('grok begransar listan till tio', grokRows.length === 10, String(grokRows.length));
+  ok('grok nyast forst', grokRows[0] && grokRows[0].id === grokSid, grokRows.map((r) => r.id).join(', '));
+  ok('grok titel och agent foljer med', grokRows[0]
+    && grokRows[0].title === 'Grok-arendet' && grokRows[0].agent === 'grok');
+  ok('grok tider parsas', grokRows[0]
+    && grokRows[0].born === Date.parse('2026-08-01T10:00:00.000Z')
+    && grokRows[0].at === Date.parse('2026-08-05T11:00:00.000Z'));
+  ok('grok avvisar annan cwd, underagent och osakert id',
+    !grokRows.some((r) => ['foreign-session', 'subagent-session', '--unsafe'].includes(r.id)));
+
+  const grokUpdate = (update) => JSON.stringify({
+    method: 'session/update', params: { sessionId: grokSid, update },
+  }) + '\n';
+  write(path.join(grokDir, 'updates.jsonl'),
+    grokUpdate({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'Hej Grok' } })
+    + grokUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'hemlig tanke' } })
+    + grokUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hej ' } })
+    + grokUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'tillbaka' } })
+    + grokUpdate({ sessionUpdate: 'tool_call', title: 'Bash' })
+    + grokUpdate({ sessionUpdate: 'tool_call_update', rawOutput: { secret: 'ra output' } }));
+  const grokText = typeof TR.readGrok === 'function' ? TR.readGrok(CWD, grokSid, grokRoot) : null;
+  ok('grok transcript lases', typeof grokText === 'string' && grokText.includes('Hej Grok'), grokText);
+  ok('grok sammanfogar assistant-chunks', grokText && grokText.includes('Hej tillbaka'));
+  ok('grok tanke och raw output hoppas over', grokText
+    && !grokText.includes('hemlig tanke') && !grokText.includes('ra output'));
+  ok('grok tool namnges', grokText && grokText.includes('[Bash]'));
+  ok('grok transcript avvisar annan cwd',
+    (typeof TR.readGrok === 'function' ? TR.readGrok('/helt/annan', grokSid, grokRoot) : null) === null);
+
   console.log('== fysisk cwd tillbaka till radens stavning ==');
   const PR = require(path.join(ROOT, 'projects-root'));
   const entries = [

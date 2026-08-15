@@ -22,6 +22,7 @@ const CACHE_MS = 60000;
 const CLAUDE_MAX_FILES = 40;    // logs to open before giving up on finding ten
 const CODEX_MAX_DAYS = 90;      // day directories to walk back through
 const CODEX_MAX_FILES = 300;    // …and rollouts to open while doing it
+const GROK_MAX_FILES = 40;      // summary.json files to inspect for ten rows
 const META_BYTES = 16 * 1024;   // enough for codex's session_meta line
 const MARK_BYTES = 64 * 1024;   // …and for the record claude marks a log with
 // Both formats open with preamble — pasted diffs, project instructions, tool
@@ -426,6 +427,99 @@ async function kimiSessions(cwd, root) {
   return out.slice(0, MAX_PER_AGENT);
 }
 
+// ---- Grok ---------------------------------------------------------------
+// One directory per cwd (URL-encoded), then one directory per session. The
+// small summary.json is the index; updates.jsonl stays unopened until the user
+// asks to read that conversation.
+
+function grokRoot(root) {
+  if (root) return root;
+  const home = process.env.GROK_HOME && String(process.env.GROK_HOME).trim();
+  return path.join(home ? path.resolve(home) : path.join(os.homedir(), '.grok'), 'sessions');
+}
+
+function grokGroupDirs(cwd, root) {
+  const base = grokRoot(root);
+  const spellings = spellingsOf(cwd);
+  const out = [];
+  let needsMarkerScan = false;
+  for (const spelling of spellings) {
+    const name = encodeURIComponent(spelling);
+    needsMarkerScan ||= Buffer.byteLength(name) > 255;
+    const dir = path.join(base, name);
+    try { if (fs.statSync(dir).isDirectory()) out.push(dir); } catch (_) { /* absent */ }
+  }
+  if (!needsMarkerScan) return [...new Set(out)];
+
+  // Overlong encoded names are replaced by a slug+hash. Grok records the real
+  // cwd in a .cwd marker, so only this uncommon case needs a root scan.
+  let entries;
+  try { entries = fs.readdirSync(base, { withFileTypes: true }); } catch (_) { return [...new Set(out)]; }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(base, entry.name);
+    if (out.includes(dir)) continue;
+    try {
+      const owner = fs.readFileSync(path.join(dir, '.cwd'), 'utf8').replace(/\r?\n$/, '');
+      if (spellings.includes(owner)) out.push(dir);
+    } catch (_) { /* not an overlong group */ }
+  }
+  return [...new Set(out)];
+}
+
+function grokSummary(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return null; }
+}
+
+function grokSessionDir(cwd, sessionId, root) {
+  if (!SAFE_ID.test(String(sessionId || ''))) return null;
+  const spellings = spellingsOf(cwd);
+  for (const group of grokGroupDirs(cwd, root)) {
+    const dir = path.join(group, sessionId);
+    const summary = grokSummary(path.join(dir, 'summary.json'));
+    if (summary?.session_kind === 'subagent') continue;
+    if (summary?.info?.id === sessionId && spellings.includes(summary.info.cwd)) return dir;
+  }
+  return null;
+}
+
+async function grokSessions(cwd, root) {
+  const spellings = spellingsOf(cwd);
+  const candidates = [];
+  for (const group of grokGroupDirs(cwd, root)) {
+    let entries;
+    try { entries = await fsp.readdir(group, { withFileTypes: true }); } catch (_) { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
+      const file = path.join(group, entry.name, 'summary.json');
+      const st = await fsp.stat(file).catch(() => null);
+      if (st?.isFile()) candidates.push({ id: entry.name, file, st });
+    }
+  }
+  candidates.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
+
+  const out = [];
+  const seen = new Set();
+  for (const { id, file, st } of candidates.slice(0, GROK_MAX_FILES)) {
+    if (seen.has(id)) continue;
+    let summary;
+    try { summary = JSON.parse(await fsp.readFile(file, 'utf8')); } catch (_) { continue; }
+    if (summary?.session_kind === 'subagent'
+      || summary?.info?.id !== id
+      || !spellings.includes(summary?.info?.cwd)) continue;
+    seen.add(id);
+    const titleRaw = summary.generated_title || summary.session_summary || null;
+    out.push({
+      agent: 'grok',
+      id,
+      title: titleRaw != null && String(titleRaw).trim() ? clip(titleRaw) : null,
+      at: Date.parse(summary.updated_at || summary.last_active_at || '') || st.mtimeMs,
+      born: Date.parse(summary.created_at || '') || st.birthtimeMs,
+    });
+  }
+  return out.sort((a, b) => b.at - a.at).slice(0, MAX_PER_AGENT);
+}
+
 // ---- what the overview asks for ------------------------------------------
 
 const PROVIDERS = {
@@ -433,6 +527,7 @@ const PROVIDERS = {
   codex: codexSessions,
   opencode: opencodeSessions,
   kimi: kimiSessions,
+  grok: grokSessions,
 };
 
 // Opening the overview should not re-walk the codex store for every repaint,
@@ -467,4 +562,6 @@ module.exports = {
   codexSessionTitles,
   opencodeSessions,
   kimiSessions,
+  grokSessions,
+  grokSessionDir,
 };

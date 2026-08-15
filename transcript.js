@@ -40,12 +40,13 @@ function textOf(content) {
 
 function rootsOf(root) {
   if (root && typeof root === 'object' && !Array.isArray(root)) {
-    return { claude: root.claude, opencode: root.opencode, kimi: root.kimi };
+    return { claude: root.claude, opencode: root.opencode, kimi: root.kimi, grok: root.grok };
   }
   return {
     claude: typeof root === 'string' ? root : undefined,
     opencode: undefined,
     kimi: undefined,
+    grok: undefined,
   };
 }
 
@@ -225,6 +226,62 @@ function readKimi(cwd, sessionId, root) {
   return out.length ? out.join('\n') : null;
 }
 
+// Grok: the documented ACP update stream. Text arrives in chunks; consecutive
+// chunks of the same role are joined before display. Thoughts and tool output
+// stay out, matching the other transcript readers.
+function readGrok(cwd, sessionId, root) {
+  const dir = history.grokSessionDir(cwd, sessionId, root);
+  if (!dir) return null;
+  const file = path.join(dir, 'updates.jsonl');
+  let raw;
+  try {
+    const st = fs.statSync(file);
+    const fd = fs.openSync(file, 'r');
+    try {
+      const len = Math.min(st.size, MAX_BYTES);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, st.size - len);
+      raw = buf.toString('utf8');
+    } finally { try { fs.closeSync(fd); } catch (_) { /* closed */ } }
+  } catch (_) {
+    return null;
+  }
+
+  const out = [];
+  let role = null;
+  let pending = '';
+  const flush = () => {
+    const body = pending.trim();
+    if (body) out.push(role === 'user' ? `\n› ${body}\n` : body);
+    role = null;
+    pending = '';
+  };
+  for (const line of raw.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch (_) { continue; }
+    const update = rec?.params?.update;
+    if (!update || typeof update !== 'object') continue;
+    if (update.sessionUpdate === 'user_message_chunk'
+      || update.sessionUpdate === 'agent_message_chunk') {
+      const nextRole = update.sessionUpdate === 'user_message_chunk' ? 'user' : 'assistant';
+      const text = update.content?.text;
+      if (typeof text !== 'string') continue;
+      if (role && role !== nextRole) flush();
+      role = nextRole;
+      pending += text;
+      continue;
+    }
+    if (update.sessionUpdate === 'tool_call') {
+      flush();
+      const name = String(update.title || update.kind || 'tool').replace(/\s+/g, ' ').trim();
+      out.push(`[${name || 'tool'}]`);
+    }
+  }
+  flush();
+  return out.length ? out.join('\n') : null;
+}
+
 // Returns the conversation as text, or null when there is no transcript to
 // read. Never throws — this feeds a viewer, not a workflow.
 //
@@ -233,16 +290,16 @@ function readKimi(cwd, sessionId, root) {
 async function read(cwd, sessionId, root) {
   const claude = readClaude(cwd, sessionId, root);
   if (claude) return claude;
-  const { opencode, kimi } = rootsOf(root);
+  const { opencode, kimi, grok } = rootsOf(root);
   try {
     const oc = await readOpencode(cwd, sessionId, opencode);
     if (oc) return oc;
   } catch (_) { /* try kimi */ }
   try {
-    return readKimi(cwd, sessionId, root && typeof root === 'object' ? root : { kimi });
-  } catch (_) {
-    return null;
-  }
+    const k = readKimi(cwd, sessionId, root && typeof root === 'object' ? root : { kimi });
+    if (k) return k;
+  } catch (_) { /* try grok */ }
+  try { return readGrok(cwd, sessionId, grok); } catch (_) { return null; }
 }
 
-module.exports = { read, fileFor, textOf, readOpencode, readKimi };
+module.exports = { read, fileFor, textOf, readOpencode, readKimi, readGrok };
