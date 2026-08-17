@@ -1,5 +1,11 @@
 const { Terminal } = window;          // xterm global
 const { FitAddon } = window.FitAddon; // fit addon global
+const { WebLinksAddon } = window.WebLinksAddon;
+const { Base64, ClipboardAddon } = window.ClipboardAddon;
+const { ImageAddon } = window.ImageAddon;
+const { ProgressAddon } = window.ProgressAddon;
+const { Unicode11Addon } = window.Unicode11Addon;
+const { WebglAddon } = window.WebglAddon;
 
 const railList = document.getElementById('tab-list');
 const strip = document.getElementById('strip');
@@ -763,12 +769,6 @@ function startCmdFor(t) {
   return spec.command + flag + eFlag;
 }
 
-// Agents whose TUI does its own mouse selection and copies what you selected
-// by sending OSC 52. Their tabs keep the mouse; every other tab gets xterm's
-// own selection forced on instead (see materialize). Claude Code's fullscreen
-// renderers that qualify today are Claude Code fullscreen and Grok.
-const SELECTS_ITSELF = new Set(['claude', 'grok']);
-
 // Reasoning effort, in each CLI's own syntax. Mirrors effort.js in main; the
 // level is checked against that agent's own list rather than escaped, so
 // nothing but a known word ever reaches the command line.
@@ -1061,6 +1061,106 @@ function fullName(t) {
   return p ? `${p.name} · ${t.name}` : t.name;
 }
 
+function openWebLink(uri) {
+  if (/^https?:\/\//i.test(uri)) window.api.openExternal(uri);
+}
+
+// Official xterm addons plus TabDesk's trust-boundary behavior. Programs may
+// write to the clipboard with OSC 52, but they never get to read it back.
+function loadTerminalAddons(term, tabEl, termEl) {
+  term.loadAddon(new WebLinksAddon((_event, uri) => openWebLink(uri)));
+
+  const base64 = new Base64();
+  const osc52Base64 = {
+    encodeText: (text) => base64.encodeText(text),
+    decodeText: (data) => {
+      if (!data || data.length > 100 * 1024) return '';
+      return base64.decodeText(data).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+    },
+  };
+  const clipboard = {
+    readText: () => '',
+    writeText: (selection, text) => {
+      if ((selection === 'c' || selection === 'p') && text) {
+        window.api.copySelection(text);
+      }
+    },
+  };
+  term.loadAddon(new ClipboardAddon(osc52Base64, clipboard));
+
+  term.loadAddon(new ImageAddon({
+    pixelLimit: 4194304,
+    storageLimit: 16,
+    sixelSizeLimit: 8388608,
+    iipSizeLimit: 8388608,
+  }));
+
+  const progress = new ProgressAddon();
+  term.loadAddon(progress);
+  progress.onChange(({ state, value }) => {
+    tabEl.classList.toggle('progress', state !== 0);
+    tabEl.classList.toggle('progress-indeterminate', state === 3);
+    if (state === 0) {
+      tabEl.style.removeProperty('--progress');
+      delete tabEl.dataset.progressState;
+    } else {
+      tabEl.style.setProperty('--progress', `${state === 3 ? 100 : value}%`);
+      tabEl.dataset.progressState = String(state);
+    }
+  });
+
+  term.loadAddon(new Unicode11Addon());
+  term.unicode.activeVersion = '11';
+
+  term.attachCustomKeyEventHandler((event) => {
+    if (event.type !== 'keydown' || !event.ctrlKey || event.altKey || event.metaKey) return true;
+    if (event.shiftKey && event.code === 'KeyV') {
+      window.api.readClipboard().then((text) => { if (text) term.paste(text); });
+      return false;
+    }
+    if (event.shiftKey && event.code === 'KeyC') {
+      const selection = term.getSelection();
+      if (!selection) return true;
+      window.api.copySelection(selection);
+      return false;
+    }
+    return true;
+  });
+
+  const rightPaste = (event) => {
+    if (event.button !== 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.type === 'mousedown') {
+      window.api.readClipboard().then((text) => { if (text) term.paste(text); });
+    }
+  };
+  termEl.addEventListener('mousedown', rightPaste, true);
+  termEl.addEventListener('mouseup', rightPaste, true);
+  termEl.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+
+  // Ligatures ships only as an ES module. Load WebGL afterwards so its atlas
+  // sees the character joiner, as required by the ligatures addon.
+  const ligaturesUrl = new URL(
+    '../node_modules/@xterm/addon-ligatures/lib/addon-ligatures.mjs', document.baseURI);
+  return import(ligaturesUrl.href)
+    .then(({ LigaturesAddon }) => term.loadAddon(new LigaturesAddon()))
+    .catch(() => {})
+    .then(() => {
+      let webgl;
+      try {
+        webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+      } catch (_) {
+        if (webgl) webgl.dispose();
+      }
+    });
+}
+
 // Create the actual xterm instance + backing pty for a tab on first use.
 function materialize(t) {
   const id = t.id;
@@ -1074,7 +1174,6 @@ function materialize(t) {
   let panelEl = null;
   let term = null;
   let ro = null;
-  let offSelect = null;
   let offData = null;
   let offExit = null;
   let backendStarted = false;
@@ -1123,126 +1222,16 @@ function materialize(t) {
   }
 
   term = new Terminal({
-    fontFamily: 'Menlo, "DejaVu Sans Mono", monospace',
+    allowProposedApi: true,
+    fontFamily: '"Fira Code", Menlo, "DejaVu Sans Mono", monospace',
     fontSize: 13,
     cursorBlink: true,
+    linkHandler: { activate: (_event, uri) => openWebLink(uri) },
     theme: (window.ui.theme && window.ui.theme.terminal) || {},
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(termEl);
-
-  // ---- Clipboard ----
-  // Who gets the mouse depends on whether the program inside can do better
-  // with it than we can.
-  //
-  // Claude Code's fullscreen renderer selects with the mouse itself, across
-  // its own scrollback, and copies what you selected by sending OSC 52 — so
-  // for those tabs the mouse belongs to it, and the only thing missing was a
-  // terminal that listens for the answer. Verified against the running TUI: a
-  // drag produces exactly one OSC 52 carrying the dragged line.
-  //
-  // Everything else — a shell, an agent that does not select — would hand the
-  // drag to tmux instead, which selects into its own buffer and never reaches
-  // the system clipboard. There we force xterm's own selection on, which is
-  // what a terminal does while Shift is held, made unconditional. The cost is
-  // that button presses stop reaching the program inside; the wheel is a
-  // separate path and still scrolls tmux. Private API, so it is guarded: a
-  // version bump drops it back to Shift-only rather than breaking.
-  if (!SELECTS_ITSELF.has(runningAgent)) {
-    try { term._core._selectionService.shouldForceSelection = () => true; } catch (_) { /* Shift still works */ }
-  }
-
-  // OSC 52 is a program inside saying "put this on the clipboard". xterm.js
-  // ships no handler, which is why Claude's own copies went nowhere.
-  //
-  // Anything that writes to a terminal can send it, including output nobody
-  // here authored, so what arrives is sanitised: control characters are
-  // stripped apart from tab and newline, which real multi-line copies need,
-  // and the size is capped. Newlines stay deliberately — a selection is lines
-  // — so a hostile sequence could still leave a runnable command on the
-  // clipboard; pasting into a shell with bracketed paste on (bash's default)
-  // inserts it as text rather than running it.
-  const OSC52_MAX = 100 * 1024;
-  term.parser.registerOscHandler(52, (data) => {
-    // "<targets>;<base64>", where "?" asks to READ the clipboard — deliberately
-    // never answered: handing the program inside the clipboard back is a leak.
-    const semi = String(data).indexOf(';');
-    if (semi < 0) return true;
-    const payload = String(data).slice(semi + 1);
-    if (!payload || payload === '?' || payload.length > OSC52_MAX) return true;
-    try {
-      const text = atob(payload).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
-      if (text) window.api.copySelection(text);
-    } catch (_) { /* not valid base64 — nothing to copy */ }
-    return true;
-  });
-
-  // A selection copies itself (CLIPBOARD, and PRIMARY on X11), so
-  // select-then-paste needs no chord in between; right-click pastes.
-  // Ctrl+Shift+C/V remain as the conventional explicit pair, while plain
-  // Ctrl+C/V stay with the program inside, which owns them (SIGINT, verbatim
-  // insert).
-  //
-  // Copying rides on the mouseup, in the CAPTURE phase — before any of
-  // xterm's own listeners. Under a mouse-tracking app (Claude's TUI) the
-  // release of a forced drag is reported as input, input clears the
-  // selection, and only then does xterm fire its public selection event —
-  // which therefore always reads empty for exactly the drags that matter.
-  // Mid-drag the model is live, so the capture handler still sees the text.
-  const copyNow = () => {
-    const sel = term.getSelection();
-    if (sel) window.api.copySelection(sel);
-  };
-  termEl.addEventListener('mouseup', (e) => { if (e.button === 0) copyNow(); }, true);
-  // Selections made without a drag (double-click word select, select-all)
-  // still announce themselves here.
-  offSelect = term.onSelectionChange(copyNow);
-
-  // The wheel is left to tmux, drag or no drag. Keeping it here to extend a
-  // selection past the window was tried and is a dead end: under tmux this
-  // terminal holds no scrollback of its own (viewport scrollHeight equals
-  // clientHeight — tmux keeps the history and redraws the pane), so there is
-  // nothing above to scroll to, and intercepting the wheel only takes away the
-  // scrolling that does work. A selection still dies when the wheel reaches
-  // tmux, because the report counts as input and input clears it — scroll
-  // first, then select what is on screen.
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown' || !e.ctrlKey || e.altKey || e.metaKey) return true;
-    // Ctrl+V pastes, with or without Shift — the key everyone reaches for,
-    // and the other half of copying in the output window. It is taken from
-    // the program inside, which knows it as quoted-insert (readline) and
-    // visual block (vim); those still answer to Ctrl+Q and to typing the
-    // sequence, and pasting is the far commoner want here.
-    if (e.code === 'KeyV') {
-      window.api.readClipboard().then((text) => { if (text) term.paste(text); });
-      return false;
-    }
-    // Ctrl+C is NOT taken: it is the interrupt, and a terminal that cannot
-    // interrupt is broken. Copying explicitly is Ctrl+Shift+C — though a
-    // selection has already copied itself by then.
-    if (e.shiftKey && e.code === 'KeyC') {
-      const sel = term.getSelection();
-      if (!sel) return true;        // nothing selected — the program's key
-      window.api.copySelection(sel);
-      return false;
-    }
-    return true;
-  });
-  // Right-click pastes, the classic X-terminal way. Captured on the ancestor
-  // so the press never reaches xterm's mouse forwarding — otherwise tmux
-  // (mouse on) pops its own menu over the pane.
-  const rightPaste = (e) => {
-    if (e.button !== 2) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'mousedown') {
-      window.api.readClipboard().then((text) => { if (text) term.paste(text); });
-    }
-  };
-  termEl.addEventListener('mousedown', rightPaste, true);
-  termEl.addEventListener('mouseup', rightPaste, true);
-  termEl.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); }, true);
 
   ro = new ResizeObserver(() => fitTerm(id));
   ro.observe(panelEl);
@@ -1271,17 +1260,17 @@ function materialize(t) {
     markDead(t);
     term.write(`\r\n\x1b[31m${window.t('panel.exited')}\x1b[0m\r\n`);
   });
+  loadTerminalAddons(term, t.tabEl, termEl);
 
   Object.assign(t, {
     runningModel, runningEffort, agent: runningAgent, bornAt,
     materialized: true, term, fit, panelEl,
-    cleanup: () => { offData(); offExit(); offSelect.dispose(); ro.disconnect(); },
+    cleanup: () => { offData(); offExit(); ro.disconnect(); },
   });
   } catch (error) {
     const clean = (action) => { try { action(); } catch (_) { /* continue cleanup */ } };
     if (offData) clean(offData);
     if (offExit) clean(offExit);
-    if (offSelect) clean(() => offSelect.dispose());
     if (ro) clean(() => ro.disconnect());
     if (backendStarted) {
       clean(() => {

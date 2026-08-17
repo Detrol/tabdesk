@@ -717,7 +717,6 @@ app.on('ready', async () => {
   const grokSet = (name) => new RegExp(
     `const ${name} = new Set\\(\\[[^\\]]*'grok'[^\\]]*\\]\\)`,
   ).test(rendererSource);
-  ok('grok ager TUI-musen', grokSet('SELECTS_ITSELF'));
   ok('grok far levande sessionstitlar', grokSet('TITLED_AGENTS'));
   ok('grok doljer kvotmatare utan data', grokSet('NO_QUOTA_AGENTS'));
   ok('grok renderer skickar ratt effort-flagga',

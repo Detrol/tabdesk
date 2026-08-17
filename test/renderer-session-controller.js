@@ -2,6 +2,7 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const ROOT = path.join(__dirname, '..');
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-session-test-'));
@@ -37,7 +38,20 @@ function setup(stage) {
       releasedSessions: [],
       terminalCreates: 0,
       terminalDisposes: 0,
+      loadedAddons: [],
       selectionDisposes: 0,
+      selectionSubscriptions: 0,
+      characterJoiners: 0,
+      webLinkHandler: null,
+      clipboardBase64: null,
+      clipboardProvider: null,
+      clipboardWrites: [],
+      clipboardReads: 0,
+      imageOptions: null,
+      progressListener: null,
+      webglContextLoss: null,
+      webglDisposes: 0,
+      openedUrls: [],
       observers: 0,
       observerDisconnects: 0,
       backendStarts: 0,
@@ -72,22 +86,35 @@ function setup(stage) {
     };
 
     window.Terminal = class TestTerminal {
-      constructor() {
+      constructor(options) {
         state.terminalCreates += 1;
         this.cols = 80;
         this.rows = 24;
-        this.options = {};
+        this.options = options || {};
+        this.unicode = { activeVersion: '6' };
         this.parser = { registerOscHandler() {} };
       }
-      loadAddon() {}
-      open() {}
-      getSelection() { return ''; }
+      loadAddon(addon) {
+        state.loadedAddons.push(addon.constructor.name);
+        if (addon.activate) addon.activate(this);
+      }
+      open(element) { this.element = element; }
+      getSelection() { return this.selection || ''; }
       onSelectionChange() {
+        state.selectionSubscriptions += 1;
         return { dispose: () => { state.selectionDisposes += 1; } };
       }
-      attachCustomKeyEventHandler() {}
+      attachCustomKeyEventHandler(handler) { state.keyHandler = handler; }
       onData() { return { dispose() {} }; }
       write() {}
+      input() {}
+      paste() {}
+      registerCharacterJoiner() {
+        state.characterJoiners += 1;
+        return state.characterJoiners;
+      }
+      deregisterCharacterJoiner() {}
+      refresh() {}
       focus() {}
       dispose() { state.terminalDisposes += 1; }
     };
@@ -97,6 +124,46 @@ function setup(stage) {
           if (stage === 'after-terminal') throw new Error('expected fit failure');
         }
         fit() {}
+      },
+    };
+    window.WebLinksAddon = {
+      WebLinksAddon: class TestWebLinksAddon {
+        constructor(handler) { state.webLinkHandler = handler; }
+      },
+    };
+    window.ClipboardAddon = {
+      Base64: class TestBase64 {
+        encodeText(text) { return btoa(unescape(encodeURIComponent(text))); }
+        decodeText(text) { return decodeURIComponent(escape(atob(text))); }
+      },
+      ClipboardAddon: class TestClipboardAddon {
+        constructor(base64, provider) {
+          state.clipboardBase64 = base64;
+          state.clipboardProvider = provider;
+        }
+      },
+    };
+    window.ImageAddon = {
+      ImageAddon: class TestImageAddon {
+        constructor(options) { state.imageOptions = options; }
+      },
+    };
+    window.ProgressAddon = {
+      ProgressAddon: class TestProgressAddon {
+        onChange(listener) {
+          state.progressListener = listener;
+          return { dispose() {} };
+        }
+      },
+    };
+    window.Unicode11Addon = { Unicode11Addon: class TestUnicode11Addon {} };
+    window.WebglAddon = {
+      WebglAddon: class TestWebglAddon {
+        onContextLoss(listener) {
+          state.webglContextLoss = listener;
+          return { dispose() {} };
+        }
+        dispose() { state.webglDisposes += 1; }
       },
     };
     window.ResizeObserver = class TestResizeObserver {
@@ -195,6 +262,12 @@ function setup(stage) {
       getUsageLimits: async () => ({ ok: false, reason: 'network' }),
       getUsageStats: async () => null,
       getSystemStats: async () => null,
+      copySelection: (text) => { state.clipboardWrites.push(text); },
+      readClipboard: async () => {
+        state.clipboardReads += 1;
+        return 'paste from clipboard';
+      },
+      openExternal: (url) => { state.openedUrls.push(url); },
       listModels: async () => ({ list: [], global: 'default' }),
       getGlobalModel: async () => 'default',
       listEfforts: async () => ({ list: [], global: 'default' }),
@@ -241,7 +314,8 @@ async function runGeneratedDeclineScenario() {
     const close = tab && tab.tabEl.querySelector('.close');
     if (close) close.click();
     return {
-      ...state,
+      releases: state.releases,
+      releasedSessions: state.releasedSessions,
       generated,
       sessionBeforeClose,
       tabsAfterClose: document.querySelectorAll('.stab:not(.ov):not(.files):not(.add)').length,
@@ -337,7 +411,16 @@ async function runScenario(stage) {
       if (close) close.click();
       return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
         resolve({
-          ...state,
+          releases: state.releases,
+          terminalDisposes: state.terminalDisposes,
+          selectionDisposes: state.selectionDisposes,
+          observerDisconnects: state.observerDisconnects,
+          backendStarts: state.backendStarts,
+          backendKills: state.backendKills,
+          dataListenerCleanups: state.dataListenerCleanups,
+          rootLeaveSubscriptions: state.rootLeaveSubscriptions,
+          rootLeaveChecks: state.rootLeaveChecks,
+          rootLeaveDecision: state.rootLeaveDecision,
           beforeClose,
           tabsAfterClose: document.querySelectorAll('.stab:not(.ov):not(.files):not(.add)').length,
         });
@@ -345,13 +428,121 @@ async function runScenario(stage) {
     })()`);
 }
 
+async function runAddonScenario() {
+  const window = await createRenderer('addons');
+  return window.webContents.executeJavaScript(`(async () => {
+    const state = window.__sessionTest;
+    const tabEl = document.createElement('div');
+    tabEl.className = 'stab';
+    const termEl = document.createElement('div');
+    document.body.append(tabEl, termEl);
+    const term = new Terminal({ fontFamily: '"Fira Code", monospace' });
+    term.open(termEl);
+    if (typeof loadTerminalAddons === 'function') {
+      await loadTerminalAddons(term, tabEl, termEl);
+    }
+    if (state.webLinkHandler) {
+      state.webLinkHandler(new MouseEvent('click'), 'https://example.com/docs');
+    }
+
+    term.selection = 'mouse selection';
+    termEl.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }));
+    const copiesAfterMouseSelection = state.clipboardWrites.length;
+
+    let clipboardRead = null;
+    if (state.clipboardBase64 && state.clipboardProvider) {
+      const decoded = state.clipboardBase64.decodeText(btoa('safe\\u0000text\\nnext'));
+      state.clipboardProvider.writeText('c', decoded);
+      const oversized = 'A'.repeat(100 * 1024 + 1);
+      state.clipboardProvider.writeText('c', state.clipboardBase64.decodeText(oversized));
+      clipboardRead = state.clipboardProvider.readText('c');
+    }
+
+    const plainPastePassesThrough = state.keyHandler && state.keyHandler({
+      type: 'keydown', code: 'KeyV', ctrlKey: true, shiftKey: false,
+      altKey: false, metaKey: false,
+    });
+    const shiftedPasteHandled = state.keyHandler && state.keyHandler({
+      type: 'keydown', code: 'KeyV', ctrlKey: true, shiftKey: true,
+      altKey: false, metaKey: false,
+    });
+    if (state.progressListener) state.progressListener({ state: 1, value: 42 });
+    const progress = {
+      value: tabEl.style.getPropertyValue('--progress'),
+      active: tabEl.classList.contains('progress'),
+    };
+    if (state.progressListener) state.progressListener({ state: 0, value: 0 });
+    const progressCleared = !tabEl.classList.contains('progress')
+      && tabEl.style.getPropertyValue('--progress') === '';
+
+    if (state.webglContextLoss) state.webglContextLoss();
+    return {
+      loadedAddons: state.loadedAddons,
+      unicodeVersion: term.unicode.activeVersion,
+      imageOptions: state.imageOptions,
+      openedUrls: state.openedUrls,
+      clipboardWrites: state.clipboardWrites,
+      clipboardRead,
+      clipboardReads: state.clipboardReads,
+      copiesAfterMouseSelection,
+      selectionSubscriptions: state.selectionSubscriptions,
+      plainPastePassesThrough,
+      shiftedPasteHandled,
+      progress,
+      progressCleared,
+      webglDisposes: state.webglDisposes,
+      characterJoiners: state.characterJoiners,
+    };
+  })()`);
+}
+
+function checkAddonScenario(addons) {
+  ok('official addons are loaded with Unicode 11 and a ligature joiner',
+    ['TestWebLinksAddon', 'TestClipboardAddon', 'TestImageAddon',
+      'TestProgressAddon', 'TestUnicode11Addon', 'TestWebglAddon']
+      .every((name) => addons.loadedAddons.includes(name))
+      && addons.unicodeVersion === '11'
+      && addons.characterJoiners === 1,
+    JSON.stringify(addons));
+  ok('plain web links use the validated external-link bridge',
+    addons.openedUrls.length === 1
+      && addons.openedUrls[0] === 'https://example.com/docs',
+    JSON.stringify(addons));
+  ok('OSC 52 writes are sanitized and cannot read or clear the clipboard',
+    addons.clipboardWrites.length === 1
+      && addons.clipboardWrites[0] === 'safetext\nnext'
+      && addons.clipboardRead === ''
+      && addons.clipboardReads === 1,
+    JSON.stringify(addons));
+  ok('copy and paste use public, conventional terminal behavior',
+    addons.copiesAfterMouseSelection === 0
+      && addons.selectionSubscriptions === 0
+      && addons.plainPastePassesThrough === true
+      && addons.shiftedPasteHandled === false,
+    JSON.stringify(addons));
+  ok('images are capped, progress is visible, and WebGL falls back on context loss',
+    addons.imageOptions?.pixelLimit === 4194304
+      && addons.imageOptions.storageLimit === 16
+      && addons.imageOptions.sixelSizeLimit === 8388608
+      && addons.imageOptions.iipSizeLimit === 8388608
+      && addons.progress.value === '42%'
+      && addons.progress.active
+      && addons.progressCleared
+      && addons.webglDisposes === 1,
+    JSON.stringify(addons));
+}
+
 app.whenReady().then(async () => {
   try {
     const html = source('renderer/index.html')
+      .replace('<head>', `<head><base href="${pathToFileURL(path.join(ROOT, 'renderer/')).href}">`)
       .replace(/\s*<meta http-equiv="Content-Security-Policy"[\s\S]*?\/>/i, '')
       .replace(/\s*<link[^>]*\/>/gi, '')
       .replace(/\s*<script[^>]*><\/script>/gi, '');
     fs.writeFileSync(FIXTURE, html);
+    console.log('== terminal addons ==');
+    checkAddonScenario(await runAddonScenario());
+
     console.log('== renderer failed-session rollback ==');
     const early = await runScenario('after-terminal');
     ok('failure after panel and Terminal removes the tab',
@@ -382,7 +573,7 @@ app.whenReady().then(async () => {
       JSON.stringify(late));
     ok('failure after backend setup disposes terminal resources',
       late.terminalDisposes === 1
-        && late.selectionDisposes === 1
+        && late.selectionDisposes === 0
         && late.observerDisconnects === 1
         && late.dataListenerCleanups === 1,
       JSON.stringify(late));

@@ -9,7 +9,7 @@ Upgrade the in-app terminal to xterm.js 6 and replace its private clipboard hook
 - Clicking an HTTP or HTTPS URL opens it through TabDesk's existing validated external-link IPC.
 - OSC 52 can write sanitized text to the system clipboard, but cannot read it.
 - Normal terminal copy and paste use `Ctrl+Shift+C` and `Ctrl+Shift+V`; right-click still pastes.
-- SIXEL, iTerm, and Kitty images render with conservative per-terminal size and storage limits.
+- SIXEL and iTerm images render with conservative per-terminal size and storage limits.
 - WebGL is preferred and falls back to the DOM renderer after context loss or initialization failure.
 - Fira Code supplies visible programming ligatures.
 - OSC 9;4 progress is shown as a thin bar on the session tab and is cleared when progress finishes.

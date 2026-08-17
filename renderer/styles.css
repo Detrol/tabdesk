@@ -505,6 +505,26 @@ html, body {
   color: var(--text);
   box-shadow: var(--glow-accent-2);
 }
+.stab.progress::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  bottom: 1px;
+  width: var(--progress);
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent-2);
+}
+.stab.progress[data-progress-state="2"]::after { background: var(--danger); }
+.stab.progress[data-progress-state="4"]::after { background: var(--warn); }
+.stab.progress-indeterminate::after {
+  width: 40px;
+  animation: tab-progress 1.2s ease-in-out infinite alternate;
+}
+@keyframes tab-progress { from { left: 4px; } to { left: calc(100% - 44px); } }
+@media (prefers-reduced-motion: reduce) {
+  .stab.progress-indeterminate::after { left: calc(50% - 20px); animation: none; }
+}
 .stab[draggable="true"] { cursor: grab; }
 .stab.dragging {
   opacity: .72;
