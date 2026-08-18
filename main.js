@@ -22,6 +22,7 @@ const projectsRoot = require('./projects-root');
 const portable = require('./portable');
 const updater = require('./updater');
 const usageLimits = require('./usage-limits');
+const diskUsage = require('./disk-usage');
 const transcript = require('./transcript');
 const codexLimits = require('./codex-limits');
 const kimiLimits = require('./kimi-limits');
@@ -2134,12 +2135,17 @@ app.whenReady().then(async () => {
     return { ok: false, reason: 'unsupported' };
   });
 
-  ipcMain.handle('system:stats', () => ({
-    cpu: cpuPercent(),
-    memUsed: os.totalmem() - os.freemem(),
-    memTotal: os.totalmem(),
-    uptime: os.uptime(),
-  }));
+  ipcMain.handle('system:stats', () => {
+    let disk = { diskUsed: 0, diskTotal: 0 };
+    try { disk = diskUsage.read('/'); } catch (_) { /* keep zeros */ }
+    return {
+      cpu: cpuPercent(),
+      memUsed: os.totalmem() - os.freemem(),
+      memTotal: os.totalmem(),
+      uptime: os.uptime(),
+      ...disk,
+    };
+  });
 
   // Capture a region of the window (the focused terminal) to a PNG file.
   // An in-app xterm.js pane is DOM, so the window's own surface has it; a

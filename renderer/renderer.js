@@ -3319,6 +3319,8 @@ async function refreshSystem() {
   setMeter('m-cpu', s.cpu, s.cpu + '%', s.cpu >= 85);
   const memPct = (s.memUsed / s.memTotal) * 100;
   setMeter('m-ram', memPct, fmtBytes(s.memUsed), memPct >= 90);
+  const diskPct = s.diskTotal > 0 ? (s.diskUsed / s.diskTotal) * 100 : 0;
+  setMeter('m-disk', diskPct, fmtBytes(s.diskUsed || 0), diskPct >= 90);
   // Branch can change inside the terminal without a tab switch — cheap HEAD read.
   renderPlace();
 }

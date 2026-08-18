@@ -1189,7 +1189,7 @@ html, body {
      1400 — narrow the quota tracks and drop the lifetime total, a number that
             moves so slowly you'd never watch it
      1150 — drop today's message count too
-   The live readouts — quota, CPU, RAM, clock — survive to the last. */
+   The live readouts — quota, CPU, RAM, DISK, clock — survive to the last. */
 @media (max-width: 1500px) {
   #systembar .m-reset { display: none; }
 }

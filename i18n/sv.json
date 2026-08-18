@@ -203,6 +203,7 @@
   "bar.feedback": "🐞 Buggar & synpunkter",
   "bar.cpu": "CPU",
   "bar.ram": "RAM",
+  "bar.disk": "DISK",
   "bar.reset": "(nollställs om {time})",
   "bar.place": "Plats",
   "bar.place.title": "{project}\n{path}",
