@@ -47,6 +47,7 @@ function setup(stage) {
       clipboardProvider: null,
       clipboardWrites: [],
       clipboardReads: 0,
+      pastes: [],
       imageOptions: null,
       progressListener: null,
       webglContextLoss: null,
@@ -93,6 +94,7 @@ function setup(stage) {
         this.options = options || {};
         this.unicode = { activeVersion: '6' };
         this.parser = { registerOscHandler() {} };
+        this._core = { _selectionService: { shouldForceSelection: () => false } };
       }
       loadAddon(addon) {
         state.loadedAddons.push(addon.constructor.name);
@@ -108,7 +110,7 @@ function setup(stage) {
       onData() { return { dispose() {} }; }
       write() {}
       input() {}
-      paste() {}
+      paste(text) { state.pastes.push(text); }
       registerCharacterJoiner() {
         state.characterJoiners += 1;
         return state.characterJoiners;
@@ -428,7 +430,7 @@ async function runScenario(stage) {
     })()`);
 }
 
-async function runAddonScenario() {
+async function runAddonScenario(agent = 'codex') {
   const window = await createRenderer('addons');
   return window.webContents.executeJavaScript(`(async () => {
     const state = window.__sessionTest;
@@ -439,7 +441,7 @@ async function runAddonScenario() {
     const term = new Terminal({ fontFamily: '"Fira Code", monospace' });
     term.open(termEl);
     if (typeof loadTerminalAddons === 'function') {
-      await loadTerminalAddons(term, tabEl, termEl);
+      await loadTerminalAddons(term, tabEl, termEl, ${JSON.stringify(agent)});
     }
     if (state.webLinkHandler) {
       state.webLinkHandler(new MouseEvent('click'), 'https://example.com/docs');
@@ -466,6 +468,7 @@ async function runAddonScenario() {
       type: 'keydown', code: 'KeyV', ctrlKey: true, shiftKey: true,
       altKey: false, metaKey: false,
     });
+    await Promise.resolve();
     if (state.progressListener) state.progressListener({ state: 1, value: 42 });
     const progress = {
       value: tabEl.style.getPropertyValue('--progress'),
@@ -484,10 +487,12 @@ async function runAddonScenario() {
       clipboardWrites: state.clipboardWrites,
       clipboardRead,
       clipboardReads: state.clipboardReads,
+      pastes: state.pastes,
       copiesAfterMouseSelection,
       selectionSubscriptions: state.selectionSubscriptions,
       plainPastePassesThrough,
       shiftedPasteHandled,
+      forceSelection: term._core._selectionService.shouldForceSelection(),
       progress,
       progressCleared,
       webglDisposes: state.webglDisposes,
@@ -496,7 +501,7 @@ async function runAddonScenario() {
   })()`);
 }
 
-function checkAddonScenario(addons) {
+function checkAddonScenario(addons, claudeAddons) {
   ok('official addons are loaded with Unicode 11 and a ligature joiner',
     ['TestWebLinksAddon', 'TestClipboardAddon', 'TestImageAddon',
       'TestProgressAddon', 'TestUnicode11Addon']
@@ -510,17 +515,24 @@ function checkAddonScenario(addons) {
       && addons.openedUrls[0] === 'https://example.com/docs',
     JSON.stringify(addons));
   ok('OSC 52 writes are sanitized and cannot read or clear the clipboard',
-    addons.clipboardWrites.length === 1
-      && addons.clipboardWrites[0] === 'safetext\nnext'
-      && addons.clipboardRead === ''
-      && addons.clipboardReads === 1,
+    addons.clipboardWrites.length === 2
+      && addons.clipboardWrites[1] === 'safetext\nnext'
+      && addons.clipboardRead === '',
     JSON.stringify(addons));
-  ok('copy and paste use public, conventional terminal behavior',
-    addons.copiesAfterMouseSelection === 0
+  ok('terminal mouse selection copies and Ctrl+V pastes',
+    addons.copiesAfterMouseSelection === 1
+      && addons.clipboardWrites[0] === 'mouse selection'
       && addons.selectionSubscriptions === 0
-      && addons.plainPastePassesThrough === true
-      && addons.shiftedPasteHandled === false,
+      && addons.plainPastePassesThrough === false
+      && addons.shiftedPasteHandled === false
+      && addons.clipboardReads === 2
+      && JSON.stringify(addons.pastes) === JSON.stringify([
+        'paste from clipboard', 'paste from clipboard',
+      ]),
     JSON.stringify(addons));
+  ok('ordinary terminals select in xterm while self-selecting TUIs keep their mouse',
+    addons.forceSelection === true && claudeAddons.forceSelection === false,
+    JSON.stringify({ codex: addons.forceSelection, claude: claudeAddons.forceSelection }));
   ok('images are capped, progress is visible, and WebGL stays disabled',
     addons.imageOptions?.pixelLimit === 4194304
       && addons.imageOptions.storageLimit === 16
@@ -542,7 +554,7 @@ app.whenReady().then(async () => {
       .replace(/\s*<script[^>]*><\/script>/gi, '');
     fs.writeFileSync(FIXTURE, html);
     console.log('== terminal addons ==');
-    checkAddonScenario(await runAddonScenario());
+    checkAddonScenario(await runAddonScenario(), await runAddonScenario('claude'));
 
     console.log('== renderer failed-session rollback ==');
     const early = await runScenario('after-terminal');

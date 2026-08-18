@@ -777,6 +777,7 @@ const EFFORT_LEVELS = {
   grok: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   kimi: ['low', 'high', 'max'],
 };
+const SELECTS_ITSELF = new Set(['claude', 'grok']);
 function effortSupported(agent) { return Boolean(EFFORT_LEVELS[agent]); }
 function effortFlag(agent, level) {
   if (!level || level === 'default' || !effortSupported(agent)) return '';
@@ -1066,7 +1067,12 @@ function openWebLink(uri) {
 
 // Official xterm addons plus TabDesk's trust-boundary behavior. Programs may
 // write to the clipboard with OSC 52, but they never get to read it back.
-function loadTerminalAddons(term, tabEl, termEl) {
+function loadTerminalAddons(term, tabEl, termEl, agent) {
+  // ponytail: xterm has no public always-select switch; keep this guarded until it adds one.
+  if (!SELECTS_ITSELF.has(agent)) {
+    try { term._core._selectionService.shouldForceSelection = () => true; } catch (_) { /* Shift still works */ }
+  }
+
   term.loadAddon(new WebLinksAddon((_event, uri) => openWebLink(uri)));
 
   const base64 = new Base64();
@@ -1086,6 +1092,12 @@ function loadTerminalAddons(term, tabEl, termEl) {
     },
   };
   term.loadAddon(new ClipboardAddon(osc52Base64, clipboard));
+
+  termEl.addEventListener('mouseup', (event) => {
+    if (event.button !== 0) return;
+    const selection = term.getSelection();
+    if (selection) window.api.copySelection(selection);
+  }, true);
 
   term.loadAddon(new ImageAddon({
     pixelLimit: 4194304,
@@ -1113,7 +1125,7 @@ function loadTerminalAddons(term, tabEl, termEl) {
 
   term.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown' || !event.ctrlKey || event.altKey || event.metaKey) return true;
-    if (event.shiftKey && event.code === 'KeyV') {
+    if (event.code === 'KeyV') {
       window.api.readClipboard().then((text) => { if (text) term.paste(text); });
       return false;
     }
@@ -1248,7 +1260,7 @@ function materialize(t) {
     markDead(t);
     term.write(`\r\n\x1b[31m${window.t('panel.exited')}\x1b[0m\r\n`);
   });
-  loadTerminalAddons(term, t.tabEl, termEl);
+  loadTerminalAddons(term, t.tabEl, termEl, runningAgent);
 
   Object.assign(t, {
     runningModel, runningEffort, agent: runningAgent, bornAt,
