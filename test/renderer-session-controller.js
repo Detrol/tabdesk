@@ -292,6 +292,25 @@ async function runWorkspaceOverviewScenario() {
   return result;
 }
 
+async function runProjectStatusScenario() {
+  const window = await createRenderer('project-status');
+  await waitFor(window, "projects.has('/fixture')", 'fixture project');
+  return window.webContents.executeJavaScript(`(async () => {
+    showOverview('/fixture');
+    const doneId = buildTab({ name: 'Done', cwd: '/fixture', projectCwd: '/fixture' });
+    const busyId = buildTab({ name: 'Busy', cwd: '/fixture', projectCwd: '/fixture' });
+    const done = tabs.get(doneId);
+    done.doneAt = Date.now() - 1000;
+    renderProject('/fixture');
+
+    markActivity(busyId, 30);
+    const during = projects.get('/fixture').el.className;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const after = projects.get('/fixture').el.className;
+    return { during, after };
+  })()`);
+}
+
 async function runScenario(stage) {
   const window = await createRenderer(stage);
     await waitFor(window, "document.querySelector('.ov-chip') !== null", 'overview start chip');
@@ -412,6 +431,14 @@ app.whenReady().then(async () => {
         && workspace.worktree?.open === false
         && workspace.allocation?.[0] === '/srv/dev/trading/tradingagents',
       JSON.stringify(workspace));
+
+    const projectStatus = await runProjectStatusScenario();
+    ok('current work outranks an older finished session on the project row',
+      projectStatus.during.includes('busy') && projectStatus.during.includes('working'),
+      JSON.stringify(projectStatus));
+    ok('the project row stops working when the current work goes quiet',
+      projectStatus.after.includes('done') && !projectStatus.after.includes('working'),
+      JSON.stringify(projectStatus));
   } catch (error) {
     failures += 1;
     console.error(error && error.stack ? error.stack : error);

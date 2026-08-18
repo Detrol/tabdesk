@@ -144,13 +144,13 @@ function renderWait(t) {
 // them; the pulse means one of them is producing output right now. Kept apart
 // deliberately: a project can hold a finished session and a running one at the
 // same time, and a single class could only ever say one of those.
-const ROW_STATES = ['asking', 'done', 'dead', 'busy', 'open', 'idle'];
+const ROW_STATES = ['asking', 'busy', 'done', 'dead', 'open', 'idle'];
 
 function projectState(mine) {
   if (mine.some((t) => t.askingAt)) return 'asking'; // blocked on your answer
+  if (mine.some((t) => t.busy)) return 'busy';
   if (mine.some((t) => t.doneAt)) return 'done';     // finished, wants you
   if (mine.some((t) => t.dead)) return 'dead';       // something ended
-  if (mine.some((t) => t.busy)) return 'busy';
   return mine.length ? 'open' : 'idle';
 }
 
