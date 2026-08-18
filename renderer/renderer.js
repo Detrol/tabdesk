@@ -5,7 +5,6 @@ const { Base64, ClipboardAddon } = window.ClipboardAddon;
 const { ImageAddon } = window.ImageAddon;
 const { ProgressAddon } = window.ProgressAddon;
 const { Unicode11Addon } = window.Unicode11Addon;
-const { WebglAddon } = window.WebglAddon;
 
 const railList = document.getElementById('tab-list');
 const strip = document.getElementById('strip');
@@ -1142,23 +1141,12 @@ function loadTerminalAddons(term, tabEl, termEl) {
     event.stopPropagation();
   }, true);
 
-  // Ligatures ships only as an ES module. Load WebGL afterwards so its atlas
-  // sees the character joiner, as required by the ligatures addon.
+  // Ligatures ships only as an ES module.
   const ligaturesUrl = new URL(
     '../node_modules/@xterm/addon-ligatures/lib/addon-ligatures.mjs', document.baseURI);
   return import(ligaturesUrl.href)
     .then(({ LigaturesAddon }) => term.loadAddon(new LigaturesAddon()))
-    .catch(() => {})
-    .then(() => {
-      let webgl;
-      try {
-        webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (_) {
-        if (webgl) webgl.dispose();
-      }
-    });
+    .catch(() => {});
 }
 
 // Create the actual xterm instance + backing pty for a tab on first use.

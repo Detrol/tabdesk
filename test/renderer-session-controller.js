@@ -499,8 +499,9 @@ async function runAddonScenario() {
 function checkAddonScenario(addons) {
   ok('official addons are loaded with Unicode 11 and a ligature joiner',
     ['TestWebLinksAddon', 'TestClipboardAddon', 'TestImageAddon',
-      'TestProgressAddon', 'TestUnicode11Addon', 'TestWebglAddon']
+      'TestProgressAddon', 'TestUnicode11Addon']
       .every((name) => addons.loadedAddons.includes(name))
+      && !addons.loadedAddons.includes('TestWebglAddon')
       && addons.unicodeVersion === '11'
       && addons.characterJoiners === 1,
     JSON.stringify(addons));
@@ -520,7 +521,7 @@ function checkAddonScenario(addons) {
       && addons.plainPastePassesThrough === true
       && addons.shiftedPasteHandled === false,
     JSON.stringify(addons));
-  ok('images are capped, progress is visible, and WebGL falls back on context loss',
+  ok('images are capped, progress is visible, and WebGL stays disabled',
     addons.imageOptions?.pixelLimit === 4194304
       && addons.imageOptions.storageLimit === 16
       && addons.imageOptions.sixelSizeLimit === 8388608
@@ -528,7 +529,7 @@ function checkAddonScenario(addons) {
       && addons.progress.value === '42%'
       && addons.progress.active
       && addons.progressCleared
-      && addons.webglDisposes === 1,
+      && addons.webglDisposes === 0,
     JSON.stringify(addons));
 }
 
