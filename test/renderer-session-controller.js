@@ -59,6 +59,7 @@ function setup(stage) {
       backendKills: 0,
       dataListeners: 0,
       dataListenerCleanups: 0,
+      titleListener: null,
       rootLeaveSubscriptions: 0,
       rootLeaveChecks: 0,
       rootLeaveDecision: null,
@@ -108,6 +109,10 @@ function setup(stage) {
       }
       attachCustomKeyEventHandler(handler) { state.keyHandler = handler; }
       onData() { return { dispose() {} }; }
+      onTitleChange(listener) {
+        state.titleListener = listener;
+        return { dispose() {} };
+      }
       write() {}
       input() {}
       paste(text) { state.pastes.push(text); }
@@ -297,6 +302,7 @@ async function createRenderer(stage) {
     setup(stage),
     source('renderer/tab-order.js'),
     source('renderer/navigation.js'),
+    source('asking.js'),
     source('renderer/renderer.js'),
     'void 0;',
   ].join('\n'));
@@ -383,7 +389,84 @@ async function runProjectStatusScenario() {
     const during = projects.get('/fixture').el.className;
     await new Promise((resolve) => setTimeout(resolve, 80));
     const after = projects.get('/fixture').el.className;
-    return { during, after };
+
+    done.doneAt = 0;
+    tabs.get(busyId).doneAt = 0;
+    renderProject('/fixture');
+    const watchedId = buildTab({ name: 'Watched', cwd: '/fixture', projectCwd: '/fixture' });
+    const watched = tabs.get(watchedId);
+    materialize(watched);
+    pinned.add(watchedId);
+    markActivity(watchedId, 30);
+    const watchedDuring = projects.get('/fixture').el.className;
+    clearTabFlag(tabs.get(watchedId));
+    const watchedAfterOpen = projects.get('/fixture').el.className;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const watchedAfter = projects.get('/fixture').el.className;
+
+    watched.session = 'td-watched';
+    markActivity(watchedId, 30);
+    applyActivity({ 'td-watched': { at: 1, asking: true, cwd: '/fixture' } });
+    markActivity(watchedId, 30);
+    const watchedQuestion = projects.get('/fixture').el.className;
+    if (window.__sessionTest.titleListener) window.__sessionTest.titleListener('⠼ fixture');
+    markActivity(watchedId, 30);
+    const watchedAnswered = projects.get('/fixture').el.className;
+    if (window.__sessionTest.titleListener) {
+      window.__sessionTest.titleListener('[ ! ] Action Required | fixture');
+    }
+    markActivity(watchedId, 30);
+    const watchedSecondQuestion = projects.get('/fixture').el.className;
+
+    clearTimeout(watched.idleTimer);
+    watched.busy = false;
+    watched.tabEl.classList.remove('busy');
+    pinned.delete(watchedId);
+    renderProject('/fixture');
+    const pinId = buildTab({ name: 'Pin', cwd: '/fixture', projectCwd: '/fixture' });
+    const pin = tabs.get(pinId);
+    pin.materialized = true;
+    pin.doneAt = Date.now();
+    pin.tabEl.classList.add('done');
+    renderProject('/fixture');
+    pinSession(pinId);
+    const pinnedState = projects.get('/fixture').el.className;
+    const pinnedDoneAt = pin.doneAt;
+
+    const overflow = [pinId];
+    for (let i = 1; i < MAX_PANELS; i += 1) {
+      const id = buildTab({ name: 'Pin ' + (i + 1), cwd: '/fixture', projectCwd: '/fixture' });
+      pinned.add(id);
+      overflow.push(id);
+    }
+    activeId = watchedId;
+    applyLayout();
+    const hidden = tabs.get(overflow[overflow.length - 1]);
+    hidden.doneAt = Date.now();
+    hidden.tabEl.classList.add('done');
+    renderProject('/fixture');
+    activeId = null;
+    applyLayout();
+    const reenteredDoneAt = hidden.doneAt;
+
+    for (const id of overflow) {
+      const tab = tabs.get(id);
+      tab.doneAt = 0;
+      tab.tabEl.classList.remove('done');
+      pinned.delete(id);
+    }
+    renderProject('/fixture');
+    const closeId = buildTab({ name: 'Close', cwd: '/fixture', projectCwd: '/fixture' });
+    const closed = tabs.get(closeId);
+    pinned.add(closeId);
+    markActivity(closeId, 30);
+    closeTab(closeId);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return {
+      during, after, watchedDuring, watchedAfterOpen, watchedAfter,
+      watchedQuestion, watchedAnswered, watchedSecondQuestion,
+      pinnedState, pinnedDoneAt, reenteredDoneAt, closedDoneAt: closed.doneAt,
+    };
   })()`);
 }
 
@@ -642,6 +725,35 @@ app.whenReady().then(async () => {
       JSON.stringify(projectStatus));
     ok('the project row stops working when the current work goes quiet',
       projectStatus.after.includes('done') && !projectStatus.after.includes('working'),
+      JSON.stringify(projectStatus));
+    ok('the project row follows a watched session from working to quiet',
+      projectStatus.watchedDuring.includes('busy')
+        && projectStatus.watchedDuring.includes('working')
+        && projectStatus.watchedAfterOpen.includes('busy')
+        && projectStatus.watchedAfterOpen.includes('working')
+        && projectStatus.watchedAfter.includes('open')
+        && !projectStatus.watchedAfter.includes('working'),
+      JSON.stringify(projectStatus));
+    ok('a watched question animation does not look like work',
+      projectStatus.watchedQuestion.includes('open')
+        && !projectStatus.watchedQuestion.includes('working'),
+      JSON.stringify(projectStatus));
+    ok('answering a watched question restores live work immediately',
+      projectStatus.watchedAnswered.includes('busy')
+        && projectStatus.watchedAnswered.includes('working'),
+      JSON.stringify(projectStatus));
+    ok('a second watched question is not lost between polls',
+      projectStatus.watchedSecondQuestion.includes('open')
+        && !projectStatus.watchedSecondQuestion.includes('working'),
+      JSON.stringify(projectStatus));
+    ok('pinning a session clears its finished notice',
+      projectStatus.pinnedState.includes('open') && !projectStatus.pinnedDoneAt,
+      JSON.stringify(projectStatus));
+    ok('a hidden pin clears its notice when it becomes visible again',
+      !projectStatus.reenteredDoneAt,
+      JSON.stringify(projectStatus));
+    ok('closing a working session cancels its idle transition',
+      !projectStatus.closedDoneAt,
       JSON.stringify(projectStatus));
   } catch (error) {
     failures += 1;

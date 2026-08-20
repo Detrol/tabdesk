@@ -111,11 +111,13 @@ function slugFor(cwd) {
 // for tabs that should have a session; its absence protects the update
 // installer, demo runs, and ad-hoc terminals. A caller-supplied session name
 // (duplicate/restored tabs) is used only if it matches the strict pattern.
-// The status line is turned off at creation because its clock redraw counts
-// as terminal activity and would pulse every background tab's flag. The inner
-// command must stay double-quote-safe: it is built from the constants in
-// agents.js plus a SAFE_ID-gated model flag, and anything else is left
-// unwrapped rather than quoted around.
+// The status line is turned off because its clock redraw counts as activity.
+// tmux is also told to forward the pane title to this client: Codex uses that
+// title to distinguish work from an animated Action Required prompt. Options
+// target this exact TabDesk session, including when it already exists; never
+// change the shared tmux server's global settings. The inner command must stay
+// double-quote-safe: it is built from agent constants plus a SAFE_ID-gated
+// model flag, and anything else is left unwrapped rather than quoted around.
 function wrapStartCmd(startCmd, cwd, agent, session) {
   const plain = { cmd: startCmd, session: null };
   if (!agent || !cwd || DEMO_START_CMD) return plain;
@@ -127,8 +129,13 @@ function wrapStartCmd(startCmd, cwd, agent, session) {
   if (!/^td-[A-Za-z0-9_-]+$/.test(name)) return plain;
   const shell = process.env.SHELL || '/bin/bash';
   const inner = startCmd || `exec ${shell} -i`;
+  const target = `=${name}`;
+  const options = ['status off', 'set-titles on', "set-titles-string '#{pane_title}'"];
+  const configure = options.map((option) => `tmux set-option -t ${target} ${option}`).join('; ');
+  const configureCurrent = options.map((option) => `tmux set-option ${option}`).join('; ');
   return {
-    cmd: `exec tmux new-session -A -s ${name} "tmux set-option status off; ${inner}"`,
+    cmd: `if tmux has-session -t ${target} 2>/dev/null; then ${configure}; fi; `
+      + `exec tmux new-session -A -s ${name} "${configureCurrent}; ${inner}"`,
     session: name,
   };
 }

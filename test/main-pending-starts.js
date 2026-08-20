@@ -405,11 +405,14 @@ function releaseSessions(sender, ...sessions) {
   }
 }
 
+const liveTmuxSessions = new Set();
+
 function startLiveTmux(session) {
   childProcess.execFileSync('tmux', ['new-session', '-d', '-s', session], {
     env: process.env,
     stdio: 'ignore',
   });
+  liveTmuxSessions.add(session);
 }
 
 function hasLiveTmux(session) {
@@ -424,10 +427,15 @@ function hasLiveTmux(session) {
   }
 }
 
-function killTestTmuxServer() {
-  try {
-    childProcess.execFileSync('tmux', ['kill-server'], { env: process.env, stdio: 'ignore' });
-  } catch (_) { /* no isolated server */ }
+function killTestTmuxSessions() {
+  for (const session of liveTmuxSessions) {
+    try {
+      childProcess.execFileSync('tmux', ['kill-session', '-t', '=' + session], {
+        env: process.env,
+        stdio: 'ignore',
+      });
+    } catch (_) { /* already closed */ }
+  }
 }
 
 function backendSnapshot(backend) {
@@ -1182,12 +1190,23 @@ async function run() {
 
   await failedStartsWithLiveTmux(sender);
 
+  const tmuxCommand = ptyStarts
+    .flatMap((record) => record.writes)
+    .find((write) => write.includes('tmux new-session')) || '';
+  check('TabDesk tmux sessions forward their pane title to the terminal',
+    tmuxCommand.includes('set-option -t =')
+      && tmuxCommand.includes('set-titles on')
+      && tmuxCommand.includes("set-titles-string '#{pane_title}'")
+      && tmuxCommand.includes('tmux set-option status off; tmux set-option set-titles on')
+      && tmuxCommand.includes('fi; exec tmux new-session -A -s'),
+    JSON.stringify({ tmuxCommand }));
+
   check('navigation cleanup kills embeds at most once per started resource',
     embedStarts.every((record) => record.kills <= 1),
     JSON.stringify({ embedKillAllCalls, kills: embedStarts.map((record) => record.kills) }));
 
   console.log(`main pending/list regressions: ${passed}/${passed + failed} passing`);
-  killTestTmuxServer();
+  killTestTmuxSessions();
   projectFiles.close();
   for (const window of BrowserWindow.getAllWindows()) window.destroy();
   app.exit(failed ? 1 : 0);
@@ -1195,7 +1214,7 @@ async function run() {
 
 run().catch((error) => {
   console.error(error && error.stack ? error.stack : error);
-  killTestTmuxServer();
+  killTestTmuxSessions();
   try { projectFiles?.close(); } catch (_) {}
   try { for (const window of BrowserWindow.getAllWindows()) window.destroy(); } catch (_) {}
   app.exit(1);

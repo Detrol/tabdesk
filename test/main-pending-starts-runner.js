@@ -13,8 +13,8 @@ const proofSocket = path.join(proofRoot, `tmux-${process.getuid()}`, 'default');
 let child;
 
 function cleanup() {
-  try { execFileSync('tmux', ['-S', proofSocket, 'kill-server'], { stdio: 'ignore' }); } catch (_) {}
-  try { execFileSync('tmux', ['-S', inheritedSocket, 'kill-server'], { stdio: 'ignore' }); } catch (_) {}
+  try { execFileSync('tmux', ['-S', proofSocket, 'kill-session', '-t', '=proof'], { stdio: 'ignore' }); } catch (_) {}
+  try { execFileSync('tmux', ['-S', inheritedSocket, 'kill-session', '-t', '=sentinel'], { stdio: 'ignore' }); } catch (_) {}
   try { fs.rmSync(scratch, { recursive: true, force: true }); } catch (_) {}
 }
 
@@ -55,7 +55,7 @@ try {
   if (reachedSocket !== proofSocket) {
     throw new Error(`tmux isolation regression: expected ${proofSocket}, reached ${reachedSocket}`);
   }
-  execFileSync('tmux', ['-S', proofSocket, 'kill-server'], { stdio: 'ignore' });
+  execFileSync('tmux', ['-S', proofSocket, 'kill-session', '-t', '=proof'], { stdio: 'ignore' });
 
   child = spawn(electron, [path.join(__dirname, 'main-pending-starts.js')], {
     env: { ...childEnv, TABDESK_PENDING_STARTS_SCRATCH: scratch },

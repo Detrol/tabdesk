@@ -43,7 +43,8 @@ const MAX_PANELS = 6;
 // waiting for input) stops emitting, so a quiet gap means "your turn".
 const IDLE_MS = 1500;
 
-// A session is "watched" while it has a panel on screen — no need to flag it.
+// A session is "watched" while it has a panel on screen. It still reports live
+// work, but quiet work never becomes a done/asking attention flag.
 function terminalSelection() {
   return {
     pinned,
@@ -195,20 +196,15 @@ function renderProject(cwd) {
   renderLiveRows(cwd);
 }
 
-// Clear any busy/done/asking flags on a session (called when the user looks at
-// it). Looking at a question is not answering it, but the flag exists to get
-// you here — once you are, the screen itself is the notice.
+// Clear attention flags on a session when the user looks at it. Live activity
+// keeps its own timer: opening a working session must not make it look idle.
 function clearTabFlag(t) {
-  clearTimeout(t.idleTimer);
   t.flagSeq = (t.flagSeq || 0) + 1;
-  const wasBusy = t.busy;
-  t.busy = false;
   t.doneAt = 0;
   t.askingAt = 0;
-  t.tabEl.classList.remove('busy', 'done', 'asking');
+  t.tabEl.classList.remove('done', 'asking');
   renderWait(t);
   renderProject(t.projectCwd);
-  if (wasBusy) syncTray();
 }
 
 // The top of the rail means one thing: this one finished and wants you.
@@ -243,8 +239,8 @@ function hoistOnDone(t) {
 
 // Called on every chunk of pty output (xterm.js backend), whenever the
 // embedded terminal writes, and for tabs with no terminal of their own when
-// tmux reports that their session wrote something. Marks background tabs busy
-// while output flows, then green ("done") once they fall silent.
+// tmux reports that their session wrote something. Marks tabs busy while output
+// flows, then green ("done") once an unwatched tab falls silent.
 //
 // `idleMs` is how long silence has to last to count as finished: a stream tells
 // us the moment it stops, a poll only knows what it saw last time, so the two
@@ -253,15 +249,11 @@ function markActivity(id, idleMs = IDLE_MS) {
   const t = tabs.get(id);
   if (!t || t.dead) return;
 
-  // Output while it streams only ever changes a tab's colour. The move comes
-  // later, when it stops — see hoistOnDone().
-  if (isWatched(id)) { clearTabFlag(t); return; }
-
   // A session waiting for an answer goes on writing: Codex animates its prompt
   // the whole time it stands there. Output is therefore no evidence that the
-  // question is gone — only the screen can say that (recheckAsking), or you
-  // opening the tab, which the line above already covers.
-  if (t.askingAt) return;
+  // question is gone — only the screen can say that (recheckAsking), or opening
+  // the tab, which clears its attention flag through clearTabFlag().
+  if (t.askingAt || t.titleAsking) return;
 
   const wasBusy = t.busy;
   t.flagSeq = (t.flagSeq || 0) + 1;
@@ -288,6 +280,25 @@ function markActivity(id, idleMs = IDLE_MS) {
     renderProject(t.projectCwd);
     syncTray();
   }, idleMs);
+}
+
+// A materialized terminal reports title changes immediately; restored and
+// native terminals get the same verdict from tmux polling. Keep both sources
+// on this one transition so prompt animation never counts as work.
+function setTitleAsking(t, asking, at = Date.now()) {
+  const wasAsking = !!t.titleAsking;
+  t.titleAsking = !!asking;
+  if (!t.titleAsking) {
+    if (wasAsking) markActivity(t.id);
+    return;
+  }
+  if (!isWatched(t.id)) { markAsking(t, at); return; }
+  if (!t.busy) return;
+  clearTimeout(t.idleTimer);
+  t.busy = false;
+  t.tabEl.classList.remove('busy');
+  renderProject(t.projectCwd);
+  syncTray();
 }
 
 // Quiet, but is it finished or is it waiting for an answer? Only the screen
@@ -404,15 +415,17 @@ function applyActivity(map) {
     }
   }
   for (const t of tabs.values()) {
-    if (!t.session || t.dead || isWatched(t.id)) continue;
+    if (!t.session || t.dead) continue;
     const rec = now[t.session];
+    if (!t.titleTracked) setTitleAsking(t, !!(rec && rec.asking), rec && rec.at * 1000);
+    if (isWatched(t.id)) continue;
 
     // The runtime saying it needs you applies to every tab that has a session,
     // open or not. A tab with a terminal of its own is still one you may not be
     // looking at, and its pty cannot tell us this: Codex animates its prompt
     // while it waits, so that stream never falls silent for the screen to be
     // read. The title is the only thing that stands still and says so.
-    if (rec && rec.asking) { markAsking(t, rec.at * 1000); continue; }
+    if (t.titleAsking) continue;
 
     // Already waiting for an answer. Movement alone does not disprove that —
     // see the animation above — so the screen, not the stamp, decides when it
@@ -490,10 +503,6 @@ function setActive(id, { skipFileGuard = false, navigationToken = null } = {}) {
     })) return false;
   overviewCwd = null;
   if (!t.materialized) materialize(t);
-
-  // Opening a tab means you're now watching it — drop the "done" flag. It keeps
-  // whatever place in the rail it earned; clearing the flag is not a demotion.
-  clearTabFlag(t);
 
   activeId = id;
   const p = projects.get(t.projectCwd);
@@ -662,6 +671,7 @@ function applyLayout() {
 
   for (const [tid, tt] of tabs) {
     const shown = ids.includes(tid);
+    if (shown && !tt.tabEl.classList.contains('active')) clearTabFlag(tt);
     tt.tabEl.classList.toggle('active', shown);
     tt.tabEl.classList.toggle('focused', tid === activeId);
     tt.tabEl.classList.toggle('pinned', pinned.has(tid));
@@ -1232,6 +1242,10 @@ function materialize(t) {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(termEl);
+  term.onTitleChange((title) => {
+    t.titleTracked = true;
+    setTitleAsking(t, window.TabDeskAsking.fromTitle(title));
+  });
 
   ro = new ResizeObserver(() => fitTerm(id));
   ro.observe(panelEl);
@@ -1327,6 +1341,7 @@ function rollbackCreatedTab(created) {
 function closeTab(id) {
   const t = tabs.get(id);
   if (!t) return;
+  clearTimeout(t.idleTimer);
   if (t.materialized) {
     if (t.embed) {
       window.api.killEmbedTerminal(id);

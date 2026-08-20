@@ -90,4 +90,6 @@ function isAsking(screen) {
   return lastMessage(lines).endsWith('?');
 }
 
-module.exports = { isAsking, fromTitle };
+const askingApi = { isAsking, fromTitle };
+if (typeof module !== 'undefined') module.exports = askingApi;
+if (typeof window !== 'undefined') window.TabDeskAsking = askingApi;

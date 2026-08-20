@@ -46,8 +46,8 @@ test('an inherited tmux client cannot escape the isolated test socket', () => {
       stdio: 'ignore',
     });
   } finally {
-    try { execFileSync('tmux', ['-S', isolatedSocket, 'kill-server'], { stdio: 'ignore' }); } catch (_) {}
-    try { execFileSync('tmux', ['-S', inheritedSocket, 'kill-server'], { stdio: 'ignore' }); } catch (_) {}
+    try { execFileSync('tmux', ['-S', isolatedSocket, 'kill-session', '-t', '=isolated'], { stdio: 'ignore' }); } catch (_) {}
+    try { execFileSync('tmux', ['-S', inheritedSocket, 'kill-session', '-t', '=sentinel'], { stdio: 'ignore' }); } catch (_) {}
     fs.rmSync(scratch, { recursive: true, force: true });
   }
 });
