@@ -10,7 +10,8 @@ const { app } = require('electron');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
-const createLogger = require('./lib/logging');
+const { createLogger } = require('./logger');
+
 const log = createLogger('settings');
 
 const DEFAULTS = { theme: 'system', glow: true, projectsDir: null, language: 'system', projectModels: {}, projectEfforts: {}, closedProjects: [], openTabs: [] };
@@ -64,7 +65,7 @@ function set(key, value) {
     persist(next);
     return true;
   } catch (err) {
-    log.warn('could not persist', { error: err });
+    log.warn('persist_failed', { error: err });
     return false;
   }
 }

@@ -92,6 +92,22 @@ npm install      # also rebuilds node-pty against Electron
 npm start
 ```
 
+### Development container
+
+The repository includes a VS Code Dev Container with Node.js 22, the
+TypeScript and ESLint extensions, Electron's Linux runtime libraries, tmux,
+and the native terminal dependencies. Open the repository in VS Code and
+choose **Reopen in Container**, then run:
+
+```bash
+npm run lint
+npm run typecheck
+npm start
+```
+
+On Linux, the container forwards the host X11 display for Electron. The
+container expects the host user's `DISPLAY` and `.Xauthority` to be available.
+
 ### Install as a desktop app
 
 ```bash
@@ -103,6 +119,17 @@ TabDesk then appears in the application menu under Development and launches
 standalone from `/opt/TabDesk`.
 
 ## Configuration
+
+The repository includes [`.env.example`](.env.example), which documents the
+optional environment variables used by TabDesk and its agent integrations.
+TabDesk does not load `.env` automatically; to use a local copy during
+development, source it before launching:
+
+```bash
+cp .env.example .env
+set -a; . ./.env; set +a
+npm start
+```
 
 The projects folder — the folder whose subfolders are your projects — is
 chosen on first run and stored as `projectsDir` in `settings.json`; change it

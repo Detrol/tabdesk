@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Local environment overrides and credentials
+.env
+
 # Logs
 *.log
 npm-debug.log*

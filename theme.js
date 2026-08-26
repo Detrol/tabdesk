@@ -12,7 +12,8 @@ const { nativeTheme } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const createLogger = require('./lib/logging');
+const { createLogger } = require('./logger');
+
 const log = createLogger('theme');
 
 const THEMES_DIR = path.join(__dirname, 'themes');
@@ -237,7 +238,7 @@ function loadPresets() {
       const def = JSON.parse(fs.readFileSync(path.join(THEMES_DIR, f), 'utf8'));
       if (def && def.id && def.palette) out.push(def);
     } catch (err) {
-      log.warn('bad preset', { file: f, error: err });
+      log.warn('preset_invalid', { file: f, error: err });
     }
   }
   // Families sort as a unit (Catppuccin's four flavours stay together), and
