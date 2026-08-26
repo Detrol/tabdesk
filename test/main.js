@@ -116,9 +116,11 @@ app.on('ready', async () => {
   }
   ok('skrivfel rapporteras till anroparen', failedWrite === false);
   ok('skrivfel behaller vardet i minnet', settings.get('writeFailureProbe').session === 'kept-in-memory');
+  const settingsWarn = warnings.length === 1 ? JSON.parse(warnings[0]) : {};
   ok('skrivfel varnas exakt en gang', warnings.length === 1
-    && warnings[0].includes('[settings] could not persist')
-    && warnings[0].includes('expected settings write failure'), warnings.join(' | '));
+    && settingsWarn.level === 'warn' && settingsWarn.component === 'settings'
+    && settingsWarn.msg === 'could not persist'
+    && String(settingsWarn.error && settingsWarn.error.message).includes('expected settings write failure'), warnings.join(' | '));
   const { createSessionRegistry } = require(path.join(ROOT, 'session-ownership'));
   const priorTabs = settings.get('openTabs');
   const registryWarnings = [];

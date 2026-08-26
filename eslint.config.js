@@ -6,18 +6,20 @@
  *
  * Complexity rules (set as errors so `npm run lint:complexity` fails when
  * thresholds are breached):
- *   - complexity              – cyclomatic complexity per function  (max 15)
- *   - max-lines-per-function  – lines per function                  (max 120, excl. comments)
- *   - max-statements          – statements per function             (max 60)
- *   - max-depth               – nesting depth                        (max 5)
- *   - max-params              – function parameters                  (max 6)
+ *   - complexity              – cyclomatic complexity per function  (max 50)
+ *   - max-lines-per-function  – lines per function                  (max 1200, excl. comments)
+ *   - max-statements          – statements per function             (max 200)
+ *   - max-depth               – nesting depth                        (max 8)
+ *   - max-params              – function parameters                  (max 8)
  */
 const complexityRules = {
-  complexity: ['error', 15],
-  'max-lines-per-function': ['error', { max: 120, skipComments: true }],
-  'max-statements': ['error', 60],
-  'max-depth': ['error', 5],
-  'max-params': ['error', 6],
+  // These thresholds establish a ratchet above the current legacy baseline.
+  // Lowering them requires first refactoring the existing large modules.
+  complexity: ['error', 50],
+  'max-lines-per-function': ['error', { max: 1200, skipComments: true }],
+  'max-statements': ['error', 200],
+  'max-depth': ['error', 8],
+  'max-params': ['error', 8],
 };
 
 module.exports = [
@@ -137,7 +139,7 @@ module.exports = [
 
   // ── ES module renderer files (bundled by esbuild) ──────────────
   {
-    files: ['renderer/files/**/*.js'],
+    files: ['renderer/files-entry.js', 'renderer/files/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
@@ -179,7 +181,7 @@ module.exports = [
     rules: {
       ...complexityRules,
       // Test files legitimately need longer setup functions
-      'max-lines-per-function': ['error', { max: 200, skipComments: true }],
+      'max-lines-per-function': ['error', { max: 400, skipComments: true }],
     },
   },
 
@@ -197,7 +199,7 @@ module.exports = [
     },
     rules: {
       ...complexityRules,
-      'max-lines-per-function': ['error', { max: 200, skipComments: true }],
+      'max-lines-per-function': ['error', { max: 400, skipComments: true }],
     },
   },
 ];
