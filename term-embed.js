@@ -22,6 +22,8 @@
 
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
+const createLogger = require('./lib/logging');
+const log = createLogger('term-embed');
 
 let parentXid = null;
 // id -> { id, proc, win, applied, pending, busy, mapped, hidden, ready, dead,
@@ -232,7 +234,7 @@ async function findWindow(title, rec, tries = 50) {
 
 async function create(id, { cwd, startCmd }) {
   if (embeds.has(id)) return;
-  if (!parentXid) { console.warn('[term-embed] no parent XID (not X11?); cannot embed'); return; }
+  if (!parentXid) { log.warn('no parent XID (not X11?); cannot embed'); return; }
 
   // Tab ids restart at t1 every launch, so a bare `tabdesk-t1` is not unique on
   // the display: an xterm orphaned by an earlier run (the app exiting without

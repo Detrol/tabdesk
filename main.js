@@ -7,6 +7,8 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const https = require('https');
+const createLogger = require('./lib/logging');
+const log = createLogger('main');
 const pty = require('node-pty');
 const previewRunner = require('./preview-runner');
 const appRunner = require('./app-runner');
@@ -773,7 +775,7 @@ async function checkForUpdate(win, options) {
   try {
     updateState = await updater.check(options);
   } catch (err) {
-    console.warn('[update] check failed:', String(err.message || err));
+    log.warn('update check failed', { error: err });
     return { ok: false, error: String(err.message || err) };
   }
   if (win && !win.isDestroyed()) win.webContents.send('update:available', updateState);
