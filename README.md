@@ -120,6 +120,17 @@ standalone from `/opt/TabDesk`.
 
 ## Configuration
 
+The repository includes [`.env.example`](.env.example), which documents the
+optional environment variables used by TabDesk and its agent integrations.
+TabDesk does not load `.env` automatically; to use a local copy during
+development, source it before launching:
+
+```bash
+cp .env.example .env
+set -a; . ./.env; set +a
+npm start
+```
+
 The projects folder — the folder whose subfolders are your projects — is
 chosen on first run and stored as `projectsDir` in `settings.json`; change it
 any time under Settings → General (the window reloads, running sessions
