@@ -11,7 +11,8 @@
     "postinstall": "electron-rebuild -f -w node-pty && npm run build:editor",
     "test": "npm run build:editor && node --test test/main-lifecycle.test.js test/project-files.test.js test/session-ownership.test.js test/file-state.test.js test/navigation.test.js test/tmux-test-environment.test.js test/disk-usage.test.js && electron test/editor-controller.js && electron test/renderer-session-controller.js && electron test/renderer-tab-wrap.js && electron test/root-reload-lifecycle.js && electron test/projects-root-transition.js && electron test/settings-atomic.js && node test/main-pending-starts-runner.js && electron test/main.js",
     "dist": "npm run build:editor && electron-builder --linux deb tar.gz",
-    "prepare": "husky"
+    "prepare": "husky",
+    "lint:complexity": "eslint ."
   },
   "author": {
     "name": "Andreas Thun"
@@ -23,6 +24,7 @@
     "electron": "^31.0.0",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
+    "eslint": "^9.39.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.2.10"
   },
