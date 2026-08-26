@@ -1,5 +1,9 @@
 const fs = require('fs');
 
+/**
+ * @param {{bsize: number, blocks: number, bfree: number}} s
+ * @returns {{diskUsed: number, diskTotal: number}}
+ */
 function fromStat(s) {
   const bsize = Number(s.bsize);
   const blocks = Number(s.blocks);

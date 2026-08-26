@@ -23,7 +23,7 @@ const AGENTS = [
     id: 'claude',
     label: 'Claude Code',
     bin: 'claude',
-    command: 'claude --dangerously-skip-permissions',
+    command: 'claude --permission-mode auto',
     // `takesModel` is about the flag, not the vocabulary: these CLIs all accept
     // --model, but each names its models its own way, so the ids come from
     // model.js per agent and never cross between them.
@@ -35,9 +35,8 @@ const AGENTS = [
     continueArgs: '--continue',
     hint: 'agent.hint.claude',
   },
-  // Codex names its skip-permissions flag differently, but it is the same
-  // contract as Claude's: no prompts, no sandbox. The flag is a global option,
-  // so it also works in front of `resume …`.
+  // Codex is still configured to skip prompts and the sandbox. Its flag is a
+  // global option, so it also works in front of `resume …`.
   { id: 'codex',    label: 'Codex',        bin: 'codex',        command: 'codex --dangerously-bypass-approvals-and-sandbox', takesModel: true, resumeArgs: 'resume {id}',  continueArgs: 'resume --last',   hint: 'agent.hint.codex' },
   { id: 'gemini',   label: 'Gemini CLI',   bin: 'gemini',       command: 'gemini',       takesModel: true, resumeArgs: '--resume {id}', continueArgs: '--resume latest', hint: 'agent.hint.gemini' },
   { id: 'opencode', label: 'opencode',     bin: 'opencode',     command: 'opencode --auto', takesModel: true, resumeArgs: '--session {id}', continueArgs: '--continue',     hint: 'agent.hint.opencode' },

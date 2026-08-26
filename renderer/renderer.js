@@ -3149,6 +3149,8 @@ function fmtTokens(n) {
   return String(n | 0);
 }
 function fmtBytes(b) { return (b / 1073741824).toFixed(1) + 'G'; }
+// used/total sharing one unit suffix: "12.3/31.0G".
+function fmtPair(used, total) { return (used / 1073741824).toFixed(1) + '/' + fmtBytes(total); }
 function pct(v, max) { return max > 0 ? Math.min(100, (v / max) * 100) : 0; }
 
 function setMeter(sel, fillPct, valText, hot) {
@@ -3333,9 +3335,9 @@ async function refreshSystem() {
   if (!s) return;
   setMeter('m-cpu', s.cpu, s.cpu + '%', s.cpu >= 85);
   const memPct = (s.memUsed / s.memTotal) * 100;
-  setMeter('m-ram', memPct, fmtBytes(s.memUsed), memPct >= 90);
+  setMeter('m-ram', memPct, fmtPair(s.memUsed, s.memTotal), memPct >= 90);
   const diskPct = s.diskTotal > 0 ? (s.diskUsed / s.diskTotal) * 100 : 0;
-  setMeter('m-disk', diskPct, fmtBytes(s.diskUsed || 0), diskPct >= 90);
+  setMeter('m-disk', diskPct, fmtPair(s.diskUsed || 0, s.diskTotal || 0), diskPct >= 90);
   // Branch can change inside the terminal without a tab switch — cheap HEAD read.
   renderPlace();
 }

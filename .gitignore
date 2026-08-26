@@ -26,3 +26,4 @@ tabdesk-*.png
 
 # Local agent memory — not shipped
 AGENTS.md
+.superpowers/

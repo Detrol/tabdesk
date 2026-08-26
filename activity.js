@@ -33,7 +33,12 @@ const POLL_MS = 2000;
 
 // Only TabDesk's own sessions: anything else on the machine's tmux server
 // belongs to somebody else and is none of the rail's business.
+/**
+ * @param {string} stdout
+ * @returns {Record<string, {at: number, title: string, cwd: string}>}
+ */
 function parse(stdout) {
+  /** @type {Record<string, {at: number, title: string, cwd: string}>} */
   const out = {};
   for (const line of String(stdout || '').split('\n')) {
     if (!line) continue;

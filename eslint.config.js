@@ -27,10 +27,12 @@ module.exports = [
   {
     ignores: [
       'node_modules/**',
+      '.worktrees/**',
       'dist/**',
       'out/**',
       'build/**',
       'renderer/files.bundle.js',
+      'eslint.config.mjs',
       // Large generated/fixture test harnesses – not subject to complexity limits
       'test/main.js',
       'test/editor-controller.js',
