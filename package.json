@@ -6,6 +6,8 @@
   "scripts": {
     "start": "electron .",
     "icons": "./build/render-icons.sh",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "build:editor": "esbuild renderer/files-entry.js --bundle --format=iife --global-name=TabDeskFiles --platform=browser --target=chrome126 --minify --legal-comments=none --outfile=renderer/files.bundle.js",
     "test:ui:files": "npm run build:editor && node test/ui-project-files.mjs",
     "postinstall": "electron-rebuild -f -w node-pty && npm run build:editor",
@@ -21,7 +23,8 @@
     "@electron/rebuild": "^3.6.0",
     "electron": "^31.0.0",
     "electron-builder": "^26.15.3",
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "prettier": "^3.9.6"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
