@@ -1,0 +1,7 @@
+.git
+.worktrees
+.remember
+node_modules
+dist
+out
+renderer/files.bundle.js

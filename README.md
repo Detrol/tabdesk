@@ -92,6 +92,22 @@ npm install      # also rebuilds node-pty against Electron
 npm start
 ```
 
+### Development container
+
+The repository includes a VS Code Dev Container with Node.js 22, the
+TypeScript and ESLint extensions, Electron's Linux runtime libraries, tmux,
+and the native terminal dependencies. Open the repository in VS Code and
+choose **Reopen in Container**, then run:
+
+```bash
+npm run lint
+npm run typecheck
+npm start
+```
+
+On Linux, the container forwards the host X11 display for Electron. The
+container expects the host user's `DISPLAY` and `.Xauthority` to be available.
+
 ### Install as a desktop app
 
 ```bash
