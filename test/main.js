@@ -821,6 +821,17 @@ app.on('ready', async () => {
     /grok:\s*\[[^\]]*'xhigh'[^\]]*\]/.test(rendererSource)
     && rendererSource.includes("if (agent === 'grok') return ` --reasoning-effort ${level}`;"));
 
+  console.log('== droid rendererpolicy ==');
+  const droidInSet = (name) => new RegExp(
+    `const ${name} = new Set\\(\\[[^\\]]*'droid'[^\\]]*\\]\\)`,
+  ).test(rendererSource);
+  // Droid is a full-screen TUI (xterm must not force its own selection) and
+  // carries live titles from the session store; it does have a quota meter, so
+  // it must stay out of NO_QUOTA_AGENTS.
+  ok('droid valjer sig sjalv (full-tui)', droidInSet('SELECTS_ITSELF'));
+  ok('droid far levande sessionstitlar', droidInSet('TITLED_AGENTS'));
+  ok('droid doljer inte kvotmatare', !droidInSet('NO_QUOTA_AGENTS'));
+
   console.log('== fysisk cwd tillbaka till radens stavning ==');
   const PR = require(path.join(ROOT, 'projects-root'));
   const entries = [
@@ -1091,6 +1102,8 @@ app.on('ready', async () => {
   fsx.mkdirSync(GROKBIN, { recursive: true });
   fsx.writeFileSync(path.join(GROKBIN, 'grok'), '#!/bin/sh\nexit 0\n');
   fsx.chmodSync(path.join(GROKBIN, 'grok'), 0o755);
+  fsx.writeFileSync(path.join(GROKBIN, 'droid'), '#!/bin/sh\nexit 0\n');
+  fsx.chmodSync(path.join(GROKBIN, 'droid'), 0o755);
   process.env.TABDESK_PROJECTS_DIR = INSROOT;
   process.env.GROK_HOME = GROKHOME;
   process.env.PATH = GROKBIN + path.delimiter + process.env.PATH;
@@ -1102,6 +1115,16 @@ app.on('ready', async () => {
     && grokAgent.takesModel
     && grokAgent.resumeArgs === '--resume {id}'
     && grokAgent.continueArgs === '--continue');
+  // Droid: plain `droid` command (the autonomy bar adds --auto), no model flag,
+  // `-r`/`-r {id}` for continue/resume so the ↺ chip appears in the overview.
+  const droidAgent = AG.list().find((agent) => agent.id === 'droid');
+  ok('droid finns i agentlistan', droidAgent
+    && droidAgent.label === 'Droid'
+    && droidAgent.command === 'droid'
+    && droidAgent.takesModel === false
+    && droidAgent.resumeArgs === '-r {id}'
+    && droidAgent.continueArgs === '-r'
+    && droidAgent.hint === 'agent.hint.droid');
   const INS = require(path.join(ROOT, 'instructions'));
 
   ok('saknad fil lases som tom',
@@ -1123,6 +1146,19 @@ app.on('ready', async () => {
     (() => { const r = INS.read('grok', 'project', INSPROJ); return r.ok && r.path === path.join(INSPROJ, 'AGENTS.md'); })());
   ok('grok anvander global AGENTS.md',
     (() => { const r = INS.read('grok', 'global', INSPROJ); return r.ok && r.path === path.join(GROKHOME, 'AGENTS.md'); })());
+
+  ok('droid finns i instruktionslistan',
+    INS.list(INSPROJ).some((e) => e.id === 'droid'));
+  ok('droid anvander projektets AGENTS.md',
+    (() => { const r = INS.read('droid', 'project', INSPROJ); return r.ok && r.path === path.join(INSPROJ, 'AGENTS.md'); })());
+  // The global file resolves under the real ~/.factory, so this only reads the
+  // resolved path (never writes there) — the write path is exercised on the
+  // project scope below, which lands in the scratch projects root.
+  ok('droid global pekar pa ~/.factory/AGENTS.md',
+    (() => { const r = INS.read('droid', 'global', INSPROJ); return r.ok && r.path === path.join(os.homedir(), '.factory', 'AGENTS.md'); })());
+  ok('droid skriver och laser projektfilen',
+    INS.write('droid', 'project', INSPROJ, '# Droidregler\n').ok === true
+    && fsx.readFileSync(path.join(INSPROJ, 'AGENTS.md'), 'utf8') === '# Droidregler\n');
 
   try { fsx.rmSync(INSROOT, { recursive: true, force: true }); } catch (_) { /* gone */ }
   }
