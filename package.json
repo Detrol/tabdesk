@@ -93,6 +93,7 @@
       "kimi-store.js",
       "kimi-limits.js",
       "codex-limits.js",
+      "droid-limits.js",
       "disk-usage.js",
       "activity.js",
       "asking.js",

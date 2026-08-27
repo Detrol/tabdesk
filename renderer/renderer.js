@@ -3392,7 +3392,9 @@ function renderPlanMeters() {
       ? t(limits.stale ? 'bar.codexTitleStale' : 'bar.codexTitle')
       : metersAgent === 'kimi'
         ? t(limits.stale ? 'bar.kimiTitleStale' : 'bar.kimiTitle')
-        : t(limits.stale ? 'bar.planTitleStale' : 'bar.planTitle');
+        : metersAgent === 'droid'
+          ? t(limits.stale ? 'bar.droidTitleStale' : 'bar.droidTitle')
+          : t(limits.stale ? 'bar.planTitleStale' : 'bar.planTitle');
   }
 }
 

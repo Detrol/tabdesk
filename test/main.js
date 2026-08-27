@@ -893,6 +893,92 @@ app.on('ready', async () => {
   ok('text utan snapshot ger null', CX.parseRateLimits('inga granser har', NOW) === null);
   ok('trasig snapshot ger null', CX.parseRateLimits('"rate_limits":{oparsbar', NOW) === null);
 
+  console.log('== droid-kvot ur /api/billing/limits ==');
+  const DL = require(path.join(ROOT, 'droid-limits'));
+  const DNOW = 1786000000000; // fast klocka: windowEnd jamfors mot den
+  const droidPayload = {
+    usesTokenRateLimitsBilling: true,
+    limits: {
+      standard: {
+        fiveHour: { usedPercent: 23, windowEnd: '2026-08-27T15:30:00.000Z', secondsRemaining: 18000 },
+        weekly: { usedPercent: 58, windowEnd: '2026-09-02T00:00:00.000Z', secondsRemaining: 432000 },
+        monthly: { usedPercent: 12, windowEnd: '2026-09-10T00:00:00.000Z', secondsRemaining: 1209600 },
+      },
+      core: {},
+    },
+    overagePreference: 'pay_as_you_go',
+    canManageOverage: true,
+    extraUsageBalanceCents: 0,
+    extraUsageAllowed: true,
+  };
+  const droidWin = DL.normalize(droidPayload, DNOW);
+  ok('droid fiveHour blir session',
+    droidWin && droidWin.session && droidWin.session.pct === 23, JSON.stringify(droidWin && droidWin.session));
+  ok('droid weekly blir week',
+    droidWin && droidWin.week && droidWin.week.pct === 58, JSON.stringify(droidWin && droidWin.week));
+  ok('droid monthly ignoreras',
+    droidWin && !droidWin.monthly && !droidWin.scoped);
+  ok('droid windowEnd blir ms',
+    droidWin && droidWin.session.resetsAt === Date.parse('2026-08-27T15:30:00.000Z'));
+  ok('droid procent klamms 0-100',
+    DL.normalize({ limits: { standard: { fiveHour: { usedPercent: 150, windowEnd: '2099-01-01T00:00:00Z' } } } }, DNOW)
+      .session.pct === 100);
+  ok('droid negativ procent klamms till 0',
+    DL.normalize({ limits: { standard: { fiveHour: { usedPercent: -5, windowEnd: '2099-01-01T00:00:00Z' } } } }, DNOW)
+      .session.pct === 0);
+  ok('droid passerad windowEnd kasseras',
+    DL.normalize({ limits: { standard: { fiveHour: { usedPercent: 30, windowEnd: '2020-01-01T00:00:00Z' } } } }, DNOW)
+      === null);
+  ok('droid secondsRemaining ger resetsAt',
+    (() => {
+      const w = DL.mapWindow({ usedPercent: 10, secondsRemaining: 3600 }, DNOW);
+      return w && w.resetsAt === DNOW + 3600000;
+    })());
+  ok('droid saknat standard ger null', DL.normalize({ limits: {} }, DNOW) === null);
+  ok('droid saknad limits ger null', DL.normalize({}, DNOW) === null);
+  ok('droid tom payload ger null', DL.normalize(null, DNOW) === null);
+  ok('droid bara weekly ger bara week',
+    (() => {
+      const w = DL.normalize({ limits: { standard: { weekly: { usedPercent: 40, windowEnd: '2099-01-01T00:00:00Z' } } } }, DNOW);
+      return w && w.week && !w.session;
+    })());
+  ok('droid ogiltig procent ger null',
+    DL.mapWindow({ usedPercent: 'x', windowEnd: '2099-01-01T00:00:00Z' }, DNOW) === null);
+  ok('droid decodeJwtExp parsar exp',
+    (() => {
+      const jwt = 'header.' + Buffer.from(JSON.stringify({ exp: 1893456000 })).toString('base64') + '.sig';
+      return DL.decodeJwtExp(jwt) === 1893456000;
+    })());
+  ok('droid decodeJwtExp ger null for ogiltig JWT',
+    DL.decodeJwtExp('not-a-jwt') === null && DL.decodeJwtExp('') === null);
+  ok('droid getLimits kastar aldrig',
+    await DL.getLimits().then((r) => r && typeof r.ok === 'boolean', () => false));
+  ok('droid skriver inte till keyring (kalla getLimits)',
+    await (async () => {
+      const keyringPath = path.join(os.homedir(), '.factory', 'auth.v2.keyring');
+      const before = (() => { try { return fsx.statSync(keyringPath).mtimeMs; } catch (_) { return 0; } })();
+      await DL.getLimits();
+      const after = (() => { try { return fsx.statSync(keyringPath).mtimeMs; } catch (_) { return 0; } })();
+      return before === after;
+    })());
+  ok('droid-limits.js ligger i build.files',
+    JSON.parse(fsx.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).build.files.includes('droid-limits.js'));
+  ok('droid meter-nycklar finns i bada sprak',
+    (() => {
+      const en = JSON.parse(fsx.readFileSync(path.join(ROOT, 'i18n', 'en.json'), 'utf8'));
+      const sv = JSON.parse(fsx.readFileSync(path.join(ROOT, 'i18n', 'sv.json'), 'utf8'));
+      return typeof en['bar.droidTitle'] === 'string' && typeof en['bar.droidTitleStale'] === 'string'
+        && typeof sv['bar.droidTitle'] === 'string' && typeof sv['bar.droidTitleStale'] === 'string';
+    })());
+  ok('renderer har droid-gren i meter-tooltip',
+    /metersAgent === 'droid'/.test(rendererSource)
+    && rendererSource.includes("bar.droidTitleStale"));
+  ok('usage:limits skickar droid till droidLimits',
+    (() => {
+      const mainSource = fsx.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+      return /agent === 'droid'[\s\S]*?droidLimits\.getLimits\(\)/.test(mainSource);
+    })());
+
   console.log('== tmux-aktivitet for sessioner utan pty ==');
   const AC = require(path.join(ROOT, 'activity'));
   const acLine = (name, at, cwd, title) => `${name}\t${at}\t${cwd}\t${title}`;

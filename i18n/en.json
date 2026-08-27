@@ -192,6 +192,8 @@
   "bar.codexTitleStale": "Share of your Codex plan limit used in this window · from the last Codex session, may lag",
   "bar.kimiTitle": "Share of your Kimi Code plan limit used in this window · same figure as /usage",
   "bar.kimiTitleStale": "Share of your Kimi Code plan limit used in this window · last good read, may lag",
+  "bar.droidTitle": "Share of your Factory plan limit used in this window · same figure as the API",
+  "bar.droidTitleStale": "Share of your Factory Plan limit used in this window · last good read, may lag",
   "bar.noQuota": "{agent} publishes no usage data TabDesk can read",
   "bar.localTitle": "Local estimate from your transcripts — plan limits unavailable ({reason})",
   "bar.reason.no-token": "not signed in to Claude Code",

@@ -29,6 +29,7 @@ const diskUsage = require('./disk-usage');
 const transcript = require('./transcript');
 const codexLimits = require('./codex-limits');
 const kimiLimits = require('./kimi-limits');
+const droidLimits = require('./droid-limits');
 const activity = require('./activity');
 const asking = require('./asking');
 const instructions = require('./instructions');
@@ -2144,6 +2145,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('usage:limits', (_event, agent) => {
     if (agent === 'codex') return codexLimits.getLimits();
     if (agent === 'kimi') return kimiLimits.getLimits();
+    if (agent === 'droid') return droidLimits.getLimits();
     if (!agent || agent === 'claude' || agent === 'shell') return usageLimits.getLimits();
     // opencode (and anything else without a plan endpoint): honest refusal.
     // The renderer hides the plan meters rather than inventing local spend bars.

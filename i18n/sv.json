@@ -192,6 +192,8 @@
   "bar.codexTitleStale": "Andel av Codex-planens gräns som gått åt i fönstret · från senaste Codex-sessionen, kan släpa efter",
   "bar.kimiTitle": "Andel av Kimi Code-planens gräns som gått åt i fönstret · samma siffra som /usage",
   "bar.kimiTitleStale": "Andel av Kimi Code-planens gräns som gått åt i fönstret · senaste lyckade läsningen, kan släpa efter",
+  "bar.droidTitle": "Andel av Factory-planens gräns som gått åt i fönstret · samma siffra som API:et",
+  "bar.droidTitleStale": "Andel av Factory-planens gräns som gått åt i fönstret · senaste lyckade läsningen, kan släpa efter",
   "bar.noQuota": "{agent} publicerar ingen förbrukningsdata TabDesk kan läsa",
   "bar.localTitle": "Lokal uppskattning från transkripten — plangränser går inte att läsa ({reason})",
   "bar.reason.no-token": "inte inloggad i Claude Code",
