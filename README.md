@@ -28,9 +28,9 @@ ends it too. No tmux command is ever required.
 
 - **Every project's first tab is its overview** — what it is running now, what
   it can start, and the conversations it has had before. That last list is read
-  from Claude Code's, Codex's, opencode's, Kimi Code's and Grok's own session stores, so
+  from Claude Code's, Codex's, opencode's, Kimi Code's, Grok's and Droid's own session stores, so
   picking one resumes it (`claude --resume`, `codex resume`, `opencode --session`,
-  `kimi --session`, `grok --resume`) in a session of its own. Sessions the SDK started — code
+  `kimi --session`, `grok --resume`, `droid -r`) in a session of its own. Sessions the SDK started — code
   reviews, subagents — are left out; they are jobs, not conversations.
 - **The projects folder itself is the rail's home row** (`⌂`, pinned on top) —
   work that spans projects runs in the root, and its sessions and earlier
@@ -53,6 +53,13 @@ ends it too. No tmux command is ever required.
   uses `KIMI_MODEL_THINKING_EFFORT` (no CLI flag); plan meters follow the same
   `/usages` endpoint as Kimi's own `/usage`. Grok effort uses
   `--reasoning-effort`; its quota meters stay hidden because no quota source is available.
+  Droid has no model bar; instead an **autonomy bar** injects `--auto <level>`
+  (Default follows `~/.factory/settings.json`, falling back to `medium`), and its
+  plan meters read `api.factory.ai/api/billing/limits` via the CLI's own
+  encrypted keyring. Each runtime reads its own instruction file — `CLAUDE.md`
+  for Claude, `AGENTS.md` for Codex, opencode, Grok and Droid, `GEMINI.md` for
+  Gemini — both per project and globally (`~/.factory/AGENTS.md` for Droid); the
+  📝 rail button opens an overlay to edit them.
 - **Finished sessions show how long they have waited**, and a project row
   carries the longest wait of the sessions under it, so a rail of green dots
   can be worked oldest-first.
@@ -179,6 +186,8 @@ instead (screenshottable, but no native window).
 | `themes/` | Theme presets (`neon.json`) |
 | `i18n.js`, `i18n/` | Translations and locale detection |
 | `settings.js` | Persisted preferences in `userData/settings.json` |
+| `autonomy.js` | Droid autonomy level management (`--auto <level>` per project) |
+| `droid-limits.js` | Factory API quota meter for Droid (`api.factory.ai/api/billing/limits`) |
 | `build/` | App icon (`icon.svg` source, `icon.png` used at runtime) |
 
 ## License

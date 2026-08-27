@@ -979,6 +979,176 @@ app.on('ready', async () => {
       return /agent === 'droid'[\s\S]*?droidLimits\.getLimits\(\)/.test(mainSource);
     })());
 
+  console.log('== droid-kvot: TTL, staleness och felhantering ==');
+  // Source-level verification of constants and implementation details that
+  // are impractical to exercise live (TTL wait, staleness window, child-process
+  // spawn shape). The regexes pin the contract: 60 s TTL, 15 min staleness,
+  // spawn-based keytar, base64 key decode, AES-256-GCM, inFlight dedup.
+  const dlSrc = fsx.readFileSync(path.join(ROOT, 'droid-limits.js'), 'utf8');
+  ok('droid TTL ar 60 sekunder', /TTL_MS\s*=\s*60000/.test(dlSrc));
+  ok('droid staleness-traskel ar 15 minuter', /STALE_MS\s*=\s*15\s*\*\s*60000/.test(dlSrc));
+  ok('droid token via child node (spawn)', /spawn\s*\(\s*NODE_BIN/.test(dlSrc));
+  ok('droid base64-avkodning av nyckel',
+    /Buffer\.from\([^)]*,\s*['"]base64['"]/.test(dlSrc));
+  ok('droid AES-256-GCM dekryptering',
+    /createDecipheriv\(\s*['"]aes-256-gcm['"]/.test(dlSrc));
+  ok('droid inFlight dedup finns', /if \(inFlight\) return inFlight/.test(dlSrc));
+  ok('droid staleness logik (lastGood inom STALE_MS)',
+    /lastGood\s*&&\s*Date\.now\(\)\s*-\s*lastGood\.at\s*<\s*STALE_MS/.test(dlSrc));
+  ok('droid auth-fel ger inte stale data',
+    /result\.reason\s*!==\s*['"]auth['"]/.test(dlSrc));
+  ok('droid skriver inte till keyring (kallkod)',
+    !/writeFileSync|writeFile|appendFile/.test(dlSrc));
+  ok('droid token cache med JWT-expiry',
+    /tokenCache\s*&&\s*tokenCache\.exp/.test(dlSrc));
+
+  // --- Fixture-based failure/success tests ---
+  // Each scenario re-requires droid-limits with tailored env vars so the
+  // module-level cache starts empty. Env vars are restored at the end.
+  const DL_REQ_PATH = require.resolve(path.join(ROOT, 'droid-limits'));
+  const savedEnv = {
+    TABDESK_NODE_BIN: process.env.TABDESK_NODE_BIN,
+    TABDESK_KEYTAR_NODE: process.env.TABDESK_KEYTAR_NODE,
+    TABDESK_KEYRING_FILE: process.env.TABDESK_KEYRING_FILE,
+    FACTORY_API_BASE_URL: process.env.FACTORY_API_BASE_URL,
+  };
+  const meterTmp = fsx.mkdtempSync(path.join(os.tmpdir(), 'tabdesk-droid-meter-'));
+
+  // Graceful failure: missing node binary → keytarKey returns null.
+  process.env.TABDESK_NODE_BIN = '/nonexistent/node-' + Date.now();
+  delete require.cache[DL_REQ_PATH];
+  const DL_NO_NODE = require(path.join(ROOT, 'droid-limits'));
+  const noNodeRes = await DL_NO_NODE.getLimits();
+  ok('droid saknad node ger ok:false', noNodeRes && noNodeRes.ok === false, JSON.stringify(noNodeRes));
+  ok('droid saknad node ger reason keyring-locked',
+    noNodeRes && noNodeRes.reason === 'keyring-locked', JSON.stringify(noNodeRes));
+
+  // TTL cache: second call within 60 s returns the exact same cached object.
+  const noNodeRes2 = await DL_NO_NODE.getLimits();
+  ok('droid TTL cache returnerar samma objekt', noNodeRes === noNodeRes2);
+
+  // inFlight dedup: two concurrent calls on a fresh module resolve to the
+  // same result object (both share the same inFlight promise). getLimits is
+  // async so each call returns a new outer Promise, but both adopt the same
+  // inFlight — so the resolved values are the exact same object reference.
+  delete require.cache[DL_REQ_PATH];
+  const DL_DEDUP = require(path.join(ROOT, 'droid-limits'));
+  const dedupP1 = DL_DEDUP.getLimits();
+  const dedupP2 = DL_DEDUP.getLimits();
+  const [dedupR1, dedupR2] = await Promise.all([dedupP1, dedupP2]);
+  ok('droid inFlight dedup ger samma resultat-objekt', dedupR1 === dedupR2,
+    'r1=' + JSON.stringify(dedupR1) + ' r2=' + JSON.stringify(dedupR2));
+
+  // Create a valid AES-256-GCM encrypted keyring with a fake JWT so the full
+  // chain (keytar → decrypt → API) can be exercised against a mock server.
+  const knownKey = crypto.randomBytes(32);
+  const knownIv = crypto.randomBytes(12);
+  const fakeJwt = 'hdr.' + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64') + '.sig';
+  const plainBuf = Buffer.from(JSON.stringify({ access_token: fakeJwt }));
+  const enc = crypto.createCipheriv('aes-256-gcm', knownKey, knownIv);
+  const encBytes = Buffer.concat([enc.update(plainBuf), enc.final()]);
+  const encTag = enc.getAuthTag();
+  const validKeyring = path.join(meterTmp, 'valid.keyring');
+  fsx.writeFileSync(validKeyring,
+    knownIv.toString('base64') + ':' + encTag.toString('base64') + ':' + encBytes.toString('base64'));
+  const validKeytar = path.join(meterTmp, 'valid-keytar.js');
+  fsx.writeFileSync(validKeytar,
+    'module.exports = { getPassword: async () => ' + JSON.stringify(knownKey.toString('base64')) + ' };');
+
+  // Graceful failure: valid keytar but garbage keyring → decryptKeyring null.
+  const badKeyring = path.join(meterTmp, 'bad.keyring');
+  fsx.writeFileSync(badKeyring, 'garbage:not-encrypted:data');
+  process.env.TABDESK_NODE_BIN = '/usr/bin/node';
+  process.env.TABDESK_KEYTAR_NODE = validKeytar;
+  process.env.TABDESK_KEYRING_FILE = badKeyring;
+  delete require.cache[DL_REQ_PATH];
+  const DL_BAD_KEY = require(path.join(ROOT, 'droid-limits'));
+  const badKeyRes = await DL_BAD_KEY.getLimits();
+  ok('droid trasig keyring ger ok:false', badKeyRes && badKeyRes.ok === false, JSON.stringify(badKeyRes));
+  ok('droid trasig keyring ger reason keyring-locked',
+    badKeyRes && badKeyRes.reason === 'keyring-locked', JSON.stringify(badKeyRes));
+
+  // Mock API server for success and HTTP failure modes.
+  const http = require('http');
+  let mockStatus = 200;
+  let mockBody = JSON.stringify({
+    usesTokenRateLimitsBilling: true,
+    limits: {
+      standard: {
+        fiveHour: { usedPercent: 42, windowEnd: new Date(Date.now() + 3600000).toISOString(), secondsRemaining: 3600 },
+        weekly: { usedPercent: 67, windowEnd: new Date(Date.now() + 86400000).toISOString(), secondsRemaining: 86400 },
+      },
+    },
+  });
+  const mockServer = http.createServer((req, res) => {
+    res.writeHead(mockStatus, { 'Content-Type': 'application/json' });
+    res.end(mockStatus === 200 ? mockBody : '');
+  });
+  mockServer.on('error', () => { /* swallow — test checks return values */ });
+  await new Promise((resolve) => mockServer.listen(0, '127.0.0.1', resolve));
+  const mockPort = mockServer.address().port;
+
+  process.env.TABDESK_KEYTAR_NODE = validKeytar;
+  process.env.TABDESK_KEYRING_FILE = validKeyring;
+  process.env.FACTORY_API_BASE_URL = 'http://127.0.0.1:' + mockPort;
+
+  // Successful API call → { ok: true, session.pct: 42, week.pct: 67 }.
+  delete require.cache[DL_REQ_PATH];
+  const DL_OK = require(path.join(ROOT, 'droid-limits'));
+  const okRes = await DL_OK.getLimits();
+  ok('droid mock-API ger ok:true', okRes && okRes.ok === true, JSON.stringify(okRes));
+  ok('droid mock-API session procent 42', okRes && okRes.session && okRes.session.pct === 42);
+  ok('droid mock-API week procent 67', okRes && okRes.week && okRes.week.pct === 67);
+
+  // TTL cache: second call returns the same cached object (no new API call).
+  const okRes2 = await DL_OK.getLimits();
+  ok('droid mock-API TTL cache returnar samma objekt', okRes === okRes2);
+
+  // 401 → { ok: false, reason: 'auth' } (no stale data even with prior good).
+  mockStatus = 401;
+  delete require.cache[DL_REQ_PATH];
+  const DL_401 = require(path.join(ROOT, 'droid-limits'));
+  const authFailRes = await DL_401.getLimits();
+  ok('droid 401 ger ok:false reason auth',
+    authFailRes && authFailRes.ok === false && authFailRes.reason === 'auth', JSON.stringify(authFailRes));
+
+  // 500 → { ok: false, reason: 'http:500' }.
+  mockStatus = 500;
+  delete require.cache[DL_REQ_PATH];
+  const DL_500 = require(path.join(ROOT, 'droid-limits'));
+  const httpFailRes = await DL_500.getLimits();
+  ok('droid 500 ger ok:false reason http:500',
+    httpFailRes && httpFailRes.ok === false && httpFailRes.reason === 'http:500', JSON.stringify(httpFailRes));
+
+  // 200 with valid JSON but no limits.standard → { ok: false, reason: 'shape' }.
+  mockStatus = 200;
+  mockBody = JSON.stringify({ foo: 'bar' });
+  delete require.cache[DL_REQ_PATH];
+  const DL_SHAPE = require(path.join(ROOT, 'droid-limits'));
+  const shapeFailRes = await DL_SHAPE.getLimits();
+  ok('droid felaktig shape ger ok:false reason shape',
+    shapeFailRes && shapeFailRes.ok === false && shapeFailRes.reason === 'shape', JSON.stringify(shapeFailRes));
+
+  // Network unreachable (server closed) → { ok: false, reason: 'network' }.
+  await new Promise((resolve) => mockServer.close(resolve));
+  delete require.cache[DL_REQ_PATH];
+  const DL_NET = require(path.join(ROOT, 'droid-limits'));
+  const netFailRes = await DL_NET.getLimits();
+  ok('droid narverk fel ger ok:false', netFailRes && netFailRes.ok === false, JSON.stringify(netFailRes));
+
+  // Never throws: every failure mode above returned a plain object with ok.
+  ok('droid alla felhanteringar returnerar objekt (kastar aldrig)',
+    [noNodeRes, badKeyRes, authFailRes, httpFailRes, shapeFailRes, netFailRes]
+      .every((r) => r && typeof r === 'object' && typeof r.ok === 'boolean'));
+
+  // Cleanup env and temp fixtures.
+  for (const ek of Object.keys(savedEnv)) {
+    if (savedEnv[ek] === undefined) delete process.env[ek];
+    else process.env[ek] = savedEnv[ek];
+  }
+  delete require.cache[DL_REQ_PATH];
+  try { fsx.rmSync(meterTmp, { recursive: true, force: true }); } catch (_) { /* gone */ }
+
   console.log('== tmux-aktivitet for sessioner utan pty ==');
   const AC = require(path.join(ROOT, 'activity'));
   const acLine = (name, at, cwd, title) => `${name}\t${at}\t${cwd}\t${title}`;
