@@ -18,6 +18,7 @@ const i18n = require('./i18n');
 const settings = require('./settings');
 const model = require('./model');
 const effort = require('./effort');
+const autonomy = require('./autonomy');
 const agents = require('./agents');
 const history = require('./history');
 const projectsRoot = require('./projects-root');
@@ -964,6 +965,7 @@ app.whenReady().then(async () => {
       // renderer to the first-run screen instead of an empty rail.
       projectsRoot: { path: rootDir(), configured: projectsRoot.configured() },
       model: { global: model.globalDefault('claude') },
+      autonomy: { global: autonomy.globalDefault('droid') },
       agents: { list: agents.list(), byProject: agents.allFor(), fallback: agents.DEFAULT_ID },
       demoStartCmd: DEMO_START_CMD,
     };
@@ -1031,6 +1033,10 @@ app.whenReady().then(async () => {
   }));
   ipcMain.handle('effort:get', (event, { path: projectPath, agent }) => effort.getFor(projectPath, agent));
   ipcMain.handle('effort:set', (event, { path: projectPath, agent, id }) => effort.setFor(projectPath, agent, id));
+  // How freely a Droid tab acts on its own — Droid-only, same three questions.
+  ipcMain.handle('autonomy:list', (event, agent) => ({ list: autonomy.list(agent), global: autonomy.globalDefault(agent) }));
+  ipcMain.handle('autonomy:get', (event, { path: projectPath, agent }) => autonomy.getFor(projectPath, agent));
+  ipcMain.handle('autonomy:set', (event, { path: projectPath, agent, id }) => autonomy.setFor(projectPath, agent, id));
 
   // ---- Which CLI a project starts (Claude Code, another agent, plain shell) ----
   // The list is re-read rather than cached in the renderer: an agent installed

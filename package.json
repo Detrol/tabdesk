@@ -86,6 +86,7 @@
       "model.js",
       "agents.js",
       "effort.js",
+      "autonomy.js",
       "history.js",
       "transcript.js",
       "opencode-store.js",

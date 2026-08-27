@@ -142,6 +142,15 @@
       <button id="effort-btn" aria-haspopup="menu" aria-expanded="false">–</button>
     </div>
 
+    <!-- How much freedom the agent has to act on its own. Only Droid has an
+         autonomy level (`--auto`), so this is hidden for every other runtime.
+         Its menu, like the model's and effort's, lives outside the bar so it
+         isn't clipped. -->
+    <div class="stat hidden" id="m-autonomy">
+      <span class="m-label" data-i18n="bar.autonomy">Autonomy</span>
+      <button id="autonomy-btn" aria-haspopup="menu" aria-expanded="false">–</button>
+    </div>
+
     <!-- The plan's own limit windows, the same three /usage reports. Labels are
          set from JS: if the account's quota can't be read these fall back to
          the local token estimate and rename themselves accordingly. -->
@@ -200,6 +209,7 @@
        the embedded terminals (native X windows stacked above the page). -->
   <div id="model-menu" class="menu hidden" role="menu"></div>
   <div id="effort-menu" class="menu hidden" role="menu"></div>
+  <div id="autonomy-menu" class="menu hidden" role="menu"></div>
 
   <!-- The focused session's output, history included, as ordinary selectable
        text: drag across as much of it as you like, scrolling as you go, which

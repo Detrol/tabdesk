@@ -14,7 +14,7 @@ const { createLogger } = require('./logger');
 
 const log = createLogger('settings');
 
-const DEFAULTS = { theme: 'system', glow: true, projectsDir: null, language: 'system', projectModels: {}, projectEfforts: {}, closedProjects: [], openTabs: [] };
+const DEFAULTS = { theme: 'system', glow: true, projectsDir: null, language: 'system', projectModels: {}, projectEfforts: {}, projectAutonomies: {}, closedProjects: [], openTabs: [] };
 
 let cache = null;
 const file = () => path.join(app.getPath('userData'), 'settings.json');

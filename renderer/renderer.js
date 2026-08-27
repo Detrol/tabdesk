@@ -692,6 +692,7 @@ function applyLayout() {
   renderPlace();
   renderModelBtn();
   renderEffortBtn();
+  renderAutonomyBtn();
   renderAgentBtn();
   syncGridBtn();
   scheduleSync();
@@ -771,11 +772,15 @@ function startCmdFor(t) {
     ? ` --model '${t.model}'` : '';
   const agent = agentFor(t);
   const eFlag = effortFlag(agent, t.effort);
+  // Droid's autonomy level rides on the launch command, never on resume (the
+  // conversation already has its level). For agents without autonomy support
+  // this is the empty string.
+  const aFlag = autonomyFlag(agent, t.autonomy);
   // kimi has no --effort flag: docs set thinking via KIMI_MODEL_THINKING_EFFORT.
   if (eFlag && /^[A-Z][A-Z0-9_]*=/.test(eFlag)) {
-    return `env ${eFlag} ${spec.command}${flag}`;
+    return `env ${eFlag} ${spec.command}${flag}${aFlag}`;
   }
-  return spec.command + flag + eFlag;
+  return spec.command + flag + eFlag + aFlag;
 }
 
 // Reasoning effort, in each CLI's own syntax. Mirrors effort.js in main; the
@@ -796,6 +801,31 @@ function effortFlag(agent, level) {
   if (agent === 'kimi') return `KIMI_MODEL_THINKING_EFFORT=${level}`;
   if (agent === 'grok') return ` --reasoning-effort ${level}`;
   return ` -c model_reasoning_effort=${level}`;
+}
+
+// Autonomy, Droid's own `--auto <level>`. Mirrors autonomy.js in main; the
+// level is checked against Droid's own list rather than escaped. Unlike the
+// effort bar, "Default" is not "no flag": Droid's base command has no --auto,
+// so Default resolves the level from Factory's config (globalAutonomy, from
+// the boot payload / autonomy:list) and injects it anyway.
+const AUTONOMY_LEVELS = { droid: ['low', 'medium', 'high'] };
+// What Droid's "Default" resolves to right now, seeded from the boot payload
+// (main reads ~/.factory/settings.json) and refreshed by autonomy:list. Held
+// up here, not with the picker further down, because startCmdFor() reads it as
+// soon as the first tab materialises.
+let globalAutonomy = ((window.api.boot && window.api.boot.autonomy) || {}).global || 'medium';
+function autonomySupported(agent) { return Boolean(AUTONOMY_LEVELS[agent]); }
+function autonomyFlag(agent, level) {
+  if (!autonomySupported(agent)) return '';
+  // Explicit branch, not a fall-through: sharing effort's Codex tail here
+  // would emit Codex's -c reasoning override instead of Droid's `--auto`.
+  if (agent === 'droid') {
+    const lvl = level && level !== 'default' && AUTONOMY_LEVELS.droid.includes(level)
+      ? level
+      : (AUTONOMY_LEVELS.droid.includes(globalAutonomy) ? globalAutonomy : 'medium');
+    return ` --auto ${lvl}`;
+  }
+  return '';
 }
 
 // Ids come from history.js, which only emits ones that cannot be read as a
@@ -942,7 +972,7 @@ strip.addEventListener('drop', (e) => {
 // `projectCwd` is the rail row this session belongs under: its own directory
 // for a project session, the parent project for a worktree, the project you
 // were in for a loose terminal.
-function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resume }) {
+function buildTab({ name, cwd, projectCwd, model, effort, autonomy, agent, startCmd, resume }) {
   const id = `t${++seq}`;
   const tabEl = document.createElement('div');
   tabEl.className = 'stab';
@@ -1018,7 +1048,7 @@ function buildTab({ name, cwd, projectCwd, model, effort, agent, startCmd, resum
   // changing what this tab was going to run.
   const rec = {
     id, name, cwd, projectCwd: projectCwd || cwd || activeCwd,
-    model: model || 'default', effort: effort || 'default',
+    model: model || 'default', effort: effort || 'default', autonomy: autonomy || 'default',
     startCmd, resume: resume || null,
     tabEl, materialized: false, agent: agent || undefined,
   };
@@ -1178,6 +1208,7 @@ function materialize(t) {
   // resources are installed so a failed first start leaves the tab unchanged.
   const runningModel = t.model;
   const runningEffort = t.effort;
+  const runningAutonomy = t.autonomy;
   const runningAgent = agentFor(t);
   const bornAt = Date.now();
   const launchTab = { ...t, agent: runningAgent };
@@ -1224,7 +1255,7 @@ function materialize(t) {
     backendStarted = true;
     scheduleSync();
     Object.assign(t, {
-      runningModel, runningEffort, agent: runningAgent, bornAt,
+      runningModel, runningEffort, runningAutonomy, agent: runningAgent, bornAt,
       materialized: true, embed: true, panelEl,
       cleanup: () => ro.disconnect(),
     });
@@ -1277,7 +1308,7 @@ function materialize(t) {
   loadTerminalAddons(term, t.tabEl, termEl, runningAgent);
 
   Object.assign(t, {
-    runningModel, runningEffort, agent: runningAgent, bornAt,
+    runningModel, runningEffort, runningAutonomy, agent: runningAgent, bornAt,
     materialized: true, term, fit, panelEl,
     cleanup: () => { offData(); offExit(); ro.disconnect(); },
   });
@@ -1439,9 +1470,10 @@ async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
     load: () => Promise.all([
       window.api.getModel(cwd, agent),
       window.api.getEffort(cwd, agent),
+      window.api.getAutonomy(cwd, agent),
     ]),
     release: (allocation) => window.api.releaseSession(allocation.session),
-    create: (allocation, [model, effort]) => {
+    create: (allocation, [model, effort, autonomy]) => {
       let name = base;
       if (allocation && allocation.session && allocation.suffix) {
         name = `${base} ·${allocation.suffix}`;
@@ -1453,7 +1485,7 @@ async function newSession(cwd, agentId, { projectCwd, resume } = {}) {
         lastIdBefore: projects.get(owner) ? projects.get(owner).lastId : null,
         owner,
       };
-      const id = buildTab({ name, cwd, projectCwd: owner, model, effort, agent, resume });
+      const id = buildTab({ name, cwd, projectCwd: owner, model, effort, autonomy, agent, resume });
       created.id = id;
       const tab = tabs.get(id);
       if (allocation && allocation.session) tab.session = allocation.session;
@@ -3108,6 +3140,126 @@ effortMenu.addEventListener('click', async (e) => {
   toast(tab.materialized
     ? window.t('toast.effortLater', { project: tab.name, effort: label })
     : window.t('toast.effortSet', { project: tab.name, effort: label }));
+});
+
+// ---- Autonomy picker ----
+// The effort picker's twin, Droid-only: same shape and storage rules (per
+// project, per agent), the same "a live terminal keeps what it launched with".
+// It hides itself for every runtime without an autonomy setting. Unlike
+// effort, its "Default" resolves to a concrete level (from Factory's config)
+// because Droid's base command carries no --auto.
+const autonomyBtn = document.getElementById('autonomy-btn');
+const autonomyMenu = document.getElementById('autonomy-menu');
+const autonomyStat = document.getElementById('m-autonomy');
+let autonomyList = [];
+let autonomyListAgent = null;
+
+async function loadAutonomies(agent) {
+  if (autonomyListAgent === agent) return;
+  const res = await window.api.listAutonomies(agent);
+  if (!res || !Array.isArray(res.list)) return;
+  autonomyList = res.list;
+  globalAutonomy = res.global || 'medium';
+  autonomyListAgent = agent;
+}
+
+function activeAutonomy() {
+  const tab = tabs.get(activeId);
+  return (tab && tab.autonomy) || 'default';
+}
+
+function autonomyBarLabel(id) {
+  if (id !== 'default') return id;
+  // Droid's Default is a concrete level (the base command always carries
+  // --auto), so the button names it rather than hiding it behind "Auto":
+  // "Default (medium)" says both that it's inherited and what it resolves to.
+  const def = (autonomyList.find((a) => a.id === 'default') || {}).label || 'Default';
+  return `${def} (${globalAutonomy})`;
+}
+
+function renderAutonomyBtn() {
+  const tab = tabs.get(activeId);
+  const agent = activeAgent();
+  const show = Boolean(agent) && autonomySupported(agent);
+  autonomyStat.classList.toggle('hidden', !show);
+  if (!show) return;
+  if (autonomyListAgent !== agent) {
+    loadAutonomies(agent).then(() => { if (activeAgent() === agent) renderAutonomyBtn(); });
+  }
+  const id = activeAutonomy();
+  const pending = !!(tab && tab.materialized && tab.runningAutonomy !== tab.autonomy);
+  autonomyBtn.textContent = autonomyBarLabel(id) + (pending ? ' •' : '');
+  autonomyBtn.classList.toggle('picked', id !== 'default' && !pending);
+  autonomyBtn.classList.toggle('pending', pending);
+  autonomyBtn.title = pending
+    ? t('bar.autonomy.pending', { autonomy: autonomyBarLabel(tab.runningAutonomy) })
+    : t('bar.autonomy.title', { agent: agentLabel(agent) });
+}
+
+function renderAutonomyMenu() {
+  const id = activeAutonomy();
+  autonomyMenu.innerHTML = '';
+  for (const a of autonomyList) {
+    const item = document.createElement('button');
+    item.className = 'menu-item' + (a.id === id ? ' current' : '');
+    item.setAttribute('role', 'menuitem');
+    item.dataset.autonomy = a.id;
+    const label = document.createElement('span');
+    label.className = 'mi-label';
+    label.textContent = (a.id === id ? '✓ ' : '') + a.label;
+    const hint = document.createElement('span');
+    hint.className = 'mi-hint';
+    hint.textContent = a.id === 'default'
+      ? t('bar.autonomy.follows', { agent: agentLabel(activeAgent() || 'droid'), autonomy: autonomyBarLabel('default') })
+      : '';
+    item.append(label, hint);
+    autonomyMenu.appendChild(item);
+  }
+}
+
+function closeAutonomyMenu() {
+  autonomyMenu.classList.add('hidden');
+  autonomyBtn.setAttribute('aria-expanded', 'false');
+}
+
+autonomyBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  const open = autonomyMenu.classList.contains('hidden');
+  if (open) {
+    const agent = activeAgent();
+    if (agent) { autonomyListAgent = null; await loadAutonomies(agent); }
+    renderAutonomyMenu();
+  }
+  autonomyMenu.classList.toggle('hidden', !open);
+  autonomyBtn.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', closeAutonomyMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAutonomyMenu(); });
+
+autonomyMenu.addEventListener('click', async (e) => {
+  const item = e.target.closest('.menu-item');
+  if (!item) return;
+  e.stopPropagation();
+  closeAutonomyMenu();
+  const tab = tabs.get(activeId);
+  if (!tab || !tab.cwd) return;
+  const id = item.dataset.autonomy;
+  if (id === tab.autonomy) return;
+
+  const agent = agentFor(tab);
+  const res = await window.api.setAutonomy(tab.cwd, agent, id);
+  if (!res || !res.ok) {
+    toast(window.t('toast.autonomyFailed', { error: (res && res.error) || '' }));
+    return;
+  }
+  for (const other of tabs.values()) {
+    if (other.cwd === tab.cwd && agentFor(other) === agent) other.autonomy = res.autonomy;
+  }
+  renderAutonomyBtn();
+  const label = autonomyBarLabel(tab.autonomy);
+  toast(tab.materialized
+    ? window.t('toast.autonomyLater', { project: tab.name, autonomy: label })
+    : window.t('toast.autonomySet', { project: tab.name, autonomy: label }));
 });
 
 // What "Default" resolves to can change under us (an editor, claude config).

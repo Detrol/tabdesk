@@ -1236,7 +1236,10 @@ html, body {
    caret, but the neutral line colour, because it qualifies the model rather
    than competing with it. Hidden outright for agents with no such setting. */
 #m-effort.hidden { display: none; }
-#effort-btn {
+/* Autonomy is Droid-only, hidden outright for every other runtime. */
+#m-autonomy.hidden { display: none; }
+#effort-btn,
+#autonomy-btn {
   padding: 3px 9px;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -1246,22 +1249,30 @@ html, body {
   letter-spacing: .5px;
   cursor: pointer;
 }
-#effort-btn::after { content: "▾"; margin-left: 6px; opacity: .75; }
-#effort-btn[aria-expanded="true"]::after { content: "▴"; }
-#effort-btn:hover:not(:disabled) { background: var(--tint); color: var(--text); }
-#effort-btn[aria-expanded="true"] { background: var(--tint); color: var(--text); }
+#effort-btn::after,
+#autonomy-btn::after { content: "▾"; margin-left: 6px; opacity: .75; }
+#effort-btn[aria-expanded="true"]::after,
+#autonomy-btn[aria-expanded="true"]::after { content: "▴"; }
+#effort-btn:hover:not(:disabled),
+#autonomy-btn:hover:not(:disabled) { background: var(--tint); color: var(--text); }
+#effort-btn[aria-expanded="true"],
+#autonomy-btn[aria-expanded="true"] { background: var(--tint); color: var(--text); }
 /* Picked for this project rather than inherited — same accent the model button
    uses to say "this is a choice you made". */
-#effort-btn.picked { border-color: var(--accent-2); color: var(--accent-2); }
-#effort-btn.pending { border-color: var(--warn); color: var(--warn); }
-#effort-menu {
+#effort-btn.picked,
+#autonomy-btn.picked { border-color: var(--accent-2); color: var(--accent-2); }
+#effort-btn.pending,
+#autonomy-btn.pending { border-color: var(--warn); color: var(--warn); }
+#effort-menu,
+#autonomy-menu {
   position: absolute;
   left: 10px;
   bottom: 52px;
   width: 136px;
   z-index: 60;
 }
-#effort-menu .menu-item.current .mi-label { color: var(--accent-2); }
+#effort-menu .menu-item.current .mi-label,
+#autonomy-menu .menu-item.current .mi-label { color: var(--accent-2); }
 
 #model-btn {
   padding: 3px 9px;

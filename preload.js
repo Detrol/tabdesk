@@ -36,6 +36,9 @@ contextBridge.exposeInMainWorld('api', {
   listEfforts: (agent) => ipcRenderer.invoke('effort:list', agent),
   getEffort: (projectPath, agent) => ipcRenderer.invoke('effort:get', { path: projectPath, agent }),
   setEffort: (projectPath, agent, id) => ipcRenderer.invoke('effort:set', { path: projectPath, agent, id }),
+  listAutonomies: (agent) => ipcRenderer.invoke('autonomy:list', agent),
+  getAutonomy: (projectPath, agent) => ipcRenderer.invoke('autonomy:get', { path: projectPath, agent }),
+  setAutonomy: (projectPath, agent, id) => ipcRenderer.invoke('autonomy:set', { path: projectPath, agent, id }),
 
   // Which CLI a project's terminal starts. listAgents() returns only what is
   // actually installed, each with the command line it starts — those strings

@@ -895,6 +895,56 @@ app.on('ready', async () => {
   ok('default tar bort posten', EF.setFor(EFPROJ, 'codex', 'default').ok === true
     && EF.getFor(EFPROJ, 'codex') === 'default');
 
+  console.log('== autonomi (droid) ==');
+  const AU = require(path.join(ROOT, 'autonomy'));
+  ok('autonomy exporterar hela API:t',
+    ['list', 'supports', 'globalDefault', 'getFor', 'setFor', 'flagFor', 'isEnvFlag', 'keyFor', 'LEVELS']
+      .every((k) => AU[k] !== undefined));
+  ok('bara droid har autonomi', AU.supports('droid') === true && AU.supports('claude') === false);
+  ok('droid har egna nivaer', AU.LEVELS.droid.join(',') === 'low,medium,high');
+  ok('list ger default plus nivaer',
+    AU.list('droid').map((r) => r.id).join(',') === 'default,low,medium,high');
+  ok('agent utan autonomi far inga rader', AU.list('claude').length === 0);
+  // ~/.factory/settings.json has autonomyLevel "off" here, which falls back to
+  // medium — the same result as a missing value.
+  ok('globalDefault ger medium for off/saknad', AU.globalDefault('droid') === 'medium');
+  ok('default injicerar alltid den upplosta nivan',
+    AU.flagFor('droid', 'default') === ` --auto ${AU.globalDefault('droid')}`);
+  ok('explicit niva blir --auto', AU.flagFor('droid', 'high') === ' --auto high');
+  ok('okand agent ger ingen flagga', AU.flagFor('claude', 'high') === '');
+  ok('autonomi ar aldrig en env-flagga',
+    AU.isEnvFlag(AU.flagFor('droid', 'high')) === false
+    && AU.isEnvFlag(AU.flagFor('droid', 'default')) === false);
+  const AUPROJ = '/tmp/tabdesk-autonomy-proj';
+  ok('okand niva avvisas', AU.setFor(AUPROJ, 'droid', 'turbo').ok === false);
+  ok('agent utan autonomi avvisas', AU.setFor(AUPROJ, 'claude', 'high').ok === false);
+  ok('giltig niva sparas', AU.setFor(AUPROJ, 'droid', 'high').ok === true
+    && AU.getFor(AUPROJ, 'droid') === 'high');
+  ok('default tar bort posten (autonomi)', AU.setFor(AUPROJ, 'droid', 'default').ok === true
+    && AU.getFor(AUPROJ, 'droid') === 'default');
+  const SET = require(path.join(ROOT, 'settings'));
+  ok('settings DEFAULTS har projectAutonomies',
+    SET.DEFAULTS.projectAutonomies && typeof SET.DEFAULTS.projectAutonomies === 'object'
+    && Object.keys(SET.DEFAULTS.projectAutonomies).length === 0);
+  const pkg = JSON.parse(fsx.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  ok('autonomy.js ligger i build.files', pkg.build.files.includes('autonomy.js'));
+  const enJson = JSON.parse(fsx.readFileSync(path.join(ROOT, 'i18n', 'en.json'), 'utf8'));
+  const svJson = JSON.parse(fsx.readFileSync(path.join(ROOT, 'i18n', 'sv.json'), 'utf8'));
+  const autonomyKeys = ['bar.autonomy', 'bar.autonomy.follows', 'toast.autonomySet', 'toast.autonomyLater', 'toast.autonomyFailed'];
+  ok('autonomi-nycklar finns i bada sprak',
+    autonomyKeys.every((k) => typeof enJson[k] === 'string' && typeof svJson[k] === 'string'));
+
+  console.log('== autonomi rendererpolicy ==');
+  ok('renderer AUTONOMY_LEVELS.droid',
+    /AUTONOMY_LEVELS\s*=\s*\{\s*droid:\s*\[[^\]]*'low'[^\]]*'medium'[^\]]*'high'[^\]]*\]/.test(rendererSource));
+  // The explicit droid branch must emit --auto, not fall through to Codex's
+  // -c model_reasoning_effort= tail the effort bar uses for unknown agents.
+  const autonomyFlagBody = (rendererSource.match(/function autonomyFlag[\s\S]*?\n}/) || [''])[0];
+  ok('renderer autonomyFlag har egen droid-gren (ingen Codex-fallthrough)',
+    /if \(agent === 'droid'\)/.test(autonomyFlagBody)
+    && autonomyFlagBody.includes('--auto')
+    && !autonomyFlagBody.includes('model_reasoning_effort'));
+
   console.log('== codex-modeller ur rollouttext ==');
   const MD = require(path.join(ROOT, 'model'));
   const mtext = '{"model":"gpt-5.6-sol"}\n{"model":"gpt-5.6-terra"}\n{"model":"gpt-5.6-sol"}\n{"model":"bad;rm"}';
