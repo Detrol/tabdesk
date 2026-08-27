@@ -40,13 +40,16 @@ function textOf(content) {
 
 function rootsOf(root) {
   if (root && typeof root === 'object' && !Array.isArray(root)) {
-    return { claude: root.claude, opencode: root.opencode, kimi: root.kimi, grok: root.grok };
+    return {
+      claude: root.claude, opencode: root.opencode, kimi: root.kimi, grok: root.grok, droid: root.droid,
+    };
   }
   return {
     claude: typeof root === 'string' ? root : undefined,
     opencode: undefined,
     kimi: undefined,
     grok: undefined,
+    droid: undefined,
   };
 }
 
@@ -282,6 +285,58 @@ function readGrok(cwd, sessionId, root) {
   return out.length ? out.join('\n') : null;
 }
 
+// Droid (Factory CLI): one JSONL per session under sessions/<slug>/<id>.jsonl,
+// the slug being the cwd dashed exactly as Claude's (see history.claudeDirFor).
+// The blocks are the same shape Claude uses, so textOf() does the work — except
+// tool_result bodies ride inside user turns here, so they are filtered out
+// before reuse (thinking is already dropped by textOf). Non-message records
+// (session_start, todo_state, agent_turn_outcome, compaction_state, anything
+// unknown) carry nothing a reader wants and are skipped.
+function droidText(content) {
+  if (Array.isArray(content)) return textOf(content.filter((b) => b && b.type !== 'tool_result'));
+  return textOf(content);
+}
+
+function droidFileFor(cwd, sessionId, root) {
+  const base = root || path.join(os.homedir(), '.factory');
+  for (const spelling of history.spellingsOf(cwd)) {
+    const file = path.join(base, 'sessions', history.claudeDirFor(spelling), `${sessionId}.jsonl`);
+    try { if (fs.statSync(file).isFile()) return file; } catch (_) { /* try the other */ }
+  }
+  return null;
+}
+
+function readDroid(cwd, sessionId, root) {
+  if (!SAFE_ID.test(String(sessionId || ''))) return null;
+  const file = droidFileFor(cwd, sessionId, root);
+  if (!file) return null;
+  let raw;
+  try {
+    const st = fs.statSync(file);
+    const fd = fs.openSync(file, 'r');
+    try {
+      const len = Math.min(st.size, MAX_BYTES);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, st.size - len);
+      raw = buf.toString('utf8');
+    } finally { try { fs.closeSync(fd); } catch (_) { /* closed */ } }
+  } catch (_) {
+    return null;
+  }
+
+  const out = [];
+  for (const line of raw.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch (_) { continue; }
+    if (!rec || rec.type !== 'message' || !rec.message) continue;
+    const body = droidText(rec.message.content).trim();
+    if (!body) continue;
+    out.push(rec.message.role === 'user' ? `\n› ${body}\n` : body);
+  }
+  return out.length ? out.join('\n') : null;
+}
+
 // Returns the conversation as text, or null when there is no transcript to
 // read. Never throws — this feeds a viewer, not a workflow.
 //
@@ -290,7 +345,7 @@ function readGrok(cwd, sessionId, root) {
 async function read(cwd, sessionId, root) {
   const claude = readClaude(cwd, sessionId, root);
   if (claude) return claude;
-  const { opencode, kimi, grok } = rootsOf(root);
+  const { opencode, kimi, grok, droid } = rootsOf(root);
   try {
     const oc = await readOpencode(cwd, sessionId, opencode);
     if (oc) return oc;
@@ -299,7 +354,13 @@ async function read(cwd, sessionId, root) {
     const k = readKimi(cwd, sessionId, root && typeof root === 'object' ? root : { kimi });
     if (k) return k;
   } catch (_) { /* try grok */ }
-  try { return readGrok(cwd, sessionId, grok); } catch (_) { return null; }
+  try {
+    const g = readGrok(cwd, sessionId, grok);
+    if (g) return g;
+  } catch (_) { /* try droid */ }
+  try { return readDroid(cwd, sessionId, droid); } catch (_) { return null; }
 }
 
-module.exports = { read, fileFor, textOf, readOpencode, readKimi, readGrok };
+module.exports = {
+  read, fileFor, textOf, readOpencode, readKimi, readGrok, readDroid,
+};

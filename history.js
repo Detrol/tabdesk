@@ -520,6 +520,68 @@ async function grokSessions(cwd, root) {
   return out.sort((a, b) => b.at - a.at).slice(0, MAX_PER_AGENT);
 }
 
+// ---- Droid (Factory CLI) -------------------------------------------------
+// One flat index (sessions-index.json) lists the user-visible sessions with
+// their cwd, title and mtime; the per-session transcript lives under
+// sessions/<slug>/<id>.jsonl, the slug being the cwd with each path character
+// dashed exactly as Claude does it. The index does not carry whether a session
+// was spawned by another (a subagent), so that one fact is read from the first
+// line of the transcript — a session_start record whose callingSessionId names
+// the parent when it has one.
+
+function droidBase(root) {
+  return root || path.join(os.homedir(), '.factory');
+}
+
+function droidIndexEntries(base) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(base, 'sessions-index.json'), 'utf8'));
+    return Array.isArray(parsed?.entries) ? parsed.entries : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function droidIsSubagent(file) {
+  const head = await readHead(file, MARK_BYTES);
+  const nl = head.indexOf('\n');
+  const firstLine = nl >= 0 ? head.slice(0, nl) : head;
+  try {
+    const start = JSON.parse(firstLine);
+    return start != null && start.callingSessionId != null;
+  } catch (_) {
+    // No readable session_start (missing or truncated file) — treat it as a
+    // top-level session rather than guessing it away; the index listed it.
+    return false;
+  }
+}
+
+async function droidSessions(cwd, root) {
+  const base = droidBase(root);
+  const spellings = new Set(spellingsOf(cwd));
+  const candidates = droidIndexEntries(base)
+    .filter((e) => e && spellings.has(e.cwd) && SAFE_ID.test(String(e.sessionId || '')))
+    .sort((a, b) => (Number(b.mtime) || 0) - (Number(a.mtime) || 0));
+
+  const out = [];
+  for (const entry of candidates) {
+    if (out.length >= MAX_PER_AGENT) break;
+    const id = String(entry.sessionId);
+    const file = path.join(base, 'sessions', claudeDirFor(entry.cwd), `${id}.jsonl`);
+    if (await droidIsSubagent(file)) continue;
+    const st = await fsp.stat(file).catch(() => null);
+    const titleRaw = entry.title != null && String(entry.title).trim() ? String(entry.title) : null;
+    out.push({
+      agent: 'droid',
+      id,
+      title: titleRaw ? clip(titleRaw) : null,
+      at: Number(entry.mtime) || (st ? st.mtimeMs : 0),
+      born: st ? st.birthtimeMs : (Number(entry.mtime) || 0),
+    });
+  }
+  return out;
+}
+
 // ---- what the overview asks for ------------------------------------------
 
 const PROVIDERS = {
@@ -528,6 +590,7 @@ const PROVIDERS = {
   opencode: opencodeSessions,
   kimi: kimiSessions,
   grok: grokSessions,
+  droid: droidSessions,
 };
 
 // Opening the overview should not re-walk the codex store for every repaint,
@@ -564,4 +627,5 @@ module.exports = {
   kimiSessions,
   grokSessions,
   grokSessionDir,
+  droidSessions,
 };

@@ -714,6 +714,102 @@ app.on('ready', async () => {
   ok('grok transcript avvisar annan cwd',
     (typeof TR.readGrok === 'function' ? TR.readGrok('/helt/annan', grokSid, grokRoot) : null) === null);
 
+  console.log('== droid sessionslager ==');
+  const factoryBase = path.join(STORE, 'factory');
+  const droidDir = path.join(factoryBase, 'sessions', H.claudeDirFor(CWD));
+  const droidSid = 'd1d1d1d1-0000-4000-8000-000000000001';
+  const droidSub = 'd2d2d2d2-0000-4000-8000-000000000002';
+  const droidForeign = 'd3d3d3d3-0000-4000-8000-000000000003';
+  const startLine = (id, cwd, extra = {}) => line({ type: 'session_start', id, cwd, ...extra });
+  const msgLine = (role, content) => line({ type: 'message', message: { role, content } });
+  const droidWhen = (iso) => Date.parse(iso);
+
+  write(path.join(droidDir, `${droidSid}.jsonl`),
+    startLine(droidSid, CWD)
+    + msgLine('user', [{ type: 'text', text: 'Hej Droid' }])
+    + msgLine('assistant', [
+      { type: 'thinking', thinking: 'hemlig tanke' },
+      { type: 'text', text: 'Hej tillbaka' },
+      { type: 'tool_use', name: 'Bash' },
+    ])
+    + msgLine('user', [{ type: 'tool_result', content: 'ra output', tool_use_id: 't1' }])
+    + line({ type: 'todo_state', todos: [] })
+    + line({ type: 'agent_turn_outcome', reason: 'done', resultKind: 'ok' })
+    + line({ type: 'compaction_state', summaryText: 'komprimerad sammanfattning' })
+    + line({ type: 'nagot_okant', foo: 'bar' })
+    + msgLine('assistant', [{ type: 'text', text: 'Klart' }]),
+    droidWhen('2026-08-05T11:00:00.000Z'));
+  // A subagent (callingSessionId set) is a job, not a conversation to resume.
+  write(path.join(droidDir, `${droidSub}.jsonl`),
+    startLine(droidSub, CWD, { callingSessionId: droidSid })
+    + msgLine('user', [{ type: 'text', text: 'underuppgift' }]),
+    droidWhen('2026-08-06T11:00:00.000Z'));
+  write(path.join(factoryBase, 'sessions', H.claudeDirFor('/helt/annan'), `${droidForeign}.jsonl`),
+    startLine(droidForeign, '/helt/annan')
+    + msgLine('user', [{ type: 'text', text: 'fel projekt' }]),
+    droidWhen('2026-08-07T11:00:00.000Z'));
+
+  const droidExtra = [];
+  for (let i = 0; i < 11; i += 1) {
+    const id = `d0000000-0000-4000-8000-0000000000${String(i).padStart(2, '0')}`;
+    const iso = `2026-07-${String(i + 1).padStart(2, '0')}T11:00:00.000Z`;
+    write(path.join(droidDir, `${id}.jsonl`),
+      startLine(id, CWD) + msgLine('user', [{ type: 'text', text: `extra ${i}` }]), droidWhen(iso));
+    droidExtra.push({ sessionId: id, cwd: CWD, title: `Extra ${i}`, mtime: droidWhen(iso) });
+  }
+
+  const droidIndex = {
+    version: 4,
+    entries: [
+      { sessionId: droidSid, cwd: CWD, title: 'Droid-arendet', mtime: droidWhen('2026-08-05T11:00:00.000Z') },
+      { sessionId: droidSub, cwd: CWD, title: 'Underagent', mtime: droidWhen('2026-08-06T11:00:00.000Z') },
+      { sessionId: droidForeign, cwd: '/helt/annan', title: 'Fel projekt', mtime: droidWhen('2026-08-07T11:00:00.000Z') },
+      { sessionId: 'bad id!', cwd: CWD, title: 'Osaker', mtime: droidWhen('2026-08-08T11:00:00.000Z') },
+      ...droidExtra,
+    ],
+  };
+  fsx.mkdirSync(factoryBase, { recursive: true });
+  fsx.writeFileSync(path.join(factoryBase, 'sessions-index.json'), JSON.stringify(droidIndex));
+
+  const droidRows = await H.droidSessions(CWD, factoryBase);
+  ok('droid begransar listan till tio', droidRows.length === 10, String(droidRows.length));
+  ok('droid huvudsession finns med', droidRows.some((r) => r.id === droidSid));
+  ok('droid utesluter underagent', !droidRows.some((r) => r.id === droidSub));
+  ok('droid utesluter annan cwd', !droidRows.some((r) => r.id === droidForeign));
+  ok('droid utesluter osakert id', !droidRows.some((r) => r.id.includes(' ')));
+  ok('droid nyast forst', droidRows[0] && droidRows[0].id === droidSid, droidRows.map((r) => r.id).join(', '));
+  ok('droid titel och agent foljer med', droidRows[0]
+    && droidRows[0].title === 'Droid-arendet' && droidRows[0].agent === 'droid');
+  ok('droid slug som claudeDirFor', H.claudeDirFor('/srv/dev/tabdesk') === '-srv-dev-tabdesk');
+  ok('droid saknad index ger tom lista',
+    (await H.droidSessions(CWD, path.join(STORE, 'saknas'))).length === 0);
+  const droidBadBase = path.join(STORE, 'factory-bad');
+  write(path.join(droidBadBase, 'sessions-index.json'), '{ inte giltig json');
+  ok('droid korrupt index ger tom lista', (await H.droidSessions(CWD, droidBadBase)).length === 0);
+  const droidPrev = await H.previousSessions(CWD, ['droid'], { droid: factoryBase });
+  ok('droid registrerad i PROVIDERS (via previousSessions)',
+    droidPrev.some((r) => r.agent === 'droid' && r.id === droidSid));
+
+  console.log('== droid transcript ==');
+  const droidText = TR.readDroid(CWD, droidSid, factoryBase);
+  ok('droid transcript lases', typeof droidText === 'string' && droidText.includes('Hej Droid'), droidText);
+  ok('droid user-prompt markeras', droidText && droidText.includes('› Hej Droid'));
+  ok('droid assistant-text foljer med',
+    droidText && droidText.includes('Hej tillbaka') && droidText.includes('Klart'));
+  ok('droid tool namnges', droidText && droidText.includes('[Bash]'));
+  ok('droid thinking hoppas over', droidText && !droidText.includes('hemlig tanke'));
+  ok('droid tool_result hoppas over', droidText && !droidText.includes('ra output'));
+  ok('droid ovriga record-typer hoppas over',
+    droidText && !droidText.includes('komprimerad sammanfattning'));
+  ok('droid nas via read()',
+    typeof (await TR.read(CWD, droidSid, { droid: factoryBase })) === 'string');
+  ok('droid saknad session ger null',
+    TR.readDroid(CWD, 'd9999999-0000-4000-8000-000000000099', factoryBase) === null);
+  const droidEmptySid = 'd8888888-0000-4000-8000-000000000088';
+  write(path.join(droidDir, `${droidEmptySid}.jsonl`), '');
+  ok('droid tom session ger null', TR.readDroid(CWD, droidEmptySid, factoryBase) === null);
+  ok('droid frammande cwd ger null', TR.readDroid('/helt/annan-katalog', droidSid, factoryBase) === null);
+
   console.log('== grok rendererpolicy ==');
   const rendererSource = fsx.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
   const grokSet = (name) => new RegExp(
