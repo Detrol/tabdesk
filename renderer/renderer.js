@@ -787,7 +787,7 @@ const EFFORT_LEVELS = {
   grok: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   kimi: ['low', 'high', 'max'],
 };
-const SELECTS_ITSELF = new Set(['claude', 'grok']);
+const SELECTS_ITSELF = new Set(['claude', 'grok', 'droid']);
 function effortSupported(agent) { return Boolean(EFFORT_LEVELS[agent]); }
 function effortFlag(agent, level) {
   if (!level || level === 'default' || !effortSupported(agent)) return '';
@@ -3458,7 +3458,7 @@ setInterval(refreshLimits, 60000);  // plan quota: the number that actually move
 // started is that tab's conversation, and with two fresh tabs on one project
 // the oldest tab claims the earliest birth. Once matched the id sticks and is
 // persisted on the record, so later rounds (and restarts) just follow renames.
-const TITLED_AGENTS = new Set(['claude', 'codex', 'grok']);
+const TITLED_AGENTS = new Set(['claude', 'codex', 'grok', 'droid']);
 
 async function refreshTitles() {
   const eligible = [...tabs.values()].filter((t) =>

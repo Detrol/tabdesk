@@ -231,6 +231,7 @@
   "agent.hint.opencode": "opencode --auto",
   "agent.hint.kimi": "kimi --auto",
   "agent.hint.grok": "grok --permission-mode auto",
+  "agent.hint.droid": "Factory Droid CLI",
   "agent.hint.aider": "Aider",
   "agent.hint.cursor": "Cursor Agent",
   "agent.hint.shell": "Just your shell, no agent",
