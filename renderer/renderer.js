@@ -1614,6 +1614,7 @@ function selectProject(cwd, {
   const token = navigationToken == null ? navigation.next() : navigationToken;
   if (!navigation.isCurrent(token)) return false;
   activeCwd = cwd;
+  if (window.api.markProjectUsed) window.api.markProjectUsed(cwd);
   renderStrip();
   if (!open) { applyLayout(); return true; }
   const p = projects.get(cwd);
@@ -2753,7 +2754,7 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
   window.api.openExternal('https://github.com/Detrol/tabdesk/issues');
 });
 
-// Fill the rail with the projects on disk, most recently touched first, and
+// Fill the rail with the projects on disk, last used or last updated first, and
 // then take back the sessions that outlived the last run — each one hung under
 // the project it belongs to, a worktree session under the project it branches
 // from. A session whose project isn't in the rail (a folder elsewhere) brings

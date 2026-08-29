@@ -26,6 +26,7 @@ const portable = require('./portable');
 const updater = require('./updater');
 const usageLimits = require('./usage-limits');
 const diskUsage = require('./disk-usage');
+const recentProjects = require('./recent-projects');
 const transcript = require('./transcript');
 const codexLimits = require('./codex-limits');
 const kimiLimits = require('./kimi-limits');
@@ -638,6 +639,12 @@ function setProjectClosed(dir, closed) {
     set.delete(dir);
   }
   settings.set('closedProjects', [...set]);
+}
+
+function markProjectUsed(dir) {
+  if (typeof dir !== 'string' || !dir) return;
+  const next = recentProjects.mark(settings.get('recentProjects'), dir, Date.now());
+  settings.set('recentProjects', next);
 }
 
 // ---- Export / import of the portable "light layer" ------------------------
@@ -1481,11 +1488,12 @@ app.whenReady().then(async () => {
   };
   ipcMain.handle('git:branch', (_event, cwd) => branchOf(cwd));
 
-  // List project directories under the projects folder, most-recently-modified
-  // first. `closed` carries the user's × on that tab: the rail leaves those
-  // out, the picker still offers them (see closedProjects below). Always an
-  // array — with no root chosen yet the first-run signal travels in app:boot,
-  // and the picker/settings consumers of this handler iterate whatever comes.
+  // List project directories under the projects folder, last used or last
+  // updated first. `closed` carries the user's × on that tab: the rail leaves
+  // those out, the picker still offers them (see closedProjects below). Always
+  // an array — with no root chosen yet the first-run signal travels in
+  // app:boot, and the picker/settings consumers of this handler iterate
+  // whatever comes.
   //
   // The projects folder itself leads the list: work that spans projects — an
   // agent asked about the whole tree — runs in the root, and those sessions
@@ -1577,9 +1585,8 @@ app.whenReady().then(async () => {
             worktrees: [], repositories: [],
           };
         })
-        .filter(Boolean)
-        .sort((a, b) => b.mtime - a.mtime);
-      const rows = [root, ...dirs];
+        .filter(Boolean);
+      const rows = recentProjects.order([root, ...dirs], settings.get('recentProjects'));
       if (projectsRootIdentity()?.key !== identity.key) return [];
       await describeProjectRows(rows);
       if (projectsRootIdentity()?.key !== identity.key) return [];
@@ -1620,6 +1627,7 @@ app.whenReady().then(async () => {
   // Closing a tab is a decision about the rail, so it has to outlive the
   // session; opening the project again takes it back.
   ipcMain.on('projects:closed', (event, { path: dir, closed }) => setProjectClosed(dir, closed));
+  ipcMain.on('projects:used', (event, { path: dir }) => markProjectUsed(dir));
 
   // ---- New tab: pick an existing project, or create one ----
   ipcMain.handle('projects:pick', () => openProjectPicker(win));

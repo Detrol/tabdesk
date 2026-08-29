@@ -5,6 +5,7 @@
 // model that project runs with; a project with no entry follows Claude Code's
 // own default. closedProjects lists the project paths whose tab was closed with
 // the ×, so the rail doesn't rebuild them from the directories on disk.
+// recentProjects maps a project path to the last time it was opened in TabDesk.
 
 const { app } = require('electron');
 const crypto = require('crypto');
@@ -14,7 +15,7 @@ const { createLogger } = require('./logger');
 
 const log = createLogger('settings');
 
-const DEFAULTS = { theme: 'system', glow: true, projectsDir: null, language: 'system', projectModels: {}, projectEfforts: {}, projectAutonomies: {}, closedProjects: [], openTabs: [] };
+const DEFAULTS = { theme: 'system', glow: true, projectsDir: null, language: 'system', projectModels: {}, projectEfforts: {}, projectAutonomies: {}, closedProjects: [], recentProjects: {}, openTabs: [] };
 
 let cache = null;
 const file = () => path.join(app.getPath('userData'), 'settings.json');

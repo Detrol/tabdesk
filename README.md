@@ -77,7 +77,7 @@ once pre-hid the non-project directories, which stay out of the rail.
 
 ## Features
 
-- **Project rail** — every directory under your projects folder becomes a row, most-recently-modified first; selecting one shows its sessions in the strip above the terminals.
+- **Project rail** — every directory under your projects folder becomes a row, last used or last updated first; selecting one shows its sessions in the strip above the terminals.
 - **Grid view** — ▦ pins up to six panels on screen at once to watch several agents work side by side.
 - **Activity flags** — background sessions pulse while their terminal streams output and turn green when they fall quiet ("your turn"); a project row shows the state of the sessions under it.
 - **Live preview dock** — runs the active project (static HTML, Node, Python/Flask/FastAPI/Django, Rust, Go, …), finds the port it binds, and renders it in a webview. Hover any element to reveal its source.
