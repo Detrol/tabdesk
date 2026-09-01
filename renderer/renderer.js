@@ -71,6 +71,7 @@ const overviewEl = document.createElement('div');
 overviewEl.className = 'panel overview';
 panels.appendChild(overviewEl);
 let overviewCwd = null;      // the project the overview is showing, if any
+let overviewWorkspacePath = null;
 let stripOverview = null;    // its tab in the strip, while one is rendered
 
 const fileView = window.TabDeskFiles.createFileView({
@@ -1637,6 +1638,7 @@ function showOverview(cwd, { skipFileGuard = false, navigationToken = null } = {
   if (!navigation.isCurrent(token)) return false;
   activeCwd = cwd;
   overviewCwd = cwd;
+  overviewWorkspacePath = null;
   activeId = null;
   renderStrip();
   renderOverview(cwd);
@@ -1845,26 +1847,27 @@ function workspaceGroups(project, mine) {
   return [...workspaces.values()];
 }
 
-function workspaceEl(workspace) {
-  const item = newEl('details', 'ov-workspace');
+function workspaceEl(workspace, cwd) {
+  const item = newEl('button', 'ov-workspace');
+  item.type = 'button';
   item.dataset.path = workspace.path;
-  item.open = workspace.sessions.length > 0;
-  const summary = newEl('summary', 'ov-workspace-head');
-  summary.append(
+  item.append(
     newEl('span', 'ov-workspace-name', workspace.name),
     newEl('span', 'ov-kind', t(`overview.kind.${workspace.kind}`)),
   );
-  if (workspace.branch) summary.appendChild(newEl('span', 'ov-branch', workspace.branch));
-  summary.appendChild(newEl('span', 'ov-workspace-count', String(workspace.sessions.length)));
-  item.appendChild(summary);
-  for (const session of workspace.sessions) item.appendChild(liveRow(session));
+  if (workspace.branch) item.appendChild(newEl('span', 'ov-branch', workspace.branch));
+  item.appendChild(newEl('span', 'ov-workspace-count', String(workspace.sessions.length)));
+  item.title = workspace.path;
+  item.addEventListener('click', () => {
+    overviewWorkspacePath = workspace.path;
+    renderOverview(cwd);
+  });
   return item;
 }
 
-// The workspace list is the one part of the overview that changes while you
-// look at it, so renderProject calls this on every state change. Patched rather
-// than rebuilt: this runs on every chunk of output, and replacing the buttons
-// under the pointer would eat clicks.
+// The workspace/session area changes while you look at it, so renderProject
+// calls this on every state change. Patched rather than rebuilt: this runs on
+// every chunk of output, and replacing buttons under the pointer would eat clicks.
 function renderLiveRows(cwd) {
   if (overviewCwd !== cwd) return;
   const host = overviewEl.querySelector('.ov-sec.live');
@@ -1873,16 +1876,32 @@ function renderLiveRows(cwd) {
   if (!project) return;
   const mine = sessionsOf(cwd);
   const groups = workspaceGroups(project, mine);
-  const ordered = groups.flatMap((workspace) => workspace.sessions);
-  const signature = groups.map((workspace) =>
-    `${workspace.path}\0${workspace.sessions.map((session) => session.id).join(',')}`).join('\1');
+  const workspace = groups.find((group) => group.path === overviewWorkspacePath);
+  if (overviewWorkspacePath && !workspace) {
+    overviewWorkspacePath = null;
+    renderOverview(cwd);
+    return;
+  }
+  const ordered = workspace ? workspace.sessions : [];
+  const signature = workspace
+    ? `workspace:${workspace.path}\0${ordered.map((session) => session.id).join(',')}`
+    : `list:${groups.map((group) =>
+      `${group.path}\0${group.sessions.map((session) => session.id).join(',')}`).join('\1')}`;
   const rows = [...host.querySelectorAll('.ov-row')];
+  const workspaces = [...host.querySelectorAll('.ov-workspace')];
   if (host.dataset.signature !== signature
-    || rows.length !== mine.length
-    || rows.some((el, i) => el.dataset.id !== ordered[i].id)) {
+    || rows.length !== ordered.length
+    || rows.some((el, i) => el.dataset.id !== ordered[i]?.id)
+    || workspaces.length !== (workspace ? 0 : groups.length)) {
     while (host.children.length > 1) host.lastElementChild.remove();   // keep the <h3>
     host.dataset.signature = signature;
-    for (const workspace of groups) host.appendChild(workspaceEl(workspace));
+    if (!workspace) {
+      for (const group of groups) host.appendChild(workspaceEl(group, cwd));
+    } else if (!ordered.length) {
+      host.appendChild(newEl('p', 'ov-empty', t('overview.none')));
+    } else {
+      for (const session of ordered) host.appendChild(liveRow(session));
+    }
     return;
   }
   rows.forEach((el, i) => {
@@ -1903,19 +1922,32 @@ let overviewSeq = 0;
 async function renderOverview(cwd) {
   const p = projects.get(cwd);
   if (!p) return;
+  const workspaces = workspaceGroups(p, sessionsOf(cwd));
+  const workspace = workspaces.find((group) => group.path === overviewWorkspacePath) || null;
+  if (overviewWorkspacePath && !workspace) overviewWorkspacePath = null;
   const seq = ++overviewSeq;
   overviewEl.textContent = '';
 
   const head = newEl('div', 'ov-head');
-  head.append(newEl('h2', null, p.name), newEl('span', 'ov-path', p.path));
+  if (workspace) {
+    const back = newEl('button', 'ov-back', `‹ ${t('overview.active')}`);
+    back.type = 'button';
+    back.addEventListener('click', () => {
+      overviewWorkspacePath = null;
+      renderOverview(cwd);
+    });
+    head.append(back, newEl('h2', null, workspace.name), newEl('span', 'ov-path', workspace.path));
+  } else {
+    head.append(newEl('h2', null, p.name), newEl('span', 'ov-path', p.path));
+  }
   overviewEl.appendChild(head);
 
-  // What it is running now. Filled by renderLiveRows, which owns these rows
-  // from here on.
-  const live = section(t('overview.active'));
+  // Workspaces first; after one is picked this same area owns its live rows.
+  const live = section(t(workspace ? 'overview.sessions' : 'overview.active'));
   live.classList.add('live');
   overviewEl.appendChild(live);
   renderLiveRows(cwd);
+  if (!workspace) return;
 
   // How to start another one. A runtime that can be told "the latest" offers
   // that beside it — it is the one resume that needs no list at all.
@@ -1923,26 +1955,16 @@ async function renderOverview(cwd) {
   const chips = newEl('div', 'ov-chips');
   for (const a of agentList) {
     const chip = newEl('button', 'ov-chip', `${a.id === 'shell' ? '⌨' : '🤖'} ${a.label}`);
+    chip.dataset.agent = a.id;
     chip.title = a.hint ? t(a.hint) : (a.command || '');
-    chip.addEventListener('click', () => newSession(cwd, a.id));
+    chip.addEventListener('click', () => newSession(workspace.path, a.id, { projectCwd: cwd }));
     chips.appendChild(chip);
     if (!a.continueArgs) continue;
     const last = newEl('button', 'ov-chip thin', '↺');
     last.title = t('overview.continue.title', { agent: a.label });
-    last.addEventListener('click', () => newSession(cwd, a.id, { resume: {} }));
+    last.addEventListener('click', () =>
+      newSession(workspace.path, a.id, { projectCwd: cwd, resume: {} }));
     chips.appendChild(last);
-  }
-  for (const workspace of workspaceGroups(p, sessionsOf(cwd))) {
-    if (workspace.path === cwd) continue;
-    const chip = newEl('button', `ov-chip ov-workspace-start ${workspace.kind}`,
-      `+ ${workspace.name}`);
-    chip.dataset.path = workspace.path;
-    chip.title = workspace.branch
-      ? `${workspace.branch}\n${workspace.path}`
-      : workspace.path;
-    chip.addEventListener('click', () =>
-      newSession(workspace.path, null, { projectCwd: cwd }));
-    chips.appendChild(chip);
   }
   start.appendChild(chips);
   overviewEl.appendChild(start);
@@ -1955,7 +1977,7 @@ async function renderOverview(cwd) {
   overviewEl.appendChild(past);
 
   let rows = [];
-  try { rows = await window.api.previousSessions(cwd); } catch (_) { rows = []; }
+  try { rows = await window.api.previousSessions(workspace.path); } catch (_) { rows = []; }
   if (seq !== overviewSeq || overviewCwd !== cwd) return;   // moved on while reading
   loading.remove();
   if (!rows.length) {
@@ -1974,7 +1996,9 @@ async function renderOverview(cwd) {
       newEl('span', 'ov-when', whenLabel(r.at)),
     );
     row.title = t('overview.resume', { id: r.id });
-    row.addEventListener('click', () => newSession(cwd, r.agent, { resume: { id: r.id, title: r.title } }));
+    row.addEventListener('click', () => newSession(workspace.path, r.agent, {
+      projectCwd: cwd, resume: { id: r.id, title: r.title },
+    }));
     past.appendChild(row);
   }
 }

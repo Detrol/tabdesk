@@ -64,6 +64,7 @@ function setup(stage) {
       rootLeaveChecks: 0,
       rootLeaveDecision: null,
       allocations: [],
+      historyRequests: [],
       tray: null,
     };
     const stage = ${JSON.stringify(stage)};
@@ -185,7 +186,12 @@ function setup(stage) {
       boot: {
         projectsRoot: { configured: true },
         agents: {
-          list: [{ id: 'shell', label: 'Shell', command: null }],
+          list: stage === 'workspace-overview'
+            ? [
+              { id: 'shell', label: 'Shell', command: null },
+              { id: 'codex', label: 'Codex', command: 'codex' },
+            ]
+            : [{ id: 'shell', label: 'Shell', command: null }],
           byProject: {},
           fallback: 'shell',
         },
@@ -234,7 +240,12 @@ function setup(stage) {
         ]
         : [],
       activityNow: async () => ({}),
-      previousSessions: async () => [],
+      previousSessions: async (cwd) => {
+        state.historyRequests.push(cwd);
+        return stage === 'workspace-overview' && cwd === '/srv/dev/trading/tradingagents'
+          ? [{ agent: 'codex', id: 'earlier-analysis', title: 'Earlier analysis', at: Date.now() }]
+          : [];
+      },
       allocateSession: async (...args) => {
         state.allocations.push(args);
         return { session: 'reserved-session', suffix: 0 };
@@ -275,7 +286,12 @@ function setup(stage) {
         return 'paste from clipboard';
       },
       openExternal: (url) => { state.openedUrls.push(url); },
-      listModels: async () => ({ list: [], global: 'default' }),
+      listModels: async () => ({
+        list: stage === 'workspace-overview'
+          ? [{ id: 'default', label: 'Default', hint: 'model.hint.default' }]
+          : [],
+        global: 'default',
+      }),
       getGlobalModel: async () => 'default',
       listEfforts: async () => ({ list: [], global: 'default' }),
       gitBranch: async () => null,
@@ -335,7 +351,7 @@ async function runWorkspaceOverviewScenario() {
   const window = await createRenderer('workspace-overview');
   await waitFor(window, 'tabs.size === 3', 'restored workspace sessions');
   await window.webContents.executeJavaScript("showOverview('/srv/dev/trading')");
-  const result = await window.webContents.executeJavaScript(`(() => {
+  const initial = await window.webContents.executeJavaScript(`(() => {
     const workspace = document.querySelector(
       '.ov-workspace[data-path="/srv/dev/trading/tradingagents"]');
     const worktree = document.querySelector(
@@ -352,26 +368,48 @@ async function runWorkspaceOverviewScenario() {
       nestedSessions: sessionsOf('/srv/dev/trading/tradingagents').length,
       workspace: workspace && {
         branch: workspace.querySelector('.ov-branch')?.textContent || '',
-        sessions: workspace.querySelectorAll('.ov-row').length,
-        open: workspace.open,
+        sessions: workspace.querySelector('.ov-workspace-count')?.textContent || '',
       },
       worktree: worktree && {
         branch: worktree.querySelector('.ov-branch')?.textContent || '',
-        open: worktree.open,
+        sessions: worktree.querySelector('.ov-workspace-count')?.textContent || '',
       },
       folder: folder && {
         kind: folder.querySelector('.ov-kind')?.textContent || '',
-        sessions: folder.querySelectorAll('.ov-row').length,
-        open: folder.open,
+        sessions: folder.querySelector('.ov-workspace-count')?.textContent || '',
       },
+      sessionRows: document.querySelectorAll('.ov-row').length,
+      startButtons: document.querySelectorAll('.ov-chip').length,
     };
   })()`);
-  result.allocation = await window.webContents.executeJavaScript(`(() => {
-    document.querySelector(
-      '.ov-workspace-start[data-path="/srv/dev/trading/tradingagents"]')?.click();
-    return window.__sessionTest.allocations[0] || null;
+  await window.webContents.executeJavaScript(`document.querySelector(
+    '.ov-workspace[data-path="/srv/dev/trading/tradingagents"]')?.click()`);
+  await waitFor(window, "document.querySelectorAll('.ov-row.past').length === 1", 'workspace history');
+  const selected = await window.webContents.executeJavaScript(`(() => ({
+    name: document.querySelector('.ov-head h2')?.textContent || '',
+    activeSessions: document.querySelectorAll('.ov-row:not(.past)').length,
+    earlierSessions: document.querySelectorAll('.ov-row.past').length,
+    agents: [...document.querySelectorAll('.ov-chip[data-agent]')]
+      .map((button) => button.dataset.agent),
+    historyRequests: window.__sessionTest.historyRequests.slice(),
+  }))()`);
+  const back = await window.webContents.executeJavaScript(`(() => {
+    document.querySelector('.ov-back')?.click();
+    return {
+      workspaces: document.querySelectorAll('.ov-workspace').length,
+      sessionRows: document.querySelectorAll('.ov-row').length,
+    };
   })()`);
-  return result;
+  await window.webContents.executeJavaScript(`document.querySelector(
+    '.ov-workspace[data-path="/srv/dev/trading/tradingagents"]')?.click()`);
+  await waitFor(window, "document.querySelector('.ov-chip[data-agent=\"codex\"]') !== null",
+    'Codex workspace start button');
+  await window.webContents.executeJavaScript(
+    `document.querySelector('.ov-chip[data-agent="codex"]')?.click()`);
+  await waitFor(window, 'window.__sessionTest.allocations.length === 1', 'workspace session allocation');
+  const allocation = await window.webContents.executeJavaScript(
+    'window.__sessionTest.allocations[0] || null');
+  return { ...initial, selected, back, allocation };
 }
 
 async function runProjectStatusScenario() {
@@ -472,6 +510,8 @@ async function runProjectStatusScenario() {
 
 async function runScenario(stage) {
   const window = await createRenderer(stage);
+    await waitFor(window, "document.querySelector('.ov-workspace') !== null", 'overview workspace');
+    await window.webContents.executeJavaScript("document.querySelector('.ov-workspace').click();");
     await waitFor(window, "document.querySelector('.ov-chip') !== null", 'overview start chip');
     await window.webContents.executeJavaScript("document.querySelector('.ov-chip').click();");
     await waitFor(window, 'window.__sessionTest.releases === 1', 'failed start release');
@@ -705,18 +745,32 @@ app.whenReady().then(async () => {
             && tab.projectCwd === '/srv/dev/trading')
         && workspace.nestedSessions === 0
         && workspace.workspace?.branch === 'codex-subscription'
-        && workspace.workspace?.sessions === 2
-        && workspace.workspace?.open === true,
+        && workspace.workspace?.sessions === '2'
+        && workspace.sessionRows === 0
+        && workspace.startButtons === 0,
       JSON.stringify(workspace));
     ok('Overview shows an ordinary nested folder only because it has a restorable session',
       workspace.folder?.kind === 'overview.kind.folder'
-        && workspace.folder?.sessions === 1
-        && workspace.folder?.open === true,
+        && workspace.folder?.sessions === '1',
       JSON.stringify(workspace));
-    ok('Overview offers inactive worktrees and starts a repository in its exact cwd',
+    ok('Overview lists inactive worktrees before opening a workspace',
       workspace.worktree?.branch === 'fix/risk'
-        && workspace.worktree?.open === false
-        && workspace.allocation?.[0] === '/srv/dev/trading/tradingagents',
+        && workspace.worktree?.sessions === '0',
+      JSON.stringify(workspace));
+    ok('clicking a workspace shows its active and earlier sessions plus every CLI',
+      workspace.selected?.name === 'tradingagents'
+        && workspace.selected?.activeSessions === 2
+        && workspace.selected?.earlierSessions === 1
+        && workspace.selected?.agents.join(',') === 'shell,codex'
+        && workspace.selected?.historyRequests.join(',') === '/srv/dev/trading/tradingagents',
+      JSON.stringify(workspace));
+    ok('workspace Back returns to the workspace-only list',
+      workspace.back?.workspaces === 4
+        && workspace.back?.sessionRows === 0,
+      JSON.stringify(workspace));
+    ok('a chosen CLI starts in the exact workspace',
+      workspace.allocation?.[0] === '/srv/dev/trading/tradingagents'
+        && workspace.allocation?.[1] === 'codex',
       JSON.stringify(workspace));
 
     const projectStatus = await runProjectStatusScenario();

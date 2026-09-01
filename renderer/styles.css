@@ -838,6 +838,16 @@ html, body {
   letter-spacing: 1px;
   color: var(--text);
 }
+.ov-back {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-soft);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ov-back:hover { color: var(--text); }
 .ov-path { font-size: 11px; color: var(--faint); }
 .ov-sec { margin-top: 18px; }
 .ov-sec h3 {
@@ -856,23 +866,22 @@ html, body {
 }
 .ov-empty { margin: 0; font-size: 12px; color: var(--faint); }
 .ov-workspace {
-  margin-bottom: 6px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--tint);
-}
-.ov-workspace-head {
   display: flex;
   align-items: center;
   gap: 7px;
+  width: 100%;
+  margin-bottom: 6px;
   padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--tint);
   color: var(--dim);
+  font-family: inherit;
   font-size: 12px;
+  text-align: left;
   cursor: pointer;
 }
-.ov-workspace-head::before { content: '›'; color: var(--faint); }
-.ov-workspace[open] > .ov-workspace-head::before { transform: rotate(90deg); }
+.ov-workspace::before { content: '›'; color: var(--faint); }
 .ov-workspace-name {
   flex: 1;
   overflow: hidden;
@@ -885,12 +894,6 @@ html, body {
   font-size: 10px;
 }
 .ov-branch { color: var(--accent-soft); }
-.ov-workspace > .ov-row {
-  margin: 0;
-  border-width: 1px 0 0;
-  border-radius: 0;
-  background: transparent;
-}
 .ov-row {
   display: flex;
   align-items: center;
@@ -909,8 +912,9 @@ html, body {
   transition: background .15s, border-color .15s, color .15s;
 }
 .ov-row:hover { background: var(--tint-strong); border-color: var(--accent); color: var(--text); }
-.ov-workspace-head:hover { background: var(--tint-strong); color: var(--text); }
-.ov-workspace-head:focus-visible,
+.ov-workspace:hover { background: var(--tint-strong); border-color: var(--accent); color: var(--text); }
+.ov-back:focus-visible,
+.ov-workspace:focus-visible,
 .ov-row:focus-visible,
 .ov-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
 .ov-row .dot {
