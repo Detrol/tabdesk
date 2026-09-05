@@ -238,10 +238,8 @@ function hoistOnDone(t) {
   }
 }
 
-// Called on every chunk of pty output (xterm.js backend), whenever the
-// embedded terminal writes, and for tabs with no terminal of their own when
-// tmux reports that their session wrote something. Marks tabs busy while output
-// flows, then green ("done") once an unwatched tab falls silent.
+// tmux reports pane output for session tabs; plain terminals report it directly.
+// Marks tabs busy while output flows, then green once an unwatched tab is quiet.
 //
 // `idleMs` is how long silence has to last to count as finished: a stream tells
 // us the moment it stops, a poll only knows what it saw last time, so the two
@@ -380,12 +378,11 @@ function markDead(t) {
   syncTray();
 }
 
-// ---- Sessions we have not opened -------------------------------------------
+// ---- Session activity ------------------------------------------------------
 //
-// Main polls tmux for every session's last-activity stamp (activity.js). A
-// stamp that moved is the same event as a chunk of pty output, and goes through
-// the same state machine — which is what lets the rail speak for sessions this
-// window has no terminal for, i.e. all of them right after a restart.
+// Main polls tmux for every session's last-activity stamp (activity.js).
+// Use it for opened tabs too: the attached tmux client writes terminal queries
+// and redraws even while the pane is idle. Those must not reset the wait badge.
 //
 // The silence window has to be wider than the poll: with a 2 s interval and
 // stamps counted in whole seconds, IDLE_MS would call a session finished
@@ -401,6 +398,14 @@ const activityMisses = new Map(); // session name -> consecutive polls without i
 // session was born; an agent that entered a worktree leaves that on the project
 // root, so the place bar reads this map first.
 const liveCwd = new Map();        // session name -> path
+
+function markTerminalActivity(id) {
+  const t = tabs.get(id);
+  // Until tmux confirms the session, keep direct output for plain terminals,
+  // demo commands and starts that could not use tmux.
+  if (t && activitySeen.has(t.session)) return;
+  markActivity(id);
+}
 
 // Baselines are per session and not per map: tabs are built after the window
 // loads, so a tab that appears mid-stream still gets its own first sighting
@@ -419,7 +424,6 @@ function applyActivity(map) {
     if (!t.session || t.dead) continue;
     const rec = now[t.session];
     if (!t.titleTracked) setTitleAsking(t, !!(rec && rec.asking), rec && rec.at * 1000);
-    if (isWatched(t.id)) continue;
 
     // The runtime saying it needs you applies to every tab that has a session,
     // open or not. A tab with a terminal of its own is still one you may not be
@@ -436,11 +440,9 @@ function applyActivity(map) {
       continue;
     }
 
-    // Everything below is for tabs with no terminal of their own; the rest have
-    // their pty, which is the better witness.
-    if (t.materialized) continue;
-    const at = rec && rec.at;
     if (rec === undefined) {
+      // Opened terminals report their own exit, including plain/demo starts.
+      if (t.materialized) continue;
       // Gone from tmux. Believed only after two polls in a row: one listing
       // that failed to arrive must not paint the rail red.
       const misses = (activityMisses.get(t.session) || 0) + 1;
@@ -449,6 +451,7 @@ function applyActivity(map) {
       continue;
     }
     activityMisses.delete(t.session);
+    const at = rec && rec.at;
     const before = activitySeen.get(t.session);
     activitySeen.set(t.session, at);
     // A runtime saying so outright beats anything we could infer from silence.
@@ -463,7 +466,7 @@ function applyActivity(map) {
       // write again — that is what being blocked means — so skipping it here
       // means never hearing about it at all. The stamp says when it last wrote,
       // which is when the question went up.
-      checkAsking(t, at * 1000);
+      if (!isWatched(t.id)) checkAsking(t, at * 1000);
       continue;
     }
     if (at > before) markActivity(t.id, POLL_IDLE_MS);
@@ -646,9 +649,7 @@ if (EMBED_NATIVE) {
     const ph = t && t.panelEl && t.panelEl.querySelector('.term-loading');
     if (ph) ph.remove();
   });
-  // Main polls each embedded terminal's bytes-written counter and reports the
-  // moves; from here on it's the same path pty output takes.
-  window.api.onEmbedActivity((id) => markActivity(id));
+  window.api.onEmbedActivity(markTerminalActivity);
 }
 
 // Lay out the panels on screen in a grid and highlight the focused one. The
@@ -1297,7 +1298,7 @@ function materialize(t) {
   let firstData = true;
   offData = window.api.onData(id, (data) => {
     term.write(data);
-    markActivity(id);
+    markTerminalActivity(id);
     // Once the shell/TUI first emits, the terminal has rendered — refit so a
     // full-screen app (Claude Code) gets resized to fill the panel.
     if (firstData) { firstData = false; fitSoon(id); }

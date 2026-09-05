@@ -59,6 +59,7 @@ function setup(stage) {
       backendKills: 0,
       dataListeners: 0,
       dataListenerCleanups: 0,
+      dataCallbacks: new Map(),
       titleListener: null,
       rootLeaveSubscriptions: 0,
       rootLeaveChecks: 0,
@@ -258,9 +259,13 @@ function setup(stage) {
       },
       createTerminal: () => { state.backendStarts += 1; },
       killTerminal: () => { state.backendKills += 1; },
-      onData: () => {
+      onData: (id, callback) => {
         state.dataListeners += 1;
-        return () => { state.dataListenerCleanups += 1; };
+        state.dataCallbacks.set(id, callback);
+        return () => {
+          state.dataListenerCleanups += 1;
+          state.dataCallbacks.delete(id);
+        };
       },
       onExit: () => {
         if (stage === 'after-listener') throw new Error('expected listener failure');
@@ -504,6 +509,73 @@ async function runProjectStatusScenario() {
       during, after, watchedDuring, watchedAfterOpen, watchedAfter,
       watchedQuestion, watchedAnswered, watchedSecondQuestion,
       pinnedState, pinnedDoneAt, reenteredDoneAt, closedDoneAt: closed.doneAt,
+    };
+  })()`);
+}
+
+async function runIdleActivityScenario() {
+  const window = await createRenderer('idle-activity');
+  return window.webContents.executeJavaScript(`(async () => {
+    const state = window.__sessionTest;
+    const id = buildTab({ name: 'Idle', cwd: '/fixture', projectCwd: '/fixture' });
+    const tab = tabs.get(id);
+    tab.session = 'td-idle';
+    materialize(tab);
+    const poll = (at) => applyActivity({ 'td-idle': { at, asking: false, cwd: '/fixture' } });
+    const waitingSince = Date.now() - 600000;
+    tab.doneAt = waitingSince;
+    tab.tabEl.classList.add('done');
+    renderProject('/fixture');
+    poll(100);
+    const baselineQuiet = !tab.busy && tab.doneAt === waitingSince;
+    state.dataCallbacks.get(id)('\\x1b[?25l\\x1b[HReady\\x1b[K\\r\\n\\x1b[?25h');
+    poll(100);
+    const redrawQuiet = !tab.busy && tab.doneAt === waitingSince
+      && projects.get('/fixture').el.querySelector('.wait').textContent === '10m';
+
+    poll(101);
+    const newOutputBusy = tab.busy && !tab.doneAt;
+    await new Promise((resolve) => setTimeout(resolve, POLL_IDLE_MS + 100));
+    const finishedAt = tab.doneAt;
+    const finished = !tab.busy && !!finishedAt;
+    state.dataCallbacks.get(id)('\\x1b]0;fixture\\x07');
+    poll(101);
+    const finishPreserved = !tab.busy && tab.doneAt === finishedAt;
+
+    pinned.add(id);
+    clearTabFlag(tab);
+    poll(102);
+    const watchedBusy = tab.busy && !tab.doneAt;
+    await new Promise((resolve) => setTimeout(resolve, POLL_IDLE_MS + 100));
+    const watchedQuiet = !tab.busy && !tab.doneAt && !tab.askingAt;
+    pinned.delete(id);
+    poll(102);
+    const switchQuiet = !tab.busy && !tab.doneAt;
+
+    const restoredId = buildTab({ name: 'Restored', cwd: '/fixture', projectCwd: '/fixture' });
+    const restored = tabs.get(restoredId);
+    restored.session = 'td-restored-idle';
+    applyActivity({ 'td-restored-idle': { at: 200 } });
+    const restoredBaselineQuiet = !restored.busy && !restored.doneAt;
+    applyActivity({ 'td-restored-idle': { at: 201 } });
+    const restoredBusy = restored.busy;
+    clearTimeout(restored.idleTimer);
+
+    const shellId = buildTab({ name: 'Plain shell', cwd: '/fixture', projectCwd: '/fixture' });
+    const shell = tabs.get(shellId);
+    materialize(shell);
+    state.dataCallbacks.get(shellId)('new output\\r\\n');
+    const plainOutputBusy = shell.busy;
+    clearTimeout(shell.idleTimer);
+    shell.busy = false;
+    shell.session = 'td-unconfirmed';
+    state.dataCallbacks.get(shellId)('output without a tmux pane\\r\\n');
+    const unconfirmedOutputBusy = shell.busy;
+    clearTimeout(shell.idleTimer);
+    return {
+      baselineQuiet, redrawQuiet, newOutputBusy, finished, finishPreserved,
+      watchedBusy, watchedQuiet, switchQuiet, restoredBaselineQuiet, restoredBusy,
+      plainOutputBusy, unconfirmedOutputBusy,
     };
   })()`);
 }
@@ -809,6 +881,22 @@ app.whenReady().then(async () => {
     ok('closing a working session cancels its idle transition',
       !projectStatus.closedDoneAt,
       JSON.stringify(projectStatus));
+
+    const activity = await runIdleActivityScenario();
+    ok('idle tmux client redraws preserve the existing wait badge',
+      activity.baselineQuiet && activity.redrawQuiet, JSON.stringify(activity));
+    ok('new pane output makes an opened session busy, then done',
+      activity.newOutputBusy && activity.finished, JSON.stringify(activity));
+    ok('terminal title traffic and unchanged polls preserve completion time',
+      activity.finishPreserved, JSON.stringify(activity));
+    ok('watched tmux output reports work without an attention flag',
+      activity.watchedBusy && activity.watchedQuiet, JSON.stringify(activity));
+    ok('leaving a watched session does not replay old activity',
+      activity.switchQuiet, JSON.stringify(activity));
+    ok('restored sessions still use their own baseline and detect new output',
+      activity.restoredBaselineQuiet && activity.restoredBusy, JSON.stringify(activity));
+    ok('terminals without tmux still report direct output',
+      activity.plainOutputBusy && activity.unconfirmedOutputBusy, JSON.stringify(activity));
   } catch (error) {
     failures += 1;
     console.error(error && error.stack ? error.stack : error);

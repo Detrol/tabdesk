@@ -1,0 +1,20 @@
+name: idle-tab-status
+initial: diagnose
+nodes:
+  diagnose:
+    prompt: Trace false busy/done updates with read-only observations and isolated reproductions.
+  execute:
+    prompt: Reuse the existing activity path to ignore terminal client noise. Add a regression check.
+  verify:
+    prompt: Run npm test and npm run lint, then review the diff for scope and simplicity.
+  handoff:
+    prompt: Commit verified task files. Report the cause and tests. Push and live application need approval.
+edges:
+  - from: diagnose
+    to: execute
+  - from: execute
+    to: verify
+  - from: verify
+    to: execute
+  - from: verify
+    to: handoff
