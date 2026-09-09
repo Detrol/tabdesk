@@ -38,7 +38,7 @@ const AGENTS = [
   // Codex is still configured to skip prompts and the sandbox. Its flag is a
   // global option, so it also works in front of `resume …`.
   { id: 'codex',    label: 'Codex',        bin: 'codex',        command: 'codex --dangerously-bypass-approvals-and-sandbox', takesModel: true, resumeArgs: 'resume {id}',  continueArgs: 'resume --last',   hint: 'agent.hint.codex' },
-  { id: 'gemini',   label: 'Gemini CLI',   bin: 'gemini',       command: 'gemini',       takesModel: true, resumeArgs: '--resume {id}', continueArgs: '--resume latest', hint: 'agent.hint.gemini' },
+  { id: 'antigravity', label: 'Antigravity CLI', bin: 'agy',    command: 'agy',          takesModel: true, resumeArgs: '--conversation {id}', continueArgs: '--continue', hint: 'agent.hint.antigravity' },
   { id: 'opencode', label: 'opencode',     bin: 'opencode',     command: 'opencode --auto', takesModel: true, resumeArgs: '--session {id}', continueArgs: '--continue',     hint: 'agent.hint.opencode' },
   { id: 'kimi',     label: 'Kimi Code',    bin: 'kimi',         command: 'kimi --auto',     takesModel: true, resumeArgs: '--session {id}', continueArgs: '--continue',     hint: 'agent.hint.kimi' },
   { id: 'grok',     label: 'Grok',         bin: 'grok',         command: 'grok --permission-mode auto', takesModel: true, resumeArgs: '--resume {id}', continueArgs: '--continue', hint: 'agent.hint.grok' },
@@ -97,7 +97,7 @@ function list() {
 function getFor(projectPath) {
   const installed = list();
   const has = (id) => installed.some((a) => a.id === id);
-  const stored = projectPath ? (settings.get('projectAgents') || {})[projectPath] : null;
+  const stored = projectPath ? allFor()[projectPath] : null;
   if (typeof stored === 'string' && has(stored)) return stored;
   if (has(DEFAULT_ID)) return DEFAULT_ID;
   // Nothing stored and no Claude Code: the first agent that is installed, or a
@@ -116,7 +116,12 @@ function setFor(projectPath, id) {
 }
 
 // All overrides at once, for the renderer's boot payload.
-function allFor() { return { ...(settings.get('projectAgents') || {}) }; }
+function allFor() {
+  // Retired Gemini picks follow its successor. Keep each CLI's model settings
+  // separate and leave the stored data intact for older TabDesk installations.
+  return Object.fromEntries(Object.entries(settings.get('projectAgents') || {})
+    .map(([project, id]) => [project, id === 'gemini' ? 'antigravity' : id]));
+}
 
 // The command line a project's terminal starts with, model flag included where
 // the agent understands one. null means "just the shell".

@@ -2,7 +2,7 @@
 //
 // Every runtime TabDesk can start has its own convention for "the file that
 // tells the agent how to behave": Claude Code reads CLAUDE.md, Codex and most
-// others read AGENTS.md, Gemini reads GEMINI.md. Each exists at two levels:
+// others read AGENTS.md. Each exists at two levels:
 // in the project (that project's rules) and in the agent's config directory
 // (rules for every project). This module knows those names and locations, and
 // is the only place that does — the renderer asks for (agent, scope, project)
@@ -27,7 +27,7 @@ const projectsRoot = require('./projects-root');
 const FILES = {
   claude:   { project: 'CLAUDE.md', global: () => path.join(os.homedir(), '.claude', 'CLAUDE.md') },
   codex:    { project: 'AGENTS.md', global: () => path.join(os.homedir(), '.codex', 'AGENTS.md') },
-  gemini:   { project: 'GEMINI.md', global: () => path.join(os.homedir(), '.gemini', 'GEMINI.md') },
+  antigravity: { project: 'AGENTS.md', global: () => path.join(os.homedir(), '.gemini', 'GEMINI.md') },
   opencode: { project: 'AGENTS.md', global: () => path.join(os.homedir(), '.config', 'opencode', 'AGENTS.md') },
   kimi:     { project: 'AGENTS.md', global: () => path.join(model.KIMI_HOME(), 'AGENTS.md') },
   grok:     { project: 'AGENTS.md', global: () => path.join(model.GROK_HOME(), 'AGENTS.md') },

@@ -417,6 +417,37 @@ async function runWorkspaceOverviewScenario() {
   return { ...initial, selected, back, allocation };
 }
 
+async function runAntigravityScenario() {
+  const window = await createRenderer('antigravity');
+  const runtime = {
+    id: 'antigravity', label: 'Antigravity CLI', command: 'agy', takesModel: true,
+    resumeArgs: '--conversation {id}', continueArgs: '--continue',
+  };
+  return window.webContents.executeJavaScript(`(() => {
+    agentList = [${JSON.stringify(runtime)}, { id: 'shell', label: 'Shell', command: null }];
+    agentByProject['/fixture'] = 'gemini';
+    const id = buildTab({ name: 'Antigravity CLI', cwd: '/fixture', agent: 'gemini',
+      model: 'gemini-3.5-flash-medium', effort: 'high' });
+    const tab = tabs.get(id);
+    const fresh = startCmdFor(tab);
+    tab.resume = { id: 'conversation-123' };
+    const resume = startCmdFor(tab);
+    tab.resume = {};
+    const latest = startCmdFor(tab);
+    const defaults = startCmdFor({ cwd: '/fixture' });
+    const safeEffort = effortFlag('antigravity', 'ultra') === ''
+      && effortFlag('antigravity', 'high;whoami') === '';
+    const noQuota = NO_QUOTA_AGENTS.has('antigravity');
+    const terminal = new window.Terminal();
+    loadTerminalAddons(terminal, tab.tabEl, document.createElement('div'), 'antigravity');
+    const nativeMouse = !terminal._core._selectionService.shouldForceSelection();
+    const migrated = tab.agent === 'antigravity' && agentFor({ cwd: '/fixture' }) === 'antigravity';
+    agentList = [{ id: 'shell', label: 'Shell', command: null }];
+    const missing = agentFor({ cwd: '/fixture', agent: 'gemini' });
+    return { fresh, resume, latest, defaults, safeEffort, noQuota, nativeMouse, migrated, missing };
+  })()`);
+}
+
 async function runProjectStatusScenario() {
   const window = await createRenderer('project-status');
   await waitFor(window, "projects.has('/fixture')", 'fixture project');
@@ -748,6 +779,18 @@ app.whenReady().then(async () => {
       .replace(/\s*<link[^>]*\/>/gi, '')
       .replace(/\s*<script[^>]*><\/script>/gi, '');
     fs.writeFileSync(FIXTURE, html);
+    console.log('== antigravity runtime ==');
+    const antigravity = await runAntigravityScenario();
+    ok('Antigravity launches with its model and effort flags',
+      antigravity.fresh === "agy --model 'gemini-3.5-flash-medium' --effort high", JSON.stringify(antigravity));
+    ok('Antigravity resumes without overriding conversation settings',
+      antigravity.resume === 'agy --conversation conversation-123' && antigravity.latest === 'agy --continue');
+    ok('saved Gemini choices launch Antigravity with defaults',
+      antigravity.migrated && antigravity.defaults === 'agy');
+    ok('Antigravity rejects foreign effort levels and hides unavailable quotas',
+      antigravity.safeEffort && antigravity.noQuota);
+    ok('Antigravity keeps its native mouse handling', antigravity.nativeMouse);
+    ok('missing Antigravity falls back to an installed runtime', antigravity.missing === 'shell');
     console.log('== terminal addons ==');
     checkAddonScenario(await runAddonScenario(), await runAddonScenario('claude'));
 

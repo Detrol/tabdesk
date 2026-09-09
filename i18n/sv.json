@@ -229,7 +229,7 @@
   "toast.modelFailed": "Kunde inte spara modellvalet: {error}",
   "agent.hint.claude": "claude --permission-mode auto",
   "agent.hint.codex": "OpenAI Codex CLI",
-  "agent.hint.gemini": "Google Gemini CLI",
+  "agent.hint.antigravity": "Google Antigravity CLI",
   "agent.hint.opencode": "opencode --auto",
   "agent.hint.kimi": "kimi --auto",
   "agent.hint.grok": "grok --permission-mode auto",

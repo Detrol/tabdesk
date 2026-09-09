@@ -1234,6 +1234,8 @@ test('uses the absolute operation deadline to kill active Git work', async (t) =
     error: 'operation-timeout',
   });
   assert.equal(children.length, 1);
+  // The response timeout and child cancellation expire on the same tick.
+  await waitForCondition(() => children[0].kills > 0, 20, 5);
   assert.equal(children[0].kills, 1);
 });
 

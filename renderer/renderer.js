@@ -789,17 +789,18 @@ function startCmdFor(t) {
 // level is checked against that agent's own list rather than escaped, so
 // nothing but a known word ever reaches the command line.
 const EFFORT_LEVELS = {
+  antigravity: ['low', 'medium', 'high'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   codex: ['minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'],
   grok: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   kimi: ['low', 'high', 'max'],
 };
-const SELECTS_ITSELF = new Set(['claude', 'grok', 'droid']);
+const SELECTS_ITSELF = new Set(['claude', 'grok', 'droid', 'antigravity']);
 function effortSupported(agent) { return Boolean(EFFORT_LEVELS[agent]); }
 function effortFlag(agent, level) {
   if (!level || level === 'default' || !effortSupported(agent)) return '';
   if (!EFFORT_LEVELS[agent].includes(level)) return '';
-  if (agent === 'claude') return ` --effort ${level}`;
+  if (agent === 'claude' || agent === 'antigravity') return ` --effort ${level}`;
   if (agent === 'kimi') return `KIMI_MODEL_THINKING_EFFORT=${level}`;
   if (agent === 'grok') return ` --reasoning-effort ${level}`;
   return ` -c model_reasoning_effort=${level}`;
@@ -843,7 +844,8 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function agentFor(t) {
   if (!t.cwd) return 'shell';
   const has = (id) => agentList.some((a) => a.id === id);
-  const stored = t.agent || agentByProject[t.cwd];
+  const saved = t.agent || agentByProject[t.cwd];
+  const stored = saved === 'gemini' ? 'antigravity' : saved;
   if (stored && has(stored)) return stored;
   if (has(agentFallback)) return agentFallback;
   const first = agentList.find((a) => a.id !== 'shell');
@@ -3360,10 +3362,10 @@ function setMeterLabelRaw(sel, text) {
 //   claude   plan windows from the account API, else local transcript estimate
 //   codex    plan windows from the latest rollout
 //   kimi     plan windows from the managed /usages endpoint (same as CLI /usage)
-//   opencode/grok no plan API or honest quota — meters stay hidden
+//   opencode/grok/antigravity no quota source here — meters stay hidden
 //   other    dashed "no data" under that runtime's name
 const PLAN_METERS = [['m-session', 'session'], ['m-week', 'week'], ['m-scoped', 'scoped']];
-const NO_QUOTA_AGENTS = new Set(['opencode', 'grok']);
+const NO_QUOTA_AGENTS = new Set(['opencode', 'grok', 'antigravity']);
 let usage = null;          // last local Claude scan — Claude meters only
 let limits = { ok: false }; // last plan-limit read (claude/codex/kimi)
 let metersAgent = 'claude'; // the runtime the bar currently describes

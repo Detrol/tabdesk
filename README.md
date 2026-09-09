@@ -45,6 +45,13 @@ ends it too. No tmux command is ever required.
 - **Each session owns its agent.** Opening a Codex session doesn't turn the
   project into a Codex project — the project's pick is only the seed the next
   session is born with, and sessions already open keep what they are running.
+- **Antigravity CLI replaces Gemini CLI.** Install `agy` and sign in once from
+  a terminal. Saved Gemini project choices select Antigravity; old Gemini model
+  overrides stay separate. Continue a conversation with the overview's ↺ chip
+  (`agy --continue`), or choose one inside the CLI with `/resume`. Use `/model`
+  inside Antigravity to select a model; TabDesk's Default leaves that choice to
+  the CLI. The effort bar passes `--effort low|medium|high`. Quota meters stay
+  hidden; use `/usage` inside Antigravity.
 - **The model bar follows the session's agent.** Claude Code gets the alias
   list, opencode and Kimi Code are asked for their providers, Grok is asked for
   its models, and a CLI that
@@ -57,8 +64,10 @@ ends it too. No tmux command is ever required.
   (Default follows `~/.factory/settings.json`, falling back to `medium`), and its
   plan meters read `api.factory.ai/api/billing/limits` via the CLI's own
   encrypted keyring. Each runtime reads its own instruction file — `CLAUDE.md`
-  for Claude, `AGENTS.md` for Codex, opencode, Grok and Droid, `GEMINI.md` for
-  Gemini — both per project and globally (`~/.factory/AGENTS.md` for Droid); the
+  for Claude, `AGENTS.md` for Codex, opencode, Grok, Droid and Antigravity.
+  Global paths follow each CLI (`~/.factory/AGENTS.md` for Droid and
+  `~/.gemini/GEMINI.md` for Antigravity, as documented in the
+  [Antigravity migration guide](https://antigravity.google/docs/cli/gcli-migration/)); the
   📝 rail button opens an overlay to edit them.
 - **Finished sessions show how long they have waited**, and a project row
   carries the longest wait of the sessions under it, so a rail of green dots

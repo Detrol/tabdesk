@@ -1,0 +1,20 @@
+name: antigravity-cli
+initial: plan
+nodes:
+  plan:
+    prompt: Verify the installed agy flags and official docs. Trace Gemini launch, saved choices, models, instructions, and renderer policies.
+  execute:
+    prompt: Replace Gemini with Antigravity in existing runtime paths. Preserve saved project choices and live tmux sessions. Add focused regression checks.
+  verify:
+    prompt: Run npm test and npm run lint. Verify the agent picker and launch in an isolated app. Review the diff for scope and simplicity.
+  handoff:
+    prompt: Commit task files. Report verification and any login limits. Push and live application require separate approval.
+edges:
+  - from: plan
+    to: execute
+  - from: execute
+    to: verify
+  - from: verify
+    to: execute
+  - from: verify
+    to: handoff

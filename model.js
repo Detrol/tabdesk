@@ -2,7 +2,7 @@
 //
 // Every agent CLI TabDesk starts takes a `--model` flag, but they don't share a
 // vocabulary: Claude Code wants a family alias, opencode wants provider/model,
-// Codex and Gemini want their own ids. So the picker asks the agent what it
+// Codex and Antigravity want their own ids. So the picker asks the agent what it
 // offers, and the pick is stored against the pair (project, agent) — a model
 // chosen for a Codex tab must never end up on the Claude tab beside it.
 //
@@ -18,8 +18,7 @@
 //             used on this machine is the one thing this cannot offer.
 //   others    nothing to list — the CLI is the only place that knows, so the
 //             picker shows what that agent is configured with and says to use
-//             its own /model command. (Gemini stays here: its CLI cannot even
-//             authenticate on this tier any more, so a model list is moot.)
+//             its own /model command.
 // "Default" always means: pass no flag, let the agent use its own setting. We
 // read those settings to show what that resolves to, and never write them.
 
@@ -31,7 +30,6 @@ const settings = require('./settings');
 
 const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
 const CODEX_CONFIG = path.join(os.homedir(), '.codex', 'config.toml');
-const GEMINI_SETTINGS = path.join(os.homedir(), '.gemini', 'settings.json');
 const OPENCODE_CONFIG = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
 const KIMI_HOME = () => {
   const env = process.env.KIMI_CODE_HOME;
@@ -84,11 +82,6 @@ function globalDefault(agent = 'claude') {
       const m = head.match(/^\s*model\s*=\s*"([^"]+)"/m);
       return m ? m[1] : 'default';
     } catch (_) { return 'default'; }
-  }
-  if (agent === 'gemini') {
-    const data = readJson(GEMINI_SETTINGS);
-    const name = data && data.model && data.model.name;
-    return typeof name === 'string' && name ? name : 'default';
   }
   if (agent === 'opencode') {
     const data = readJson(OPENCODE_CONFIG);

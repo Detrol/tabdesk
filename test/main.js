@@ -1240,7 +1240,7 @@ app.on('ready', async () => {
   ok('codex har sina', EF.list('codex').map((r) => r.id).join(',') === 'default,minimal,low,medium,high,xhigh,ultra');
   ok('grok har egna effort-nivaer',
     EF.list('grok').map((r) => r.id).join(',') === 'default,none,minimal,low,medium,high,xhigh,max');
-  ok('agent utan installning far inga rader', EF.list('gemini').length === 0 && !EF.supports('gemini'));
+  ok('agent utan installning far inga rader', EF.list('aider').length === 0 && !EF.supports('aider'));
   ok('claude-flaggan', EF.flagFor('claude', 'xhigh') === ' --effort xhigh');
   ok('ultracode ar ett eget lage, inte en niva hos codex',
     EF.flagFor('claude', 'ultracode') === ' --effort ultracode' && EF.flagFor('codex', 'ultracode') === '');
@@ -1250,7 +1250,12 @@ app.on('ready', async () => {
   ok('grok effort blir CLI-flagga', EF.flagFor('grok', 'xhigh') === ' --reasoning-effort xhigh');
   ok('default ger ingen flagga', EF.flagFor('claude', 'default') === '');
   ok('nivan maste finnas hos agenten', EF.flagFor('claude', 'ultra') === '' && EF.flagFor('codex', 'max') === '');
-  ok('agent utan installning ger ingen flagga', EF.flagFor('gemini', 'high') === '');
+  ok('agent utan installning ger ingen flagga', EF.flagFor('aider', 'high') === '');
+  ok('antigravity har bara sina egna tankenivaer',
+    EF.list('antigravity').map((row) => row.id).join(',') === 'default,low,medium,high'
+    && EF.flagFor('antigravity', 'high') === ' --effort high'
+    && EF.flagFor('antigravity', 'ultra') === ''
+    && EF.flagFor('antigravity', 'high;whoami') === '');
   const EFPROJ = '/tmp/tabdesk-effort-proj';
   ok('okand niva avvisas', EF.setFor(EFPROJ, 'codex', 'turbo').ok === false);
   ok('giltig niva sparas per agent', EF.setFor(EFPROJ, 'codex', 'ultra').ok === true
@@ -1360,10 +1365,40 @@ app.on('ready', async () => {
   fsx.chmodSync(path.join(GROKBIN, 'grok'), 0o755);
   fsx.writeFileSync(path.join(GROKBIN, 'droid'), '#!/bin/sh\nexit 0\n');
   fsx.chmodSync(path.join(GROKBIN, 'droid'), 0o755);
+  fsx.writeFileSync(path.join(GROKBIN, 'agy'), '#!/bin/sh\nexit 0\n');
+  fsx.chmodSync(path.join(GROKBIN, 'agy'), 0o755);
+  fsx.writeFileSync(path.join(GROKBIN, 'gemini'), '#!/bin/sh\nexit 0\n');
+  fsx.chmodSync(path.join(GROKBIN, 'gemini'), 0o755);
   process.env.TABDESK_PROJECTS_DIR = INSROOT;
   process.env.GROK_HOME = GROKHOME;
   process.env.PATH = GROKBIN + path.delimiter + process.env.PATH;
   const AG = require(path.join(ROOT, 'agents'));
+  const antigravity = AG.list().find((agent) => agent.id === 'antigravity');
+  ok('antigravity ersatter gemini aven nar gemini finns pa PATH', antigravity
+    && antigravity.label === 'Antigravity CLI'
+    && antigravity.command === 'agy'
+    && antigravity.takesModel
+    && antigravity.resumeArgs === '--conversation {id}'
+    && antigravity.continueArgs === '--continue'
+    && antigravity.hint === 'agent.hint.antigravity'
+    && !AG.list().some((agent) => agent.id === 'gemini'));
+  ok('antigravity skickar sakra modellflaggor',
+    AG.commandFor('antigravity', 'default') === 'agy'
+    && AG.commandFor('antigravity', 'gemini-3.5-flash-medium') === "agy --model 'gemini-3.5-flash-medium'"
+    && AG.commandFor('antigravity', 'bad;whoami') === 'agy'
+    && AG.commandFor('gemini', 'default') === null);
+  settings.set('projectAgents', { [INSPROJ]: 'gemini', '/other': 'shell' });
+  settings.set('projectModels', { [`gemini|${INSPROJ}`]: 'obsolete-model' });
+  ok('aldre geminival foljer antigravity i main och boot',
+    AG.getFor(INSPROJ) === 'antigravity' && AG.allFor()[INSPROJ] === 'antigravity'
+    && AG.allFor()['/other'] === 'shell'
+    && settings.get('projectAgents')[INSPROJ] === 'gemini');
+  ok('gamla geminimodeller foljer inte med till antigravity',
+    require(path.join(ROOT, 'model')).getFor(INSPROJ, 'antigravity') === 'default');
+  ok('nya val sparas som antigravity och gemini avvisas',
+    AG.setFor(INSPROJ, 'antigravity').ok
+    && settings.get('projectAgents')[INSPROJ] === 'antigravity'
+    && !AG.setFor(INSPROJ, 'gemini').ok);
   const grokAgent = AG.list().find((agent) => agent.id === 'grok');
   ok('grok finns i agentlistan', grokAgent
     && grokAgent.label === 'Grok'
@@ -1382,6 +1417,14 @@ app.on('ready', async () => {
     && droidAgent.continueArgs === '-r'
     && droidAgent.hint === 'agent.hint.droid');
   const INS = require(path.join(ROOT, 'instructions'));
+  ok('antigravity finns i instruktionslistan med AGENTS.md',
+    INS.list(INSPROJ).some((entry) => entry.id === 'antigravity'
+      && entry.projectFile.path === path.join(INSPROJ, 'AGENTS.md')
+      && entry.globalFile.path === path.join(os.homedir(), '.gemini', 'GEMINI.md'))
+    && !INS.list(INSPROJ).some((entry) => entry.id === 'gemini'));
+  ok('antigravity skriver och laser projektets instruktioner',
+    INS.write('antigravity', 'project', INSPROJ, '# Antigravity rules\n').ok
+    && INS.read('antigravity', 'project', INSPROJ).content === '# Antigravity rules\n');
 
   ok('saknad fil lases som tom',
     (() => { const r = INS.read('claude', 'project', INSPROJ); return r.ok && !r.exists && r.content === ''; })());

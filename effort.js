@@ -6,6 +6,7 @@
 //   kimi    no CLI flag — `env KIMI_MODEL_THINKING_EFFORT=<level>` (docs env-vars;
 //           levels come from the model's support_efforts, typically low/high/max)
 //   grok    `--reasoning-effort <level>`, none … max
+//   antigravity `--effort <level>`, low, medium, high
 // The rest have no such setting, and the picker stays hidden for them rather
 // than pretending. Levels are each CLI's own vocabulary and never cross.
 //
@@ -42,6 +43,7 @@ const DEFAULT_ROW = { id: 'default', label: 'Default' };
 // inactive for a plain xhigh). Its own /effort spells the set the same way.
 // kimi: union of levels models advertise via support_efforts (live k3).
 const LEVELS = {
+  antigravity: ['low', 'medium', 'high'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   codex: ['minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'],
   kimi: ['low', 'high', 'max'],
@@ -143,7 +145,7 @@ function setFor(projectPath, agent, id) {
 // (`env KIMI_MODEL_THINKING_EFFORT=… kimi …`).
 function flagFor(agent, id) {
   if (!id || id === 'default' || !supports(agent) || !LEVELS[agent].includes(id)) return '';
-  if (agent === 'claude') return ` --effort ${id}`;
+  if (agent === 'claude' || agent === 'antigravity') return ` --effort ${id}`;
   if (agent === 'kimi') return `KIMI_MODEL_THINKING_EFFORT=${id}`;
   if (agent === 'grok') return ` --reasoning-effort ${id}`;
   return ` -c model_reasoning_effort=${id}`;
