@@ -227,7 +227,7 @@
   "toast.modelSet": "🧠 {project} kör på {model}",
   "toast.modelLater": "🧠 {project}: {model} från nästa start — terminalen är redan igång (kör /model)",
   "toast.modelFailed": "Kunde inte spara modellvalet: {error}",
-  "agent.hint.claude": "claude --permission-mode auto",
+  "agent.hint.claude": "claude --dangerously-skip-permissions",
   "agent.hint.codex": "OpenAI Codex CLI",
   "agent.hint.antigravity": "Google Antigravity CLI",
   "agent.hint.opencode": "opencode --auto",

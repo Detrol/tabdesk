@@ -23,7 +23,7 @@ const AGENTS = [
     id: 'claude',
     label: 'Claude Code',
     bin: 'claude',
-    command: 'claude --permission-mode auto',
+    command: 'claude --dangerously-skip-permissions',
     // `takesModel` is about the flag, not the vocabulary: these CLIs all accept
     // --model, but each names its models its own way, so the ids come from
     // model.js per agent and never cross between them.

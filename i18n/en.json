@@ -227,7 +227,7 @@
   "toast.modelSet": "🧠 {project} runs on {model}",
   "toast.modelLater": "🧠 {project}: {model} from the next start — this terminal is already running (use /model)",
   "toast.modelFailed": "Could not save the model choice: {error}",
-  "agent.hint.claude": "claude --permission-mode auto",
+  "agent.hint.claude": "claude --dangerously-skip-permissions",
   "agent.hint.codex": "OpenAI Codex CLI",
   "agent.hint.antigravity": "Google Antigravity CLI",
   "agent.hint.opencode": "opencode --auto",

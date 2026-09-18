@@ -24,7 +24,7 @@ const DEFAULT_IGNORES = [
 
   // Not size, not noise — these two are read as instructions rather than data.
   //
-  // A tab starts `claude --permission-mode auto` (agents.js) with the project
+  // A tab starts `claude --dangerously-skip-permissions` (agents.js) with the project
   // as its working directory. CLAUDE.md is loaded into that agent's context
   // automatically, and .claude/settings.json can define hooks, which are
   // commands the agent runs on its own. Either arriving over file sync would
