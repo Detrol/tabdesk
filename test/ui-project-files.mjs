@@ -244,6 +244,8 @@ async function main() {
       mkdir(path.dirname(note), { recursive: true }),
     ]);
     await writeFile(note, 'export function greeting(name) {\n  return `hello ${name}`;\n}\n');
+    await mkdir(path.join(project, 'src', 'nested'), { recursive: true });
+    await writeFile(path.join(project, 'src', 'nested', 'deep.js'), 'export const deep = true;\n');
     await writeFile(path.join(project, '.gitignore'), 'ignored.log\n');
     await writeFile(path.join(project, '.dotfile'), 'visible dotfile\n');
     run('git', ['init', '-b', 'main'], project);
@@ -365,6 +367,7 @@ async function main() {
     await waitFor("document.querySelector('.overview.shown h2')?.textContent === 'project'", 'project Overview');
     ok('fixture project rail row opens Overview');
 
+    await click(`document.querySelector('.ov-workspace[data-path=${JSON.stringify(project)}]')`, 'project workspace');
     await waitFor("[...document.querySelectorAll('.ov-chip')].some((el) => el.textContent.includes('Terminal'))", 'Terminal chip');
     await click("[...document.querySelectorAll('.ov-chip')].find((el) => el.textContent.includes('Terminal'))", 'Terminal chip');
     await waitFor("[...document.querySelectorAll('.stab:not(.ov):not(.files):not(.add)')].some((el) => el.querySelector('.label')?.textContent.includes('Terminal'))", 'Terminal session tab');
@@ -382,6 +385,17 @@ async function main() {
     await waitFor(`(() => { const item = ${srcSelector}; return item && item.getAttribute('aria-expanded') === 'false' && item.querySelector(':scope > [role=group]')?.dataset.loaded !== 'true'; })()`, 'lazy src directory');
     await click(srcSelector, 'src directory');
     await waitFor("[...document.querySelectorAll('.files-tree [role=treeitem]')].some((el) => el.dataset.path === 'src/note.js')", 'src/note.js tree item');
+    await click("[...document.querySelectorAll('.files-tree [role=treeitem]')].find((el) => el.dataset.path === 'src/nested')", 'nested directory');
+    assert.equal(await evaluate(`${srcSelector}.getAttribute('aria-expanded')`), 'true');
+    await waitFor("[...document.querySelectorAll('.files-tree [role=treeitem]')].some((el) => el.dataset.path === 'src/nested/deep.js')", 'nested file');
+    await click("[...document.querySelectorAll('.files-tree [role=treeitem]')].find((el) => el.dataset.path === 'src/nested/deep.js')", 'nested file');
+    await waitFor("document.querySelector('.files-path')?.textContent === 'src/nested/deep.js'", 'opened nested file');
+    assert.equal(await evaluate(`${srcSelector}.getAttribute('aria-expanded')`), 'true');
+    await evaluate("[...document.querySelectorAll('.files-tree [role=treeitem]')].find((el) => el.dataset.path === 'src/nested').focus()");
+    await key('Enter', 'Enter');
+    assert.equal(await evaluate(`${srcSelector}.getAttribute('aria-expanded')`), 'true');
+    ok('nested directories and files remain reachable');
+
     await click("[...document.querySelectorAll('.files-tree [role=treeitem]')].find((el) => el.dataset.path === 'src/note.js')", 'src/note.js');
     await waitFor("document.querySelector('.files-path')?.textContent === 'src/note.js' && document.querySelector('.cm-lineNumbers') && document.querySelectorAll('.cm-line span').length > 0", 'opened highlighted note');
     ok('src loads lazily and note opens with safe path, line numbers, and highlights');

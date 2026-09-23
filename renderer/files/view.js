@@ -537,7 +537,7 @@ export function createFileView({
       item.append(group);
     }
     item.addEventListener('click', (event) => {
-      if (event.target.closest('button')) return;
+      if (event.target.closest('button') || event.target.closest('[role="treeitem"]') !== item) return;
       focusItem(item);
       if (entry.unavailable) return;
       if (entry.kind === 'directory') expandDirectory(item);
@@ -600,6 +600,7 @@ export function createFileView({
   }
 
   function handleTreeKey(event, item) {
+    if (event.target !== item) return;
     const items = visibleTreeItems();
     const index = items.indexOf(item);
     let target = null;
