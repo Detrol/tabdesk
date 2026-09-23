@@ -1,3 +1,5 @@
+@charset "UTF-8";
+
 /* Theme tokens. These values are the built-in fallback (the "Neon" preset);
    at runtime main.js resolves the active theme — by default derived from the
    desktop's GTK colours — and ui.js stamps the real values onto :root. */

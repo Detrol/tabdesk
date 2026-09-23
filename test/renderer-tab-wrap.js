@@ -41,7 +41,10 @@ app.whenReady().then(async () => {
       `<button class="stab"><span class="label">Session ${index + 1} with a long name</span></button>`
     )).join('');
     fs.writeFileSync(FIXTURE, `<!doctype html>
+      <meta charset="windows-1252">
       <link rel="stylesheet" href="${stylesheet}">
+      <div class="tab project root" style="position:absolute;left:-9999px"><span class="label">dev</span></div>
+      <div class="files-tree-item" aria-expanded="false" style="position:absolute;left:-9999px"><span class="files-tree-label">src</span></div>
       <div id="root"><div id="app"><main id="content">
         <div id="strip">${tabs}</div><div id="panels"></div>
       </main></div></div>`);
@@ -49,6 +52,12 @@ app.whenReady().then(async () => {
     window = new BrowserWindow({ show: false, width: 640, height: 420 });
     await window.loadFile(FIXTURE);
     await window.webContents.executeJavaScript('document.fonts.ready');
+    const icons = await window.webContents.executeJavaScript(`[
+      getComputedStyle(document.querySelector('.tab.project.root .label'), '::before').content,
+      getComputedStyle(document.querySelector('.files-tree-label'), '::before').content,
+    ]`);
+    assert.deepEqual(icons, ['"⌂ "', '"▸ "']);
+    console.log('  ok   CSS icons decode as UTF-8 in a legacy-encoded document');
 
     const wrapped = await geometry(window);
     assert(wrapped.rows > 1, JSON.stringify(wrapped));
