@@ -53,7 +53,18 @@ app.on('ready', async () => {
         host.querySelector('.cm-content').dispatchEvent(event);
         return event.defaultPrevented;
       };
-      const lineHTML = (host) => (host.querySelector('.cm-line') || {}).innerHTML || '';
+      const lineHTML = (host) => ((host.querySelector('.cm-line') || {}).innerHTML || '')
+        .replace(/class="[^"]+"/g, '');
+      const luminance = (channels) => channels.reduce((sum, channel, index) => {
+        const value = channel / 255;
+        return sum + (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+          * [0.2126, 0.7152, 0.0722][index];
+      }, 0);
+      const contrastRatio = (foreground, background) => {
+        const light = luminance(foreground);
+        const dark = luminance(background);
+        return (Math.max(light, dark) + 0.05) / (Math.min(light, dark) + 0.05);
+      };
       const create = (options = {}) => {
         const host = makeHost();
         const editor = TabDeskFiles.createEditor({ parent: host, ...options });
@@ -133,6 +144,33 @@ app.on('ready', async () => {
       const themeAfterDocument = getComputedStyle(
         primary.host.querySelector('.cm-editor'),
       ).backgroundColor === 'rgb(1, 2, 3)';
+
+      const syntax = create({ theme: {
+        dark: true, tokens: { surface: '#101010', text: '#f5f5f5' },
+        terminal: { magenta: '#ff0099' },
+      } });
+      syntax.editor.setDocument('const answer = 42;', { anchor: 0, head: 0 });
+      await syntax.editor.setLanguage('syntax.js');
+      await wait(20);
+      const keyword = () => [...syntax.host.querySelectorAll('.cm-line span')]
+        .find((span) => span.textContent === 'const');
+      const darkKeywordColor = keyword() && getComputedStyle(keyword()).color;
+      syntax.editor.setTheme({
+        dark: false, tokens: { surface: '#f7f7f7', text: '#202020' },
+        terminal: { magenta: '#550088' },
+      });
+      const lightKeywordColor = keyword() && getComputedStyle(keyword()).color;
+      const syntaxTracksTheme = darkKeywordColor === 'rgb(255, 0, 153)'
+        && lightKeywordColor === 'rgb(85, 0, 136)';
+      syntax.editor.setTheme({
+        dark: false, tokens: { surface: '#f0f0f0', text: '#202020' },
+        terminal: { magenta: '#dddddd' },
+      });
+      const adjustedColor = keyword() && getComputedStyle(keyword()).color;
+      const adjustedChannels = adjustedColor?.match(/\\d+/g)?.slice(0, 3).map(Number);
+      const lowContrastCorrected = adjustedChannels
+        && contrastRatio(adjustedChannels, [240, 240, 240]) >= 4.5;
+      syntax.editor.destroy();
 
       primary.editor.setDocument('A', { anchor: 1, head: 1 });
       primary.editor.setDocument('B', { anchor: 1, head: 1 });
@@ -1235,6 +1273,9 @@ app.on('ready', async () => {
         readOnlyAfterDocument,
         writableAgain,
         themeAfterDocument,
+        syntaxTracksTheme,
+        lowContrastCorrected,
+        adjustedColor,
         undoDocument,
         undoChanges,
         matcherCalls,
@@ -1316,6 +1357,9 @@ app.on('ready', async () => {
     ok('new document preserves read-only editability', result.readOnlyAfterDocument);
     ok('writable mode restores content editability', result.writableAgain);
     ok('new document preserves the current theme', result.themeAfterDocument);
+    ok('syntax keyword color follows a live theme change', result.syntaxTracksTheme);
+    ok('low-contrast syntax colors become readable on the editor background',
+      result.lowContrastCorrected, result.adjustedColor);
     ok('undo cannot restore a previous document', result.undoDocument === 'B', result.undoDocument);
     ok('cross-document undo emits no onChange', result.undoChanges === 0, String(result.undoChanges));
     ok('language test seam controls the real controller matcher', result.matcherCalls >= 5,

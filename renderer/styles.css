@@ -652,7 +652,8 @@ html, body {
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
 }
 .files-toolbar label { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .files-root-label {
@@ -667,12 +668,12 @@ html, body {
   padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--tint);
+  background: var(--surface);
   color: var(--text);
   font: inherit;
   font-size: 12px;
 }
-.files-root option { background: var(--bg); color: var(--text); }
+.files-root option { background: var(--surface); color: var(--text); }
 .files-ignored,
 .files-save,
 .files-conflict button,
@@ -680,8 +681,8 @@ html, body {
   padding: 5px 9px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--tint);
-  color: var(--dim);
+  background: var(--surface);
+  color: var(--text);
   font: inherit;
   font-size: 11px;
   cursor: pointer;
@@ -713,7 +714,8 @@ html, body {
 .files-tree {
   min-width: 0;
   overflow: auto;
-  border-right: 1px solid var(--line-soft);
+  border-right: 1px solid var(--line);
+  background: var(--rail-2);
   padding: 8px;
   font-size: 12px;
 }
@@ -728,7 +730,7 @@ html, body {
   padding: 5px 6px;
   border: 1px solid transparent;
   border-radius: 6px;
-  color: var(--dim);
+  color: var(--text);
   cursor: pointer;
 }
 .files-tree-item:hover { background: var(--tint); color: var(--text); }
@@ -736,7 +738,9 @@ html, body {
   border-color: var(--accent);
   background: var(--tint-strong);
   color: var(--text);
+  box-shadow: inset 2px 0 var(--accent);
 }
+.files-tree-item[aria-expanded] > .files-tree-label { font-weight: 600; }
 .files-tree-item[aria-selected="true"] > .files-tree-label::before { content: '✓ '; }
 .files-tree-item[aria-expanded] > .files-tree-label::before { content: '▸ '; }
 .files-tree-item[aria-expanded="true"] > .files-tree-label::before { content: '▾ '; }
@@ -775,7 +779,8 @@ html, body {
   gap: 10px;
   min-width: 0;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
 }
 .files-path {
   flex: 1 1 auto;

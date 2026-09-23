@@ -209,6 +209,27 @@ async function stopIsolatedTmux(tmuxRoot) {
   throw new Error(`isolated tmux PID ${pid} did not exit after SIGTERM`);
 }
 
+async function assertThemeRegions(themeId, evaluate, waitFor) {
+  await evaluate(`window.api.setTheme(${JSON.stringify(themeId)})`);
+  await waitFor(`document.documentElement.dataset.theme === ${JSON.stringify(themeId)}`, `${themeId} theme`);
+  const regions = await evaluate(`(() => {
+    const background = (selector) => getComputedStyle(document.querySelector(selector)).backgroundColor;
+    const folder = [...document.querySelectorAll('.files-tree-item')].find((item) => item.dataset.path === 'src');
+    return {
+      toolbar: background('.files-toolbar'), tree: background('.files-tree'),
+      head: background('.files-document-head'), editor: background('.cm-editor'),
+      folderText: getComputedStyle(folder).color,
+      controlText: getComputedStyle(document.querySelector('.files-ignored')).color,
+      primaryText: getComputedStyle(document.body).color,
+    };
+  })()`);
+  assert.notEqual(regions.toolbar, regions.tree, `${themeId}: toolbar and tree are distinct`);
+  assert.notEqual(regions.tree, regions.editor, `${themeId}: tree and editor are distinct`);
+  assert.notEqual(regions.head, regions.editor, `${themeId}: file header and editor are distinct`);
+  assert.equal(regions.folderText, regions.primaryText, `${themeId}: folder names remain readable`);
+  assert.equal(regions.controlText, regions.primaryText, `${themeId}: toolbar control remains readable`);
+}
+
 async function main() {
   const fixture = await mkdtemp('/tmp/tabdesk-files-ui-');
   assertDirectTmpFixture(fixture);
@@ -517,6 +538,11 @@ async function main() {
     assert.equal(colors.gutterBorder, colors.line);
     assert.equal(colors.gutterColor, colors.faint);
     ok('computed CodeMirror colors match active TabDesk CSS tokens');
+
+    for (const themeId of ['one-dark', 'one-light']) {
+      await assertThemeRegions(themeId, evaluate, waitFor);
+    }
+    ok('light and dark themes separate Files regions and keep folder labels readable');
 
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     assert(Buffer.from(screenshot.data || '', 'base64').length > 100);
